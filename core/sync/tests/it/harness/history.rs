@@ -376,21 +376,12 @@ fn model_now(w: &mut World) -> Option<Model> {
         }
     }
     let Quiet { refs, waiting, .. } = q;
-    loop {
-        let before = waiting.len();
-        // kept while any twin refuses it (one whose account does not hold its thing may never take it)
-        waiting.retain(|pk| {
-            let refused: Vec<bool> = refs.all().map(|p| p.receive(&pk.bytes, pk.blobs.clone()).is_err()).collect();
-            refused.contains(&true)
-        });
-        if waiting.len() == before || waiting.is_empty() {
-            break;
-        }
-    }
+    // kept while any twin refuses it (one whose account does not hold its thing may never take it)
+    let mut refused = BTreeSet::new();
     for p in refs.all() {
-        p.clock.set(now);
-        let _ = p.tick();
+        refused.extend(hand(p, waiting, now));
     }
+    waiting.retain(|pk| refused.contains(&pk.id));
     let m = Model::of(w, refs);
     // a stub logged of a thing still dependent of its unit's is judged once it is independent
     let unjudged: Vec<(Tid, Tid)> = w.history.logged.iter().copied().filter(|e| m.judges(w, e) == Some(false)).collect();
@@ -904,22 +895,37 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Refs {
     }
     let now = w.now();
     for r in refs.all() {
-        // again while a round applies anything or moves what pends (a commit kept pending is
-        // handed again each round and comes back pending: that alone moves nothing)
-        for _ in 0..=handed.len() {
-            let was = r.engine.pending();
-            let mut applied = false;
-            for pk in &handed {
-                applied |= matches!(r.receive(&pk.bytes, pk.blobs.clone()), Ok(Ingested::Applied(_)));
-            }
-            if !applied && r.engine.pending() == was {
-                break;
-            }
-        }
-        r.clock.set(now);
-        let _ = r.tick();
+        hand(r, &handed, now);
     }
     refs
+}
+
+/// Hands twin `r` `packages` at the world's time `now`, again while a round applies anything or
+/// moves what pends (a commit kept pending is handed again each round and comes back pending: that
+/// alone moves nothing), then ticks; the commits it refused in the last round. The clock is set
+/// first: a twin behind the world pends every later commit on its `ts` and takes them only at the
+/// tick, where a write examined before the grant making it valid is dropped as invalid and, never
+/// handed again, never fetched (spec/permissions.md §6 Invalid deltas).
+fn hand(r: &mut Peer, packages: &[Package], now: osis_base::WallMs) -> BTreeSet<CommitId> {
+    r.clock.set(now);
+    let mut refused = BTreeSet::new();
+    for _ in 0..=packages.len() {
+        let was = r.engine.pending();
+        let mut applied = false;
+        refused.clear();
+        for pk in packages {
+            match r.receive(&pk.bytes, pk.blobs.clone()) {
+                Ok(Ingested::Applied(_)) => applied = true,
+                Ok(_) => {}
+                Err(_) => drop(refused.insert(pk.id)),
+            }
+        }
+        if !applied && r.engine.pending() == was {
+            break;
+        }
+    }
+    let _ = r.tick();
+    refused
 }
 
 /// Fresh copies of the world's twins (`Made::twins`).

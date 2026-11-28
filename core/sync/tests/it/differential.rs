@@ -579,3 +579,19 @@ fn a_grantee_judges_a_thing_minted_in_another_by_its_record_blob_spec_permission
     assert!(crate::harness::history::reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 1 by its account's grant");
 }
 
+
+// spec/permissions.md §6 (Invalid deltas: one dropped that turns valid again counts as never
+// received and is fetched), spec: none (test harness: the reference is perfect delivery at the
+// world's time): past the drift bound, node 0 grants node 1's account write on its thing and node 1
+// makes things in it. Every node and twin reads each, held by thing 0's strongs, as the model says
+// (failed while a twin's clock stayed at the world's making until after the commits were handed:
+// each later commit pended on its `ts` and the tick took them by commit ID, a making before the grant
+// dropped as invalid and never handed again; the model, reading thing 0's strongs from that twin,
+// held the making nowhere, and node 0 read it).
+#[test]
+fn the_reference_takes_writes_at_the_worlds_time_spec_permissions_6() {
+    use crate::harness::script::*;
+    let mut script = vec![New(0), Give(0, 0, Holder::Node(1), Syncs), Run, Advance(2 * osis_base::format::MAX_DRIFT_MS), Unpair(0, 2), Run, Give(0, 0, Holder::Node(1), Writes), Strong(1, None, 0), Run];
+    script.push(NewIn(1, 0));
+    holds_on(0, 2, 3, &script, String::new(), false);
+}
