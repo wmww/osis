@@ -1,3 +1,0 @@
-# sheave-c1-terms
-- `tools/policy.py` code_refs refuses a backticked identifier in issues/deprecated-terms.md once the code no longer has it (`ENTRY_PAGE`, `Minter`), though the registry's Gone list exists to name removed identifiers. Cost a refused land each time. Fix: exempt the registry from code_refs as dead_words exempts it.
-- The registry row "The engine's names under the API's: `Written`, `CommitKind`, `WallMs`" names neither the API word each maps to nor where the engine's word lives (`CommitKind` is the API's own; the engine has `osis_commit::Kind`). Cost a survey to find that only `WallMs` is an alias. A row should name old word, new word and place.
