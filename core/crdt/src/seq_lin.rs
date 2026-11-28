@@ -34,9 +34,9 @@
 //!   (`plan`, `plan_one`, `plan_pieces`);
 //! - a new element some write was waiting for, one anchored at a new element other than the end
 //!   of a run (`follow`);
-//! - more new runs, moves and row cuts in one delta than max(√n, 64), or their placements
+//! - more new runs and moves in one delta than max(√n, 64), or their placements and row cuts
 //!   costing more than about a whole pass (max(n, 1024) rows and blocks looked at; `follow`,
-//!   `slot`);
+//!   `cut_row`, `slot`);
 //! - a move of an element on a cycle a demotion broke (`Lin::cyc`; otherwise the old demotions
 //!   stay forced, §6.2), one gaining or losing a write that names a dot that is no element (a
 //!   virtual anchor), or losing one that names an element inside a range record (its
@@ -1413,9 +1413,11 @@ impl Lin {
                 }
             }
         }
-        // a bounded number of placements, each O(√n) plus the sibling subtrees it skips: past
-        // about a whole pass's worth of rows and blocks looked at a rebuild is cheaper
-        if runs.len() + moves.len() + cuts.len() > self.p.len.isqrt().max(64) {
+        // a bounded number of placements, each charged O(√n) (`each`) plus the sibling subtrees it
+        // skips: past about a whole pass's worth of rows and blocks looked at a rebuild is cheaper.
+        // A row cut is charged what it looks at (one where a row starts already) and stops at the
+        // budget itself
+        if runs.len() + moves.len() > self.p.len.isqrt().max(64) {
             return false;
         }
         // the newest sibling key placed here, when above every edge before: that run or move goes

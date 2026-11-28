@@ -1176,8 +1176,9 @@ fn hostile_moves_join_bounded_spec_6() {
 }
 
 /// §6 (a deterministic function of state), `seq_lin`: a delta of flag writes each splitting one long deleted chain (a range record
-/// at the root) with a deep subtree below it: each cut shifts the subtree's depths; the work
-/// stays within the budget plus one cut, or the count cap rebuilds before any work.
+/// at the root) with a deep subtree below it: each cut shifts the subtree's depths; a few writes
+/// or a thousand, the work stays within the budget plus one cut (the count cap is the runs' and
+/// moves', not the cuts').
 #[test]
 fn hostile_cuts_join_bounded_spec_6() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
@@ -1197,8 +1198,7 @@ fn hostile_cuts_join_bounded_spec_6() {
     let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));
     let Fragment::Seq(q) = &base else { panic!() };
     let (len, blocks, cap) = q.lin().shape();
-    let count = len.isqrt().max(64);
-    for writes in [count / 2 - 1, count] {
+    for writes in [31, 1_000] {
         let mut st = base.clone();
         let _ = read_str(&st);
         // newer delete flags on single elements spread over the chain: two cuts each
@@ -1210,7 +1210,6 @@ fn hostile_cuts_join_bounded_spec_6() {
         let Fragment::Seq(q) = &st else { panic!() };
         let _ = q.lin();
         let (work, passes) = crate::seq_lin::probe();
-        assert_eq!(2 * writes > count, work == 0, "{writes} writes: the count cap ({count}) rebuilds before any work");
         // budget, then one cut: its charge, the subtree walk and the reshift (each every block
         // and two partial blocks of at most 2 * cap rows)
         let bound = len.max(1024) + 3 * (blocks + 4 * cap);

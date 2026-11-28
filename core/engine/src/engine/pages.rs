@@ -3218,6 +3218,31 @@ mod tests {
         received_kept(&mut txn, &unit, &mut st, delta);
     }
 
+    // spec/crdt.md §5.7 (a delete writes a record per run of consecutive dots), §6, §8: a stretch
+    // of a text deleted here as one range record, and received in a new session, another writer's
+    // delete of it made concurrently, after typing a char before every other one: a record per
+    // pair and per typed char, each cutting the stored records at its bounds, past 64 cuts. Each
+    // costs the rows it looks at, within a whole pass's budget: the join follows the stored
+    // placement and keeps it.
+    #[test]
+    fn seq_concurrent_delete_cutting_a_range_keeps_placement_spec_crdt_6_1() {
+        let (mut store, mut rng) = store();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (mut st, ctr) = text();
+        let base = st.clone();
+        // here: the stretch 1000..1080 deleted
+        let (del, _) = text_delta(&st, &at_text(vec![Op::Delete { at: 1_000, len: 80 }]), 2, 1, ctr).unwrap();
+        st.join(del);
+        // the other writer: a char before each even position of the stretch, then all of it deleted
+        let mut other = base;
+        let (ins, r) = text_delta(&other, &at_text((0..40).map(|k| Op::Insert { at: 1_000 + 3 * k, items: seq_items(true, k as u64, 1) }).collect()), 3, 2, 1).unwrap();
+        other.join(ins.clone());
+        st.join(ins);
+        let unit = write_text(&mut txn, &st);
+        let (delta, _) = text_delta(&other, &at_text(vec![Op::Delete { at: 1_000, len: 120 }]), 4, 2, r.hi).unwrap();
+        received_kept(&mut txn, &unit, &mut st, delta);
+    }
+
     // spec/crdt.md §5.7, §6, §8: as above, the plan's choices random: `OSIS_SEQ_COLD_START`, `OSIS_SEQ_COLD_SEEDS` (2 at small
     // size), 160 steps a seed.
     #[test]
