@@ -140,6 +140,9 @@ pub struct Knobs {
     pub seed: Option<u64>,
     /// Called by a text session's save between taking its snapshot and committing it.
     pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Called by the driver task after each step it makes, once it let the node go; the driver
+    /// keeps it until it ends.
+    pub driver_step: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// A test network in place of the transports: the node joins it and nothing else.
     pub net: Option<crate::net::ManualNet>,
     /// A thin client's scratch node (`sources::scratch`): it dials its node's socket.

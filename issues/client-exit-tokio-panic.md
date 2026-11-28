@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: osis, cli
 
-A timer registered on the client's sync thread while its runtime shuts down. Look at the thin client's shutdown order (`Osis` drop with a remote: the sync thread still arming a timer).
+A timer registered on the client's sync thread while its runtime shuts down. `osis-sync` is `Runtime::Own`'s thread: when the driver task is the node's last holder, `Inner` drops inside its step (`OwnRuntime` shuts the runtime down there) and the driver goes on to poll its links in the same poll. `close` waits for the driver only on the app's runtime (`DriverAlive`).

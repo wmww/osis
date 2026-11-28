@@ -195,6 +195,7 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 - A `rejects` case asserting only the error class passes on any earlier rejection: print the error once when writing one.
 
 **Other**
+- The sync driver on a real runtime: `Knobs::driver_step` is called after each driver step, once the driver let the node go, and kept until the driver ends, so a test can pause the driver between steps and see it gone (osis it `runtime::close_on_the_app_runtime_returns_once_the_driver_is_gone`, which waits for a value the node keeps for its life, `Knobs::text_save`, to drop).
 - A redb store's clean close commits its allocator state; `std::mem::forget` of a store as a power cut fails the reopen (the file lock stays held).
 - osis-perm's `paths/hand*.rs` mirror roles-model's hand worlds by name: grep `core/` before renaming a model test. A helper swapped for a "superset" one can pass the default tests and fail a `_plain` property: run the crate's `_plain` properties after a helper change.
 - Ephemeral bodies do not survive a restart: a restart case of an ephemeral rule needs a durable aspect. A scale test's small size must page as its large size does.

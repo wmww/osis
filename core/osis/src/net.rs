@@ -215,7 +215,13 @@ impl crate::Osis {
                 let listen = !cfg.app.internals.no_listen;
                 let start = Start { listen: listen.then(|| (peer_urls(), secret)), discover: listen && matches!(cfg.lan, Lan::On { .. }) };
                 let db = self.downgrade();
-                handle.spawn(drive(db, links, rx, start));
+                let app_runtime = matches!(cfg.runtime, crate::Runtime::Tokio(_)) && handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread;
+                let alive = app_runtime.then(|| crate::handle::DriverAlive::new(&self.inner.life.0));
+                let hook = cfg.app.internals.driver_step.clone();
+                handle.spawn(async move {
+                    drive(db, links, rx, start, hook).await;
+                    drop(alive);
+                });
             }
         }
         Ok(())
@@ -344,7 +350,7 @@ fn peer_urls() -> Vec<String> {
 
 /// The driver task: steps the node on each input its links report (blocking work in place, the
 /// lock held only for the step) and carries out what each step gave, until the node goes.
-async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx: mpsc::UnboundedReceiver<Ctl>, start: Start) {
+async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx: mpsc::UnboundedReceiver<Ctl>, start: Start, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
     let mut sets = Sets::default();
     // a failed start is the node's to report: it syncs with what it dials meanwhile
     if let Some((candidates, secret)) = start.listen {
@@ -367,6 +373,10 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
                 let main = matches!(input, Input::Up { conn, .. } if links.unix(conn));
                 let Some(db) = db.hold() else { return };
                 blocking(|| db.step(input, main));
+                drop(db);
+                if let Some(h) = &hook {
+                    blocking(|| h());
+                }
             }
             c = rx.recv() => match c {
                 None => return,

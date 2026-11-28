@@ -205,11 +205,11 @@ impl Inner {
 }
 
 /// What `close` waits on: the count of user handles (clones, `WeakOsis::upgrade`, streams,
-/// text sessions; not the dispatcher's or timers' short-lived ones) and whether
-/// `Inner` is gone.
+/// text sessions; not the dispatcher's or timers' short-lived ones), whether `Inner` is gone,
+/// and whether a driver task on the app's runtime still runs (`DriverAlive`).
 #[derive(Default)]
 pub(crate) struct Life {
-    m: Mutex<(usize, bool)>,
+    m: Mutex<(usize, bool, bool)>,
     cv: std::sync::Condvar,
 }
 
@@ -229,6 +229,24 @@ pub(crate) struct LifeGuard(pub(crate) Arc<Life>);
 impl Drop for LifeGuard {
     fn drop(&mut self) {
         lock(&self.0.m).1 = true;
+        self.0.cv.notify_all();
+    }
+}
+
+/// Held by the driver task on the app's multi-thread runtime until it ends: `close` returns only
+/// after, so the app may shut that runtime down next with nothing of the node left to poll it.
+pub(crate) struct DriverAlive(Arc<Life>);
+
+impl DriverAlive {
+    pub(crate) fn new(life: &Arc<Life>) -> DriverAlive {
+        lock(&life.m).2 = true;
+        DriverAlive(life.clone())
+    }
+}
+
+impl Drop for DriverAlive {
+    fn drop(&mut self) {
+        lock(&self.0.m).2 = false;
         self.0.cv.notify_all();
     }
 }
@@ -652,9 +670,10 @@ impl Osis {
         }
         let life = self.inner.life.0.clone();
         drop(self);
-        // what still holds it besides user handles (a callback, an engine call, a timer) ends
-        // (in place on a multi-thread runtime: the holder may need that worker's tasks)
-        let (users, closed) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner()));
+        // what still holds it besides user handles (a callback, an engine call, a timer) ends,
+        // then the driver task on the app's runtime (in place on a multi-thread runtime: the
+        // holder may need that worker's tasks)
+        let (users, closed, _) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed, driver)| *users == 0 && !(*closed && !*driver)).unwrap_or_else(|e| e.into_inner()));
         if !closed {
             return Ok(Close::StillOpen { handles: users });
         }
