@@ -364,7 +364,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | 28 | drop retained copy | `[tid] -> []`; main only |
     | 30 | grant | `[target, holder, role, opts] -> []`, opts `[Opt(until), Opt(retain_copy), may_grant, reads, leave_adminless, quiet]`, reads 0 as kept, 1 from now, 2 all; main only |
     | 31 | set role | `[target, holder, Opt(role), opts] -> []`, opts `[Opt(retain_copy), leave_adminless]`; main only |
-    | 32 | leave | `[holder, target, opts] -> []`, opts as row 31; main only |
+    | 32 | leave | `[holder, target, opts] -> []`, opts as row 31; a client's session only for `holder` its client's thing (else code 3) |
     | 33 | keys | `[tid] -> keys text`; main only |
     | 34 | take keys | `[keys text] -> tid`; main only |
     | 35 | put card | `[on, of] -> []`; main only |

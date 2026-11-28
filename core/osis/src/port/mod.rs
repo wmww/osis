@@ -118,11 +118,12 @@ pub mod method {
     /// `[link text, joiner] -> tid` (`redeem`)
     pub const REDEEM: u64 = 29;
 
-    /// Whether a client session may call `m`: a row on things the actor may read. The
-    /// others carry the node's own state (spec/wire.md §11.2), so a new row is main only unless
-    /// listed here. A main session is the node: it calls every row.
+    /// Whether a client session may call `m`: a row on things the actor may read, or on its own
+    /// roles (`leave`, of the actor's own grants alone). The others carry the node's own state
+    /// (spec/wire.md §11.2), so a new row is main only unless listed here. A main session is the
+    /// node: it calls every row.
     pub fn for_client(m: u64) -> bool {
-        m <= REDO_TARGET || matches!(m, SETTLE | NOW | STATUS | HOLDERS | LISTING | LISTED_COMMIT | HOLDS | RETAINED_COPIES)
+        m <= REDO_TARGET || matches!(m, SETTLE | NOW | STATUS | HOLDERS | LISTING | LISTED_COMMIT | HOLDS | RETAINED_COPIES | LEAVE)
     }
 }
 

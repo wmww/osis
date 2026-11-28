@@ -125,6 +125,21 @@ fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     assert_eq!(cl.at(n, v()).get().unwrap(), Some(Value::Int(1)));
 }
 
+// spec/wire.md §11.2 row 32 (A client's rights): a client leaves its own thing's role, and
+// only that: another holder's is `Permission`.
+#[test]
+fn a_thin_client_leaves_its_own_role_spec_wire_11() {
+    let w = world(Some(Role::Read));
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    assert_eq!(cl.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
+    let node = w.a.node();
+    assert!(matches!(cl.leave(node, w.t, Default::default()), Err(Error::Permission { tid, .. }) if tid == node));
+    cl.leave(cl.author(), w.t, Default::default()).unwrap();
+    assert!(!w.a.grants(w.t).unwrap().contains_key(&w.client), "the grant ended");
+    assert_eq!(cl.at(w.t, v()).get().unwrap(), None, "hidden from the client now");
+    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
+}
+
 // notes/client-port.md, Decoder limits: a write through a node carries at most `MAX_WRITE_OPS`
 // (1024) ops.
 #[test]
