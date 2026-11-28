@@ -1716,6 +1716,29 @@ mod tests {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
 
+    // spec/sync-set.md §3 (Nothing of R stays), spec/commits.md §5 (What a held thing needs):
+    // peer 1 holds peer 0's thing, lets it go and restarts before any pass ends. No open keeps what
+    // was leaving, and an idle node ends no pass: with none in flight the open's judgement runs at
+    // once and the content goes (failed: it waited for a pass end, and the content stayed read).
+    #[test]
+    fn a_thing_leaving_at_a_restart_goes_with_no_pass_in_flight_spec_sync_set_3() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let x = Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &x, &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.share(0, t);
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &x).unwrap(), Some(Value::Int(1)), "control: held, read");
+        lp.peers[1].engine.unhold(osis_base::Strong(t)).unwrap();
+        lp.peers[1].restart(1).unwrap();
+        lp.peers[1].engine.settle_lost().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &x).unwrap(), None);
+    }
+
     // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map dates
     // the fill and a snapshot of it walking each held part a few times for its winners, never
     // once per death: the same count for 10 times the writes.

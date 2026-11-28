@@ -82,12 +82,18 @@ impl Engine {
     /// No pass is in flight (sync: none begun and not ended): what lost a need since the last
     /// judgement and nothing held needs goes, as at a pass end. A lost need waits for nothing;
     /// an arrival waits for the pass that brought it (a parent's record before what needs it),
-    /// so one also arrived since (`Core::pass_due`; every held record after an open) waits for
-    /// that pass. What a sealed fire brought came whole with it, by no pass, and is judged here
-    /// (`Core::note_pass_due`). First the stale cards are written again (`refresh_cards`), as at
-    /// a pass end: an own write moving `keys.0` (a rotation, a removal) ends no pass.
-    /// O(what lost a need and the cards due).
+    /// so one also arrived since (`Core::pass_due`) waits for that pass. After an open no pass is
+    /// in flight, what arrived before it came by a pass the open ended: every held record is
+    /// judged as at the first pass end (`settle_needs`), else what was leaving at a crash (no
+    /// open keeps that) would wait for a pass an idle node never ends. What a sealed fire
+    /// brought came whole with it, by no pass, and is judged here (`Core::note_pass_due`). First
+    /// the stale cards are written again (`refresh_cards`), as at a pass end: an own write moving
+    /// `keys.0` (a rotation, a removal) ends no pass. O(what lost a need and the cards due), and
+    /// O(held) once after an open.
     pub fn settle_lost(&mut self) -> Result<()> {
+        if self.core.pass_due.is_none() {
+            return self.settle_needs();
+        }
         self.refresh_cards()?;
         let Some(arrived) = &self.core.pass_due else { return Ok(()) };
         let due: BTreeSet<Tid> = self.core.lost_due.difference(arrived).copied().collect();
