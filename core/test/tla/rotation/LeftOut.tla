@@ -3,7 +3,7 @@
 \* \S 4 Left out; notes/holder-actors.md, Left out). One cause c (any block
 \* clause: every one names a commit) removes party x; c is void wherever its
 \* invalidator i is held (a concurrent demotion of its author, a side switch).
-\* Kind "edge": c writes edges (a departure, a keyless grant) and stands while
+\* Kind "grant": c writes grants (a departure, a keyless grant) and stands while
 \* valid; "rot": c writes a keyset (a stale box's superseder, the epoch a box or
 \* rotator departure holds, a keyset held invalid) and stands while held. x opens
 \* every keyset of M made without knowing c valid. Sealers w (reads M: judges a
@@ -80,7 +80,7 @@ Merge(R) == {[k |-> k,
                         \A p \in R : p.k = k => a <= p.at]
               : k \in {q.k : q \in R}}
 Recs(n) == Merge(Raw(n))
-\* a held cause stands: c while valid ("edge") or while held ("rot"); g nowhere
+\* a held cause stands: c while valid ("grant") or while held ("rot"); g nowhere
 Stands(n, x) == x = "c" /\ (Kind = "rot" \/ "i" \notin hc[n])
 Counts(n, q) == CASE Rule = "old" -> TRUE
                   [] Rule = "voidunheld" -> \E x \in q.cz : x \in hc[n] /\ Stands(n, x)

@@ -52,8 +52,8 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
           WriteTo,    \* actors content is written to
           Writes,     \* bound on content writes
           MaxE,       \* bound on epochs, initial ones included
-          Grants,     \* rule 4: the actor edges of Mem in the agreed order
-          Hidden,     \* rule 4: {<<node, edge>>}: grants a node does not
+          Grants,     \* rule 4: the actor grants of Mem in the agreed order
+          Hidden,     \* rule 4: {<<node, grant>>}: grants a node does not
                       \* hold at first (it learns them later); a node's
                       \* grant listed in Grants is held the same way (a
                       \* concurrent grant: a rotation by a node lacking it
@@ -102,7 +102,7 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
 Acts == {ActSeq[i] : i \in 1..Len(ActSeq)}
 DepActs == {q[1] : q \in Dependent}
 MintAdmOf(t) == CHOOSE f \in Acts : <<t, f>> \in Dependent
-\* an actor edge removal: <<holder actor, target, remover>> in Deps
+\* an actor grant removal: <<holder actor, target, remover>> in Deps
 ActDep(dp) == dp[1] \in Acts
 Holders(a) == {m[2] : m \in {q \in Mem : q[1] = a}}
 ActHolders(a) == Holders(a) \cap Acts
@@ -116,7 +116,7 @@ Fix(F(_), S) == LET T == F(S) IN IF T = S THEN S ELSE Fix(F, T)
 \* actors holding h, transitively (h itself only on a cycle)
 HClos(h) == Fix(LAMBDA S : S \cup UNION {ActHolders(b) : b \in S}, ActHolders(h))
 
-\* rule 4: over edge set E (<<a, h>>: h holds a role on a), the actors whose
+\* rule 4: over grant set E (<<a, h>>: h holds a role on a), the actors whose
 \* secrets h's key yields; greedy in the agreed order over the grants G held:
 \* a grant whose holder's key a's key already yields gives no key access
 GAll == {Grants[i] : i \in 1..Len(Grants)}
@@ -241,7 +241,7 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged, race, ou
           evd,    \* Eager pairs, Forgers, Bogus and Rogue used
           nw
 vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw, dst>>
-\* the true key holders (every grant held; removed actor edges end theirs; a
+\* the true key holders (every grant held; removed actor grants end theirs; a
 \* destroyed actor none), for the properties
 KeyAct(a) == (KeyIn(GNow(done), a) \cap Acts) \ dst
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
@@ -262,7 +262,7 @@ Carried(e) == IF ~Travel THEN {} ELSE
   {dp \in ep[e].kw : WDep(dp) /\ (dp[2] = ep[e].act \/ dp[2] \in HClos(ep[e].act))}
 Known(x) == UNION {ep[e].knows \cup Carried(e) : e \in kn[x]} \cup {p[1] : p \in kpl[x]}
 \* the actors x holds a role on, as x sees it: directly, or through a holder
-\* actor, by an edge it knows no removal of
+\* actor, by a grant it knows no removal of
 RmKnown(x, h, a) == \E dp \in Known(x) : dp[1] = h /\ dp[2] = a
 RoleSet(x) == Fix(LAMBDA S : S \cup {a \in Acts : \E g \in S \cap ActHolders(a) : ~RmKnown(x, g, a)},
                   {a \in Acts : x \in Holders(a) /\ ~RmKnown(x, x, a)})
@@ -291,7 +291,7 @@ Cur(x, a) == {e \in Est(x, a) : ~\E f \in Est(x, a) : e \in AncV(x, f)}
 Newer(e, f) == ep[e].n > ep[f].n \/ (ep[e].n = ep[f].n /\ e > f)
 Newest(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
 NewestV(x, a) == Newest(Cur(x, a))
-\* key access over the grants x holds, less actor edges x knows removed
+\* key access over the grants x holds, less actor grants x knows removed
 KH(x, a) == KeyIn(kg[x] \ {<<dp[2], dp[1]>> : dp \in {q \in Known(x) : ActDep(q)}}, a)
 MemD(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
 \* the holders x boxes for a: no destroyed one (NoKeys)

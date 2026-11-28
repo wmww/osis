@@ -97,7 +97,7 @@ instances=(
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/keys-coverage.md (The pin)
   "cover rotation Cover C_dup.cfg pass"          # concurrent removals each pin
-  "tail rotation Tail T_raise2.cfg pass"         # the pin over every small edge history (raises; T_raise, T_raise4 by hand)
+  "tail rotation Tail T_raise2.cfg pass"         # the pin over every small grant history (raises; T_raise, T_raise4 by hand)
   "tail rotation Tail T_fin2.cfg pass"           # ... (finalizes; T_fin by hand)
   "tail rotation Tail T_raise_old.cfg fail"      # negative control: the per-event attribution rule
   "tail rotation Tail T_fin_any.cfg fail"        # negative control: a named write pins without taking M down

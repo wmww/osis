@@ -66,7 +66,7 @@ CurA(s) == {e \in EA(s) : ~\E j \in EA(s) : ~(Foreign(s, j) /\ Rule # "dueonly")
 Raw(s) == UNION {ak[e].rec : e \in CurA(s)}
 Merge(R) == {[k |-> k, cz |-> UNION {q.cz : q \in {p \in R : p.k = k}}] : k \in {q.k : q \in R}}
 Recs(s) == Merge(Raw(s))
-\* a removal (edge cause) stands where it is valid: on its own side
+\* a removal (grant cause) stands where it is valid: on its own side
 Stands(s, c) == c = Rm(s)
 Counts(s, q) == \E c \in q.cz : c \notin hc[s] \/ Stands(s, c)
 RecBlocks(s, k) == Records /\ \E q \in Recs(s) : q.k = k /\ Counts(s, q)

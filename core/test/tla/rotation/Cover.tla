@@ -9,9 +9,9 @@
 (* Only the entry the rotation commit wrote counts (bound by                 *)
 (* the keyset's names hash), and only while that commit's author holds the   *)
 (* role; the same for a departure the rotation commit itself makes.          *)
-(* Covers is the pin: over the tail of the holder's edge (its writes after   *)
+(* Covers is the pin: over the tail of the holder's grant (its writes after   *)
 (* the newest applied one giving read), a write taking it to none that takes *)
-(* here (applies, or would over the edge before it) named applied or made by *)
+(* here (applies, or would over the grant before it) named applied or made by *)
 (* the rotation commit itself, and every write giving read that counts (its  *)
 (* author held write at its point) and applies nothing here named void ("^"  *)
 (* before its id). Names: applied lowerings, and void writes that count and  *)
@@ -50,7 +50,7 @@ Dp == [id |-> "Dp", ts |-> 12, author |-> "O", h |-> "P", val |-> DemoteTo, kind
 Static == {S} \cup (IF Audit THEN {K, D} ELSE {}) \cup (IF Regrant THEN {Rm, Dp} ELSE {})
 StaticIds == {c.id : c \in Static}
 
-VARIABLES cs,      \* edge and rotation commits that exist
+VARIABLES cs,      \* grant and rotation commits that exist
           held,    \* held[n]: commit ids node n holds (L holds everything)
           eps,     \* epochs; eps[i + 1] has id i
           ents,    \* history entries: [e, author, names, bound]
@@ -75,33 +75,33 @@ Sorted(X) == IF X = {} THEN <<>>
              ELSE LET m == CHOOSE c \in X : \A d \in X : c.ts <= d.ts
                   IN <<m>> \o Sorted(X \ {m})
 
-Init0 == [edge |-> [h \in Members |-> ADMIN], low |-> {}, ap |-> {}, pre |-> <<>>]
+Init0 == [grant |-> [h \in Members |-> ADMIN], low |-> {}, ap |-> {}, pre |-> <<>>]
 
 \* an explicit change applies by its author's admin (O always); a self-removal always
-Applies(st, c) == IF c.kind = "self" \/ c.author = "O" THEN TRUE ELSE st.edge[c.author] = ADMIN
-\* a dropped write applies nothing; pre: each walked write's edges just before it
+Applies(st, c) == IF c.kind = "self" \/ c.author = "O" THEN TRUE ELSE st.grant[c.author] = ADMIN
+\* a dropped write applies nothing; pre: each walked write's grants just before it
 Step(H, st, c) ==
   LET ok == ~Dropped(H, c) /\ Applies(st, c)
-      new == IF ok THEN [st.edge EXCEPT ![c.h] = c.val] ELSE st.edge
-  IN [edge |-> new,
-      low |-> st.low \cup (IF ok /\ new[c.h] < st.edge[c.h] THEN {c.id} ELSE {}),
+      new == IF ok THEN [st.grant EXCEPT ![c.h] = c.val] ELSE st.grant
+  IN [grant |-> new,
+      low |-> st.low \cup (IF ok /\ new[c.h] < st.grant[c.h] THEN {c.id} ELSE {}),
       ap |-> st.ap \cup (IF ok THEN {c.id} ELSE {}),
-      pre |-> st.pre @@ (c.id :> st.edge)]
+      pre |-> st.pre @@ (c.id :> st.grant)]
 
 RECURSIVE WalkSeq(_, _, _)
 WalkSeq(H, st, s) == IF s = <<>> THEN st ELSE WalkSeq(H, Step(H, st, Head(s)), Tail(s))
-Edge(H) == {c \in cs : c.kind \in {"chg", "self"} /\ c.id \in H}
-Walk(H) == WalkSeq(H, Init0, Sorted(Edge(H)))
-\* the edges just before c's point
-Before(H, c) == [edge |-> Walk(H).pre[c.id]]
+GrantWrites(H) == {c \in cs : c.kind \in {"chg", "self"} /\ c.id \in H}
+Walk(H) == WalkSeq(H, Init0, Sorted(GrantWrites(H)))
+\* the grants just before c's point
+Before(H, c) == [grant |-> Walk(H).pre[c.id]]
 
 \* ---- the pin (spec/crypto.md §4 Covers) --------------------------------------
-\* the held writes on h's edge, dropped ones included (they apply nothing), in ts order
+\* the held writes on h's grant, dropped ones included (they apply nothing), in ts order
 Writes(H, h) == Sorted({c \in cs : c.kind \in {"chg", "self"} /\ c.id \in H /\ c.h = h})
 Ap(H, c) == c.id \in Walk(H).ap
 \* applying nothing, its author held write at its point
-Counts(H, c) == ~Ap(H, c) /\ (IF c.author = "O" THEN TRUE ELSE Before(H, c).edge[c.author] >= WRITE)
-\* it takes the holder down: it applies, or would over the edge before it (not dropped)
+Counts(H, c) == ~Ap(H, c) /\ (IF c.author = "O" THEN TRUE ELSE Before(H, c).grant[c.author] >= WRITE)
+\* it takes the holder down: it applies, or would over the grant before it (not dropped)
 Takes(H, c) == Ap(H, c) \/ (~Dropped(H, c) /\ Applies(Before(H, c), c))
 VName(id) == "^" \o id
 OfName(x) == CHOOSE c \in cs : c.id = x \/ VName(c.id) = x
@@ -136,7 +136,7 @@ Unsup(n) == {e \in RotSet(n) : ~\E f \in RotSet(n) : e \in Ep(f).lists}
 Newest(n) == CHOOSE e \in Current(n) : \A f \in Current(n) :
                Ep(e).num > Ep(f).num \/ (Ep(e).num = Ep(f).num /\ e <= f)
 
-Role(n, p) == IF p = "O" THEN ADMIN ELSE Walk(held[n]).edge[p]
+Role(n, p) == IF p = "O" THEN ADMIN ELSE Walk(held[n]).grant[p]
 Holds(n, p) == Role(n, p) >= READ
 \* whether a rotator's word counts (Covers): Holds, or with KeylessHolds L anyway
 AuthHolds(n, p) == Holds(n, p) \/ (KeylessHolds /\ p = "L")
@@ -290,7 +290,7 @@ Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n) \/ Reseal(
 Spec == Init /\ [][Next]_vars
 
 \* ---- properties -------------------------------------------------------------
-TrulyDeparted == {h \in Members : Walk(AllIds).edge[h] = NONE}
+TrulyDeparted == {h \in Members : Walk(AllIds).grant[h] = NONE}
 \* content a writer wrote knowing a departure is never readable by the departed holder; what
 \* hostile L holds it can hand any party out of band (its forgeries only automate that), so
 \* another departed party reading an epoch L holds is no leak the rule judges; nor is M reading
@@ -299,7 +299,7 @@ TrulyDeparted == {h \in Members : Walk(AllIds).edge[h] = NONE}
 NoLeak == \A w \in wrote \cup WritesNow : \A m \in w[2] \cap TrulyDeparted :
             w[1] \notin Sec(m) \/ (m # "L" /\ w[1] \in Sec("L")) \/ (m = "M" /\ ~w[3])
 \* Q's concurrent removal covers L's departure wherever S is held too (Dup: S2 applies nothing
-\* there but would over the edge before it; else every node knowing both rotates again), where
+\* there but would over the grant before it; else every node knowing both rotates again), where
 \* its names are met (a covering entry's are)
 DupCovers == \A n \in Honest : \A e \in EpIds :
                (Ep(e).commit = "S2" /\ {"S", "S2"} \subseteq held[n] /\ e \in Sec(n) /\ Holds(n, "Q")

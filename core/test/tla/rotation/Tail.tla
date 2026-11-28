@@ -1,7 +1,7 @@
 -------------------------------- MODULE Tail --------------------------------
 (* The pin (spec/crypto.md §4 Covers; notes/keys-coverage.md The pin), checked over *)
-(* every small history of one holder M's edge into an actor, read role.     *)
-(* A world: M's start (its grant before any write, maybe timed) and N edge  *)
+(* every small history of one holder M's grant on an actor, read role.     *)
+(* A world: M's start (its grant before any write, maybe timed) and N grant  *)
 (* writes in key order, each a set (a value, maybe timed: past an `until`)  *)
 (* or a finalize of the write whose entry it resets (`ends`, 0 the start:   *)
 (* it applies only while that write is in force and timed, and is resolved  *)
@@ -23,7 +23,7 @@
 (* epoch covers what X knows (no livelock). Dup: an epoch whose rotation is *)
 (* its own removal of M covers wherever more removals of M are held (one    *)
 (* merge for concurrent removals). Controls: AnchorAny (a named write pins  *)
-(* without taking M down: applying, or applying over the edge before it),  *)
+(* without taking M down: applying, or applying over the grant before it),  *)
 (* NoVoid (void writes need no name),                                       *)
 (* NoMark (the mark pins nothing), FromAnchor (the tail starts after the     *)
 (* anchor, not after the newest write giving the role), MetHeld (a void name *)
@@ -60,37 +60,37 @@ Valid(V, i) == ws[i].inv = 0 \/ ws[i].inv \notin V \/ meta[ws[i].inv] \in V
 Applies(V, st, i) == i \in Held(V) /\ Valid(V, i)
                      /\ (ws[i].k = "fin" => st.src = ws[i].ends /\ st.timed /\ st.val > 0)
 After(st, V, i) == IF Applies(V, st, i) THEN [val |-> ws[i].val, timed |-> ws[i].timed, src |-> i] ELSE st
-RECURSIVE EdgeTo(_, _)
-\* the edge just after write i (0: the start)
-EdgeTo(V, i) == IF i = 0 THEN [val |-> start.val, timed |-> start.timed, src |-> 0] ELSE After(EdgeTo(V, i - 1), V, i)
-Applied(V, i) == Applies(V, EdgeTo(V, i - 1), i)
-Role(V) == EdgeTo(V, N).val
+RECURSIVE GrantTo(_, _)
+\* the grant just after write i (0: the start)
+GrantTo(V, i) == IF i = 0 THEN [val |-> start.val, timed |-> start.timed, src |-> 0] ELSE After(GrantTo(V, i - 1), V, i)
+Applied(V, i) == Applies(V, GrantTo(V, i - 1), i)
+Role(V) == GrantTo(V, N).val
 \* applying nothing, it counts unless a reader's demotion voided it there
 Counts(V, i) == i \in Held(V) /\ ~Applied(V, i) /\ ~(ws[i].rd /\ ~Valid(V, i))
 Departed(V) == Role(V) < R
-\* the edge showed M a reader (its start, or a write that applies or counts)
+\* the grant showed M a reader (its start, or a write that applies or counts)
 Had(V) == start.val >= R \/ \E i \in Held(V) : ws[i].val >= R /\ (Applied(V, i) \/ Counts(V, i))
 
 \* ---- names --------------------------------------------------------------
 Newest(S) == IF S = {} THEN 0 ELSE CHOOSE i \in S : \A j \in S : j <= i
-\* it takes M there: it applies, or would over the edge the newest applied write before it
+\* it takes M there: it applies, or would over the grant the newest applied write before it
 \* giving more set (else the start)
 Over(Zv, i) == LET ps == {j \in Held(Zv) : j < i /\ Applied(Zv, j) /\ ws[j].val > ws[i].val}
-               IN IF ps = {} THEN EdgeTo(Zv, 0) ELSE EdgeTo(Zv, Newest(ps))
+               IN IF ps = {} THEN GrantTo(Zv, 0) ELSE GrantTo(Zv, Newest(ps))
 Takes(Zv, i) == Applied(Zv, i) \/ Applies(Zv, Over(Zv, i), i)
-\* it stands there: it applies, or would over the start or the edge some applied write before it
-\* set (only the edge it meets differs: a finalize of a grant renewed since, a second removal)
-Stands(V, i) == Applied(V, i) \/ Applies(V, EdgeTo(V, 0), i)
-                \/ \E j \in Held(V) : j < i /\ Applied(V, j) /\ Applies(V, EdgeTo(V, j), i)
+\* it stands there: it applies, or would over the start or the grant some applied write before it
+\* set (only the grant it meets differs: a finalize of a grant renewed since, a second removal)
+Stands(V, i) == Applied(V, i) \/ Applies(V, GrantTo(V, 0), i)
+                \/ \E j \in Held(V) : j < i /\ Applied(V, j) /\ Applies(V, GrantTo(V, j), i)
 \* how a named applied write (and the mark's) is met: "stands" (the rule), "takes", "commit"
 \* (held, however judged)
 MetOk(V, i) == CASE MetBy = "stands" -> Stands(V, i) [] MetBy = "takes" -> Takes(V, i) [] OTHER -> TRUE
-Lowered(X) == {i \in Held(X) : Applied(X, i) /\ ws[i].val < EdgeTo(X, i - 1).val}
+Lowered(X) == {i \in Held(X) : Applied(X, i) /\ ws[i].val < GrantTo(X, i - 1).val}
 \* a rotation commit cannot name itself
 LoweredOf(X, m) == Lowered(X) \ {m}
 Void(X) == {i \in Held(X) : Counts(X, i) /\ ws[i].val > 0}
-\* the old rule's void names: raises only (above the edge just before)
-OldVoid(X) == {i \in Void(X) : ws[i].val > EdgeTo(X, i - 1).val}
+\* the old rule's void names: raises only (above the grant just before)
+OldVoid(X) == {i \in Void(X) : ws[i].val > GrantTo(X, i - 1).val}
 VoidOf(X) == IF Rule = "old" THEN OldVoid(X) ELSE Void(X)
 \* the rotation commit's own write: X made it, so it applied at X, lowering M below the role
 Marks(X) == {0} \cup {i \in Held(X) : Applied(X, i) /\ ws[i].val < R}
@@ -148,7 +148,7 @@ Removals == {i \in W : ws[i].val < R /\ ws[i].inv = 0}
 Dup == \A X \in SUBSET z : \A m \in Marks(X) \ {0} :
          (z \ X \subseteq Removals /\ Departed(X) /\ Had(X)) => Covers(z, X, m)
 \* a view holding X's where neither judges a held write void by its author meets its names (an
-\* edge state X lacked, a renewal or another removal, does not hold the epoch back)
+\* grant state X lacked, a renewal or another removal, does not hold the epoch back)
 Live == \A X \in Views : \A m \in Marks(X) : \A V \in Views :
           (X \subseteq V /\ \A i \in Held(V) : Valid(V, i) /\ (i \in X => Valid(X, i))) => Met(V, X, m)
 =============================================================================

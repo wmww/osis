@@ -7,11 +7,11 @@
 (* a removal from M (made knowing it: no box to the removed holder) or     *)
 (* misses it (boxes it), and boxes N, P at their old keyset (every member) *)
 (* or at their new one (covering every removal from them). A fork misses   *)
-(* each departure edge it so leaves open: what the build's Blocked finds   *)
+(* each departure it so leaves open: what the build's Blocked finds        *)
 (* (directly, or by the box clause through N, P). Rule decides when the    *)
 (* joint box naming both forks is blocked:                                 *)
 (*   "any":   some fork misses some departure;                             *)
-(*   "edge":  one departure edge every fork misses;                        *)
+(*   "departure": one departure every fork misses;                         *)
 (*   "party": one departed party (the removed holder) every fork misses;   *)
 (*   "every": every fork misses some departure (the build).                *)
 EXTENDS FiniteSets
@@ -45,14 +45,14 @@ Opens(d, f) == d \in Boxes(f) \/ \E h \in Acts \cap Boxes(f) : d \in Members(f, 
 Legit == ({"x"} \ rmM) \cup UNION {mem[h] \ rmA[h] : h \in Acts \ rmM}
 Departed == Devs \ Legit
 
-\* departure edges fork f misses: <<party, actor it left>>
+\* departures fork f misses: <<party, actor it left>>
 Miss(f) == {<<h, "M">> : h \in rmM \cap Boxes(f)}
            \cup UNION {{<<d, h>> : d \in rmA[h] \cap Members(f, h)} : h \in Acts \cap Boxes(f)}
 Party(f) == {e[1] : e \in Miss(f)}
 
 Blocked ==
   CASE Rule = "any"   -> \E f \in Forks : Miss(f) # {}
-    [] Rule = "edge"  -> \E e \in Miss(1) : e \in Miss(2)
+    [] Rule = "departure" -> \E e \in Miss(1) : e \in Miss(2)
     [] Rule = "party" -> \E p \in Party(1) : p \in Party(2)
     [] Rule = "every" -> \A f \in Forks : Miss(f) # {}
 
