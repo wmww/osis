@@ -1,7 +1,7 @@
 -------------------------------- MODULE Entry --------------------------------
 (* How a holder that cannot open X's newest rotation by its wrap gets X's  *)
 (* current secrets (notes/stubs.md, Rejected): entry boxes in X's steps*)
-(* or commits sealed to it as notices, nothing kept with the holder. One X, *)
+(* or claims in the commits boxing it, nothing kept with the holder. One X,*)
 (* one admin (it rotates, removes, issues steps and registers them),       *)
 (* holders H: readers                                                     *)
 (* and sync-only holders. Read and sync rotate together: epoch k gives the  *)
@@ -38,21 +38,21 @@
 (*   SyncBox  "every": every step boxes every current sync-only holder      *)
 (*            (claim-keyed, as the public's box where it holds sync only);*)
 (*            "next": only a step bearing a new sync key does (Q2(a) as    *)
-(*            written); under "notice", "next" seals a rotation to no      *)
+(*            written); under "claim", "next" seals a rotation to no      *)
 (*            sync-only holder it boxed before (control).                   *)
 (*   SigEntry "stand": a signal's entry is in every step while the signal  *)
 (*            stands; "once": in one step only (control).                  *)
 (*   Judge    TRUE: entries and boxes only for holders the admin judges    *)
-(*            current; FALSE: for any seed holder, and "notice" sealing   *)
+(*            current; FALSE: for any seed holder, and "claim" sealing   *)
 (*            to a removed holder (controls).                              *)
 (*   Deliver  "entry": all of the above lives in X's steps;               *)
-(*            "notice": nothing in the steps; each role commit boxing a    *)
+(*            "claim": nothing in the steps; each role commit boxing a    *)
 (*            holder that cannot open its wrap (a grant, a re-seal, a      *)
 (*            rotation to a sync-only holder or to a reader holding no box *)
 (*            at the epoch it is wrapped under) also seals its blob key to *)
-(*            that holder, as a notice does, under X's sync ID; a reader   *)
-(*            opening S toward the holder by its role (ByRole, judged on   *)
-(*            X's roster) serves it; "copies": the deleted design, those   *)
+(*            that holder (its claim), under X's sync ID; a reader         *)
+(*            opening S toward the holder by its role (judged on X's       *)
+(*            roster) serves it; "copies": the deleted design, those       *)
 (*            boxes as copies under the holder (control).                  *)
 (* Properties: Live (no current holder that has entered stops for good: it  *)
 (* holds the current epoch and, sync-only, its store stands at the head);  *)
@@ -85,7 +85,7 @@ VARIABLES e,       \* the current epoch
           sigOnce, \* SigEntry "once": signals already listed
           rsp,     \* Reseal "next": re-seals waiting for the next step
           sealed,  \* <<h, k>>: a box of epoch k sealed to h ("copies": under h's
-                   \* sync ID; "notice": under X's)
+                   \* sync ID; "claim": under X's)
           cnt      \* [idle, lapse]
 vars == <<e, rb, bx, steps, drop, granted, known, gone, remEp, sec, kst, head,
           sig, req, sigOnce, rsp, sealed, cnt>>
@@ -99,7 +99,7 @@ Max(S) == CHOOSE x \in S : \A y \in S : x >= y
 
 \* static entries the admin lists in a new step
 StEnt ==
-  {h \in H : /\ Deliver # "notice"
+  {h \in H : /\ Deliver # "claim"
              /\ \/ req[h]
                 \/ (sig[h] /\ h \in known /\ (SigEntry = "once" => h \notin sigOnce))
              /\ Judge => h \in AdmCur}
@@ -149,7 +149,7 @@ RotateR(R) ==
   /\ bx' = [bx EXCEPT ![e + 1] = known \ (gone \cup R)]
   /\ remEp' = [h \in H |-> IF h \in R THEN e + 1 ELSE remEp[h]]
   /\ sealed' = CASE Deliver = "copies" -> sealed \cup {<<s, e + 1>> : s \in SyncOnly \cap (known \ (gone \cup R))}
-               [] Deliver = "notice" -> sealed \cup {<<h, e + 1>> : h \in (IF Judge THEN known \ (gone \cup R) ELSE known)
+               [] Deliver = "claim" -> sealed \cup {<<h, e + 1>> : h \in (IF Judge THEN known \ (gone \cup R) ELSE known)
                                                                 \cap ((IF SyncBox = "every" THEN SyncOnly ELSE {}) \cup (H \ bx[e]))}
                [] OTHER -> sealed
   /\ steps' = Append(steps, [NewStep(e + 1, TRUE) EXCEPT
@@ -193,7 +193,7 @@ Grant(h) ==
   /\ granted' = granted \cup {h}
   /\ bx' = [bx EXCEPT ![e] = @ \cup {h}]
   /\ sig' = [sig EXCEPT ![h] = h \in Sig]
-  /\ sealed' = IF Deliver = "notice" THEN sealed \cup {<<h, e>>} ELSE sealed
+  /\ sealed' = IF Deliver = "claim" THEN sealed \cup {<<h, e>>} ELSE sealed
   /\ UNCHANGED <<e, rb, steps, drop, known, gone, remEp, sec, kst, head, req, sigOnce, rsp,
                  cnt>>
 
@@ -246,7 +246,7 @@ Behind(h) ==
 \* stranded: entered, and no credential or Behind moves it
 Stranded(h) == h \in Readers /\ sec[h] # {} /\ ~Cred(h, Top) /\ BehindTo(h) <= kst[h]
 Request(h) ==
-  /\ Reseal = "request" /\ Deliver # "notice" /\ Stranded(h) /\ ~req[h]
+  /\ Reseal = "request" /\ Deliver # "claim" /\ Stranded(h) /\ ~req[h]
   /\ req' = [req EXCEPT ![h] = TRUE]
   /\ UNCHANGED <<e, rb, bx, steps, drop, granted, known, gone, remEp, sec, kst, head, sig,
                  sigOnce, rsp, sealed, cnt>>
@@ -280,21 +280,21 @@ Entered(h) == sec[h] # {}
 Stopped(s) == head[s] >= 1 /\ Ep(head[s]) \notin sec[s]
 
 \* take the boxes sealed to h: "copies" from h's own sync ID, any time;
-\* "notice" by a reader opening S toward h by its role (it judges h current
+\* "claim" by a reader opening S toward h by its role (it judges h current
 \* on X's roster; h knows X: it entered, or holds the signal), which also
 \* registers its path at a sync-only store
 Mine(h) == {c[2] : c \in {d \in sealed : d[1] = h}}
 NewSec(h) == IF h \in Readers THEN Clo(sec[h] \cup Mine(h), h) ELSE sec[h] \cup Mine(h)
 Take(h) ==
   /\ Deliver # "entry"
-  /\ Deliver = "notice" => /\ (h \in AdmCur \/ (~Judge /\ h \in granted))
+  /\ Deliver = "claim" => /\ (h \in AdmCur \/ (~Judge /\ h \in granted))
                           /\ (Entered(h) \/ sig[h])
   /\ \/ NewSec(h) # sec[h]
-     \/ (Deliver = "notice" /\ h \in Readers /\ kst[h] # Top)
-     \/ (Deliver = "notice" /\ h \in SyncOnly /\ head[h] # Top)
+     \/ (Deliver = "claim" /\ h \in Readers /\ kst[h] # Top)
+     \/ (Deliver = "claim" /\ h \in SyncOnly /\ head[h] # Top)
   /\ sec' = [sec EXCEPT ![h] = NewSec(h)]
-  /\ kst' = IF Deliver = "notice" /\ h \in Readers THEN [kst EXCEPT ![h] = Top] ELSE kst
-  /\ head' = IF Deliver = "notice" /\ h \in SyncOnly THEN [head EXCEPT ![h] = Top] ELSE head
+  /\ kst' = IF Deliver = "claim" /\ h \in Readers THEN [kst EXCEPT ![h] = Top] ELSE kst
+  /\ head' = IF Deliver = "claim" /\ h \in SyncOnly THEN [head EXCEPT ![h] = Top] ELSE head
   /\ UNCHANGED <<e, rb, bx, steps, drop, granted, known, gone, remEp, sig, req,
                  sigOnce, rsp, sealed, cnt>>
 

@@ -378,7 +378,7 @@ Not modelled: forks of M's keysets (a foreign keyset makes nothing due; each sid
 A holder that cannot open X's newest rotation by its wrap (a signalled grantee, a reader left out of a rotation or past a dropped claim set, a sync-only holder at each new sync secret) gets X's current secrets, nothing kept with the holder. One thing X, one admin (rotates, removes, issues and registers steps), a granter that is not the admin, holders: readers and sync-only holders. Read and sync rotate together. A step carries its claim set: readers listed by claim key, and (the `entry` design) claim-keyed boxes (found only by a holder holding that step with its claim set) and held credentials (a credential held as a value, found at the head knowing no step: Behind naming none). Readers walk as spec/sync-ids.md §6 says (open by a credential of the head, Behind one sync key past the newest step they hold a credential of); a superseded step's claim set may be dropped. Sync-only holders keep S unread: a reader registers the steps past the store's head (to one it judges departed, only the first past its keys); the store stops at a head whose sync key it lacks. `Hidden` holders are granted beside the admin's knowledge (left out of rotations until it learns them); `Late` ones are granted later, `Sig` ones signalled (`Expire` unfair).
 
 `Deliver`:
-- `notice` (the design that passes): steps carry no per-holder box. A role commit boxing a holder that cannot open its wrap (a grant; a re-seal; a rotation, to each sync-only holder it boxes and each holder holding no box at the epoch it is wrapped under) also seals its blob key to that holder, as a notice does; it is an entry under X's sync ID like any other. A reader opening S toward the holder by its role (J judged on X's roster) serves it; the holder opens those commits by its KEM key and the rotations after them by their wraps. A signal carries no credential.
+- `claim` (the design that passes): steps carry no per-holder box. A role commit boxing a holder that cannot open its wrap (a grant; a re-seal; a rotation, to each sync-only holder it boxes and each holder holding no box at the epoch it is wrapped under) also seals its blob key to that holder (its claim); it is an entry under X's sync ID like any other. A reader opening S toward the holder by its role (J judged on X's roster) serves it; the holder opens those commits by its KEM key and the rotations after them by their wraps. A signal carries no credential.
 - `entry` (Q1(a)/Q2(a)): boxes in the steps. `Reseal`: `request` (a stranded reader makes a held credential, sends its public half in its Stranded message, and the admin lists it with a box in every step until its lifetime ends, `Lapse`; the reader asks again while stranded) or `next` (Q2(a) as written: a claim-keyed box in the next step). `SyncBox`: `every` (every step boxes every current sync-only holder) or `next` (only a step bearing a new sync key). `SigEntry`: `stand` (a signal's held credential in every step while it stands) or `once`.
 - `copies`: the deleted design (boxes kept under the holder): a control.
 
@@ -386,12 +386,12 @@ Properties: `Live` (a current holder that entered holds the current epoch for go
 
 | cfg | setting | result |
 |---|---|---|
-| `NT_left` | `notice`; readers r, l (l hidden), claim sets dropped | pass (434 states) |
-| `NT_sync` | `notice`; sync-only s, t (t hidden), claim sets dropped | pass |
-| `NT_sync_next` | `notice`, a rotation not sealed to the sync-only holders it boxes | **fails** `Live`: s's store stops at e2 for good |
-| `NT_sig`, `NT_sig_sync` | `notice`; a signalled reader, a signalled sync-only holder | pass |
-| `NT_rem` | `notice`; signalled reader x removed | pass |
-| `NT_rem_nojudge` | `notice`, a rotation sealing to a removed holder | **fails** `NoGain` |
+| `NT_left` | `claim`; readers r, l (l hidden), claim sets dropped | pass (434 states) |
+| `NT_sync` | `claim`; sync-only s, t (t hidden), claim sets dropped | pass |
+| `NT_sync_next` | `claim`, a rotation not sealed to the sync-only holders it boxes | **fails** `Live`: s's store stops at e2 for good |
+| `NT_sig`, `NT_sig_sync` | `claim`; a signalled reader, a signalled sync-only holder | pass |
+| `NT_rem` | `claim`; signalled reader x removed | pass |
+| `NT_rem_nojudge` | `claim`, a rotation sealing to a removed holder | **fails** `NoGain` |
 | `EN_left` | `entry`, `request` | pass |
 | `EN_left_next` | `entry`, `next` | **fails** `Live`: l, left out of e2, knows s2 (Behind from s1) and holds no credential of it; its box is in s3, which no credential it holds reaches |
 | `EN_sync` | `entry`, sync-only boxed in every step | pass |
