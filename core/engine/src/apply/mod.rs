@@ -585,7 +585,20 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> bool {
     if !b.header.is_resolved() {
         return false;
     }
-    b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS)
+    parked(Origin::Remote, b.header.ts, tx.now())
+}
+
+/// Whether a commit at `ts` from `origin` is parked at wall time `now` (spec/crdt.md §2.2): one
+/// received (a sibling node's too) more than `MAX_DRIFT` ahead of it, until `parked_until`. One
+/// this node makes never is: it is as far ahead as its HLC, which a wall clock set back must not
+/// turn against it. A pending commit, or one relayed, is one received.
+pub(crate) fn parked(origin: Origin, ts: osis_base::Ts, now: Time) -> bool {
+    origin == Origin::Remote && ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS)
+}
+
+/// The wall time a commit parked at `ts` joins at (`parked`).
+pub(crate) fn parked_until(ts: osis_base::Ts) -> u64 {
+    ts.wall_ms().0.saturating_sub(MAX_DRIFT_MS)
 }
 
 /// Resolves the header lists of `blob` from held blobs: `false` when they wait for a blob, their
@@ -757,9 +770,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if let Some(r) = unjudgeable {
         return Ok(pend_unjudgeable(tx, id, &unjudged, r));
     }
-    // the bound is for received commits, a sibling node's too (spec/crdt.md §2.2): this node's
-    // own are as far ahead as its HLC, which a wall clock set back must not turn against them
-    if origin != Origin::Local && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+    if parked(origin, h.ts, tx.now()) {
         note_unjudged(tx, id, &unjudged);
         return Ok(Exam::Pending(Reason::Drift));
     }

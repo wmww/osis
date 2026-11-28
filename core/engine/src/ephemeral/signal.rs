@@ -11,7 +11,6 @@ use crate::error::{Error, Result};
 use super::Written;
 use crate::engine::listing::{CommitRow, PartBody, PartRow};
 use crate::events::CommitChange;
-use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, Unpaged, Writer};
@@ -124,7 +123,7 @@ impl Engine {
         let at = h.ts.wall_ms().0;
         let ended = |t: u64| osis_commit::relay_end(t) <= now;
         let r = &self.eph.relays;
-        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.signer).is_some_and(|f| at <= *f) || ended(at) || at > now.saturating_add(MAX_DRIFT_MS) {
+        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.signer).is_some_and(|f| at <= *f) || ended(at) || crate::apply::parked(crate::events::Origin::Remote, h.ts, osis_base::Time(now)) {
             return Ok(false);
         }
         // its author's record must be held here (a relay never waits)

@@ -42,7 +42,7 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         // with the things its parts' keys wait on (`keyed_of`), below
         Reason::Miskeyed(_) => Vec::new(),
         Reason::Drift => match h {
-            Some(h) => vec![Wake::At(h.ts.wall_ms().0.saturating_sub(osis_base::format::MAX_DRIFT_MS))],
+            Some(h) => vec![Wake::At(super::parked_until(h.ts))],
             None => vec![Wake::Moved],
         },
         // keyed by the blobs its walks lack (`reach::Walks`)
