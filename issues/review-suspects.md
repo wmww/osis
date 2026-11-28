@@ -1,5 +1,5 @@
 # Small open questions from the review since the sync rewrite
-> Summary: Design questions left by the review since the sync rewrite, each with options: the public's role kept on a stale certificate; plus a revoked store never reopened, for the opening design; plus unconfirmed suspicions from the review of the engine and sync fixes (may_log's early return, cutoffs reading each other, own_on cost, two T/ owners, section trial cost).
+> Summary: Design questions left by the review since the sync rewrite, each with options: the public's role kept on a stale certificate; plus unconfirmed suspicions from the review of the engine and sync fixes (may_log's early return, cutoffs reading each other, own_on cost, two T/ owners, section trial cost, `records_moved`, sides on release).
 > Priority: normal
 > Tags: engine, keys, security
 
@@ -12,9 +12,6 @@ Options:
 3. Keep as is and correct the comment.
 
 The public's role now has this one source, its grant (a head listing it is gone, spec/sync-set.md §2 Own things).
-
-## A revoked store never reopened (latent, no reproducer)
-After a revocation nothing reopens S at a store whose credentials and `changed_at(S)` did not move, so it is never tested again (spec/sync-opens.md §5 Testing) and keeps S's entries. Rewritten by the opening design (spec/sync-opens.md §4-§6): judge against its open rule once it lands.
 
 ## Unconfirmed suspicions (review of the engine and sync fixes)
 - **`Ground::may_log`'s early return** (core/sync/src/read/live.rs): it answers false when `may_log` over every stored blob is false, which is sound only if `may_log` grows with its blob list. `loses_among` (core/engine/src/sync/bodies.rs) skips a blob that loses to another blob in the list, so an extra stored blob may make a deciding one lose. Check monotonicity or run the early check over `held` alone.

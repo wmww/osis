@@ -1,5 +1,5 @@
 # Callers pick a row's storage class by hand
-> Summary: About 47 engine call sites choose memory vs durable storage themselves (`Tx::set_memory`, `Tx::in_class(..)`), though the commit or aspect a row belongs to already decides it; the same mode also drives clock persistence and end work, and is kept twice (`Core::memory_tx` mirrors the store transaction's mode). Fix: derive each row's class from what it belongs to, then one flag or none.
+> Summary: About 50 engine call sites choose memory vs durable storage themselves (`Tx::set_memory`, `Tx::in_class(..)`), though the commit or aspect a row belongs to already decides it; the same mode also drives clock persistence and end work, and is kept twice (`Core::memory_tx` mirrors the store transaction's mode). Fix: derive each row's class from what it belongs to, then one flag or none.
 > Priority: low
 > Tags: engine, store, ephemeral
 

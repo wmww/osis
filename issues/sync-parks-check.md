@@ -1,5 +1,5 @@
 # The differential's parking check looks at no entry
-> Summary: `World::parks` (`Follow::lost_parks`) checks only entries whose commit the engine knows yet neither holds nor pends; 20 faulted convergence seeds produce none, so the check never fires, and the entries that truly wait for a read secret (never opened, no commit known) are outside it. A stronger predicate meets ~1,600 unexplained unparked entries.
+> Summary: The differential's `World::parks` check (`Node::lost_parks`, over `Follow::lost_parks`) checks only entries whose commit the engine knows yet neither holds nor pends; 20 faulted convergence seeds produce none, so the check never fires, and the entries that truly wait for a read secret (never opened, no commit known) are outside it. A stronger predicate meets ~1,600 unexplained unparked entries.
 > Priority: low
 > Tags: sync, tests
 

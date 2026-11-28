@@ -1,5 +1,5 @@
 # Settings: one private place per account and per node
-> Summary: Settings are ordinary aspects on things only the account's nodes read: one account settings thing and per-node settings syncing among the account's nodes; windows are local things on the node root. Core's per-node settings are built as entries keyed by node thing on A (`caps^.0`, pointer `settings^.0`); the app's per-node settings, the account settings thing, windows and theme are not, and the node data thing below would be a second shape beside core's entries: settle one before building (accounts piece 6).
+> Summary: Settings are ordinary aspects on things only the account's nodes read: one account settings thing and per-node settings syncing among the account's nodes; windows are local things on the node root. Core's per-node settings are built as entries keyed by node thing on A (`caps^.0`, pointer `settings^.0`); the app's per-node settings, the account settings thing, windows and theme are not, and the node data thing below would be a second shape beside core's entries: settle one before building.
 > Priority: normal
 > Tags: api, app, kit, spec, tess-call
 

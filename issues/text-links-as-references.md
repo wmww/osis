@@ -9,6 +9,6 @@
 - To settle:
   - Text CRDT values (`markdown`, `text`): the index is kept per write at O(the write's reach), so an edit must update matches from the edited span and its neighbourhood (a link is at most 27 characters, so a match can only start within 26 characters before the edit), never by rescanning the value.
   - Large strings are chunked (spec/data-model.md §5); a match may span a chunk boundary. A large value's references are read once from its chunks and kept per link (notes/engine-refs.md, Large values); text would need the same.
-  - `osis://link/...` (a share link, spec/wire.md §7) is not a tid and must not match as one.
+  - `osis://link/...` (a share link, spec/wire.md §10) is not a tid and must not match as one.
   - Whether the API can tell a text reference from a weak one (backlinks rows carry source and AK only today).
 - Independent of the reference graph work: it changes only what the index counts.

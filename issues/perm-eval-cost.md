@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: perm, performance
 
-Cost shapes and their count tests: notes/perm-paths.md (Cost shapes, Counts, The switch: cost shapes of the layer).
+Cost shapes and their count tests: notes/perm-paths.md (Cost shapes, Counts, The query layer and the engine).
 
 - A backdated or forgotten grant-class part, or a lowering applying with drops, replays its component from the earliest key touched; a walk by reach (only the parts whose step reads something that changed) is not built (Tess: simplest correct wins; a very large number of role changes being fast is no priority).
 - k void lowerings at the end of a chain of k grants cost k² setters read.

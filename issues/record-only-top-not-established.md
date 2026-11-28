@@ -1,5 +1,5 @@
 # A record-only top's read epochs never establish at the order harness's node
-> Summary: In `order::a_removal_ordered_before_a_forgery_is_evidence_on_two_record_linked_things_spec_commits_4` the node under test holds a top thing's record, its three valid role commits (`keys.0`, `roles.0`, `secrets.0`), two read secrets and a node-root strong to it, yet records no rotation for either read epoch, so the thing counts as dependent and outside its node closure, where `held::Walk` counts it in. Which is right needs spec/crypto.md §4 Established read against those commits.
+> Summary: In `order::a_removal_ordered_before_a_forgery_is_evidence_on_two_record_linked_things_spec_commits_4` the node under test holds a top thing's record, its three valid role commits (`keys.0`, `roles.0`, `secrets.0`), two read secrets and a node-root strong to it, yet records no rotation for either read epoch, so the thing counts as dependent and outside its node closure, where `held::Walk` counts it in. Which is right needs spec/crypto.md §4 Established and current read against those commits.
 > Priority: low
 > Tags: engine, keys, tests
 

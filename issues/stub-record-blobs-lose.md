@@ -1,5 +1,5 @@
-# A stub entering by entry judges every record blob unneeded
-> Summary: Suspected, not reproduced: a node holding S as a stub with only unjudged entry secrets has no read thing, so it drops every record blob it opens, and records kept loose for role entries not yet arrived go with it.
+# A stub whose read secrets are unjudged judges every record blob unneeded
+> Summary: Suspected, not reproduced: a node holding S as a stub whose read secrets of S's thing are still unjudged (its grant pends) has no read thing (`ThingSync::Read` needs a read secret held), so it drops every record blob it opens, and records kept loose for role entries not yet arrived go with it.
 > Priority: low
 > Tags: sync, engine
 

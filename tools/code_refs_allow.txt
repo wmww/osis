@@ -75,8 +75,6 @@ HIGH  placeholder: an example generated case constant
 stream_read  planned: notes/client-port.md (streams over the port, not built)
 Osis::open_link  planned: issues/api-deferred.md (bearer read)
 Tx::header  planned: issues/long-aspect-cost.md
-Config::relays  planned: issues/p2p-own.md
-Engine::wants  planned: issues/sync-unbuilt.md
 Try  rejected: notes/api.md (a timeout in the API)
 Value::Large  rejected: notes/api.md
 Missing::Forgot  rejected: notes/engine-lost-access.md
