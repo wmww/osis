@@ -110,6 +110,10 @@ PLANTS = [
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
     ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\n"),
     (".gitattributes", None, "notes/time-limits.md merge=union\n"),
+    # dead_words through its prefilter: mixed case, a case-sensitive word, a lookahead's `$` at a line's end
+    # (split, so this file names none)
+    ("notes/testing.md", None, "\nThe Key-" "Actor came the Way " "In\nand left.\n"),
+    ("core/base/src/format.rs", None, "\nstruct Edge" "Write;\n"),
 ]
 
 EXPECT = [  # regexes the output must hold
@@ -165,6 +169,9 @@ EXPECT = [  # regexes the output must hold
     r"notes/planted-registry\.md:\d+: <!-- registry --> belongs on the line under a section's heading",
     r"spec_map: uncited test: \S*planted_uncited",
     r"spec_map: stray anchor: `\S*planted_stray`",
+    r'notes/testing\.md:\d+: uses "key ' 'actor"',
+    r'notes/testing\.md:\d+: uses "way in"',
+    r'core/base/src/format\.rs:\d+: uses "Edge' 'Write"',
 ]
 ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",

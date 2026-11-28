@@ -40,6 +40,7 @@ git rebase -q origin/main
 # another landing while policy runs: refused at the second fetch
 POLICY_HOOK="cd $d/b && echo w > h && git add h && git commit -qm during && git push -q origin HEAD:main" "$land" 2> "$d/err" && rc=0 || rc=$?
 check "moved during policy: refused" "$rc $(grep -c 'landed while policy ran' "$d/err")" "1 1"
+check "moved apart from the branch's files: names none" "$(grep -c '(none)' "$d/err")" "1"
 git fetch -q origin && git rebase -q origin/main
 POLICY_RC=0 "$land" --delete coord-x 2> /dev/null && rc=0 || rc=$?
 check "clean, current, policy ok: pushed" "$rc $(tip)" "0 $(git rev-parse HEAD)"

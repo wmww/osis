@@ -22,8 +22,8 @@ concept's word (`dead_words`).
 Usage: python3 tools/policy.py [--baseline [REF]]   (every workspace member, the GUI's included;
 vendored crates under libs/kit/patches/ are not ours and are skipped; exit 1 on any violation).
 --baseline prints and fails on only the violations REF (default origin/main) does not have, matched
-by message with line numbers dropped; REF's own policy runs on its tree, its output cached per commit
-under target/policy-baseline/."""
+by message with line numbers dropped; REF's own policy runs on its tree beside this one's checks, its
+output cached per commit under policy-baseline/ in the common git dir."""
 import collections, functools, glob, multiprocessing, os, re, shutil, stat, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -490,8 +490,9 @@ def spec_anchors():
 
 # issues/deprecated-terms.md (Gone): a fully removed concept whose word has no other sense, so no
 # text may use it again. The registry itself, history logs and the kept audit of the removed
-# account system (notes/account-membership-design.md §1) are exempt.
-DEAD_WORDS = {w: re.compile(p) for w, p in {
+# account system (notes/account-membership-design.md §1) are exempt. ASCII patterns (`re.A`), so
+# `prefilter` can lower the text.
+DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "key actor": r"(?i)\bkey[ _-]?actors?\b",
     "account root": r"(?i)\baccount[ _-]?roots?\b",
     "account side": r"(?i)\baccount[ _-]?sides?\b",
@@ -519,7 +520,7 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
 }.items()}
 
 # Words of key parts (notes/stub-rewrite.md), refused in every tracked file.
-STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
+STUB_DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "edge piece": r"(?i)\bedge[ _-]?pieces?\b",
     "key part": r"(?i)\bkey[ _-]parts?\b|\bkey_part\w*",
     "public piece": r"(?i)\bpublic[ _-]pieces?\b",
@@ -557,18 +558,35 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
 STUB_DEAD_WORDS_OK = ("core/test/tla/rotation/Entry.tla",)
 
 
+def prefilter(pat):
+    r"""A pattern matching a text's `lower()` wherever ASCII `pat` matches the text, scanned fast
+    (no `(?i)` or `\b` hides its leading literal from sre): lowering keeps an ASCII match's letters
+    in place, and dropping an assertion only widens. None (scan with `pat`) where the rewrite could
+    narrow: a lookaround but `(?=`, an escape but `\b \s \w \. \( \)`, a class range or escape, a bare `.`."""
+    s = pat.pattern.removeprefix("(?i)")
+    bare = re.sub(r"\[[^]]*\]", "", s)
+    if re.search(r"\(\?[^:=]|\\[^bsw.()]|\[[^]]*(\w-\w|\\)", s) or re.search(r"(?<!\\)\.", bare):
+        return None
+    return re.compile(s.replace(r"\b", "").lower(), re.A | re.M)
+
+
+DEAD = [(w, p, prefilter(p), ()) for w, p in DEAD_WORDS.items()] + \
+    [(w, p, prefilter(p), STUB_DEAD_WORDS_OK) for w, p in STUB_DEAD_WORDS.items()]
+
+
 def dead_words():
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split("\n")
     skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py", "notes/account-membership-design.md")
     for rel in tracked:
         if not rel or rel.startswith(skip) or not os.path.exists(os.path.join(ROOT, rel)):
             continue
-        for n, line in enumerate(read(os.path.join(ROOT, rel)).split("\n"), 1):
-            for word, pat in DEAD_WORDS.items():
+        text = read(os.path.join(ROOT, rel))
+        low = text.lower()
+        # a file's lines are scanned only with the words its whole text may hold (one fast search each)
+        pats = [(w, p) for w, p, pre, ok in DEAD if rel not in ok and (pre is None or pre.search(low))]
+        for n, line in enumerate(text.split("\n") if pats else [], 1):
+            for word, pat in pats:
                 if pat.search(line):
-                    yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
-            for word, pat in STUB_DEAD_WORDS.items():
-                if pat.search(line) and rel not in STUB_DEAD_WORDS_OK:
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
 
 
@@ -580,17 +598,14 @@ def run(check):
     return list(check())
 
 
-# the checks are independent: forked workers share what is read so far, each check's output kept in order
-with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
-    for out in pool.map(run, CHECKS, chunksize=1):
-        errs.extend(out)
-
 LINE_NO = re.compile(r"(\.\w+):\d+\b")  # `path.ext:12` (and `:12:3`): the key drops line numbers
 
 
 def baseline(ref):
-    """REF's violations: its own tools/policy.py run on its tree (read-tree into a scratch index,
-    checkout-index into a temp dir; the git dir and index stand in for a checkout), cached by commit."""
+    """REF's violations, as a function waiting for them: its own tools/policy.py run on its tree
+    (read-tree into a scratch index, checkout-index into a temp dir; the git dir and index stand in
+    for a checkout), cached by commit in the common git dir (a few bytes per commit checked).
+    Started before this tree's checks, so the two runs overlap."""
     def git(*args, env=None):
         return subprocess.run(["git", *args], cwd=env["GIT_WORK_TREE"] if env else ROOT, env=env, check=True,
                               capture_output=True, text=True).stdout.strip()
@@ -599,28 +614,54 @@ def baseline(ref):
         commit = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
     except subprocess.CalledProcessError:
         sys.exit(f"policy: no commit {ref!r}")
-    cache_dir = os.path.join(ROOT, "target", "policy-baseline")
+    # one cache for every worktree: each lands on the same mains
+    cache_dir = os.path.join(ROOT, git("rev-parse", "--git-common-dir"), "policy-baseline")
     cache = os.path.join(cache_dir, commit)
-    if not os.path.exists(cache):
-        os.makedirs(cache_dir, exist_ok=True)
-        tmp = tempfile.mkdtemp(dir=cache_dir)
+
+    def cached():
+        with open(cache) as f:
+            return [l for l in f.read().splitlines() if not l.startswith("policy: ")]
+
+    if os.path.exists(cache):
+        return cached
+    os.makedirs(cache_dir, exist_ok=True)
+    tmp = tempfile.mkdtemp(dir=cache_dir)
+    try:
+        env = dict(os.environ, GIT_DIR=os.path.abspath(os.path.join(ROOT, git("rev-parse", "--git-dir"))),
+                   GIT_WORK_TREE=os.path.join(tmp, "tree"), GIT_INDEX_FILE=os.path.join(tmp, "index"))
+        os.mkdir(env["GIT_WORK_TREE"])
+        git("read-tree", commit, env=env)
+        git("checkout-index", "-a", env=env)
+        proc = subprocess.Popen([sys.executable, "tools/policy.py"], cwd=env["GIT_WORK_TREE"], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+    def wait():
         try:
-            env = dict(os.environ, GIT_DIR=os.path.abspath(os.path.join(ROOT, git("rev-parse", "--git-dir"))),
-                       GIT_WORK_TREE=os.path.join(tmp, "tree"), GIT_INDEX_FILE=os.path.join(tmp, "index"))
-            os.mkdir(env["GIT_WORK_TREE"])
-            git("read-tree", commit, env=env)
-            git("checkout-index", "-a", env=env)
-            out = subprocess.run([sys.executable, "tools/policy.py"], cwd=env["GIT_WORK_TREE"], env=env,
-                                 capture_output=True, text=True)
-            if out.returncode not in (0, 1):
-                sys.exit(f"policy: {ref}'s policy run failed:\n{out.stderr}")
+            out, err = proc.communicate()
+            if proc.returncode not in (0, 1):
+                sys.exit(f"policy: {ref}'s policy run failed:\n{err}")
             with open(cache + f".{os.getpid()}", "w") as f:
-                f.write(out.stdout)
+                f.write(out)
             os.replace(cache + f".{os.getpid()}", cache)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-    with open(cache) as f:
-        return [l for l in f.read().splitlines() if not l.startswith("policy: ")]
+        return cached()
+    return wait
+
+
+ref = None
+if "--baseline" in sys.argv:
+    i = sys.argv.index("--baseline")
+    ref = sys.argv[i + 1] if i + 1 < len(sys.argv) else "origin/main"
+    ref_errs = baseline(ref)
+
+# the checks are independent: forked workers share what is read so far, each check's output kept in order
+with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
+    for out in pool.map(run, CHECKS, chunksize=1):
+        errs.extend(out)
 
 
 def verdict(failed, what):
@@ -633,10 +674,8 @@ def verdict(failed, what):
     sys.exit(1 if failed else 0)
 
 
-if "--baseline" in sys.argv:
-    i = sys.argv.index("--baseline")
-    ref = sys.argv[i + 1] if i + 1 < len(sys.argv) else "origin/main"
-    old = collections.Counter(LINE_NO.sub(r"\1", e) for e in baseline(ref))
+if ref:
+    old = collections.Counter(LINE_NO.sub(r"\1", e) for e in ref_errs())
     new = []
     for e in errs:
         k = LINE_NO.sub(r"\1", e)

@@ -4,6 +4,9 @@
 # lacks), `tools/policy.py --baseline` passes on that tree, and HEAD contains origin/main as just
 # fetched, both before policy and again right after it (refused, it lists the files both sides
 # changed, whose crates' tests the rebase owes).
+# Policy runs whole after any rebase, even one touching none of the branch's files: its costly checks
+# (doc_refs, code_refs, spec_map) are cross-file, so a moved file can break a branch file's citation,
+# and the per-file ones cost about a CPU-s.
 # One command, so no `;` or `echo $?` between the check and the push drops the check's exit (that
 # pushed policy violations to main twice). `--delete BRANCH` then deletes origin's BRANCH (the
 # landed branch's pushed copy), only after the push succeeded: a delete chained after a piped land

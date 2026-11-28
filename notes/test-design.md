@@ -37,7 +37,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
-- `tools/land` after a rebase touching no file of the branch re-runs only the cheap checks (policy's baseline took about 4 minutes at load 100, and a land was refused four times in one session as main moved under it).
 - The shrinker lifts the seed timeout (full-size shrinks hit the default 600 CPU-s and report "hung"; `OSIS_SEED_TIMEOUT_SECS=5400` meanwhile, said in issues/differential-full-size-classes.md).
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
 - held-model's comparison leaves out every aspect when a role commit carries parts outside the model (notes/test-properties.md, held-model comparison): a carve-out to close by modelling those role commits.
