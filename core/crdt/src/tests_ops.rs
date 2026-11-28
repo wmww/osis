@@ -990,7 +990,7 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     assert_eq!(set(&s, false), [k, y].into_iter().collect());
 }
 
-/// spec/crdt.md §5.4 (payload of a case not current): a path op into the payload of a case other
+/// spec/crdt.md §5.4 (payload of a case that is not current): a path op into the payload of a case other
 /// than the current one is refused at the writer; into the current case's it applies.
 #[test]
 fn a_path_into_a_case_not_current_is_refused_spec_crdt_5_4() {
