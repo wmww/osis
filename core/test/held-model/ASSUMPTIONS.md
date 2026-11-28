@@ -16,10 +16,10 @@
 - Unknown encodings exist only as `Body::Parked` (a part as a whole); no links, pages, chunks or list-by-link waits.
 
 **Permissions**
-- Holders and mint admins are actors (nodes, things); effective roles are widest paths over alive edges and record edges. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`; a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `sync.0`) are plain deltas judged by their aspect, a `sync.0` one carrying the steps it records.
+- Holders and mint admins are actors (nodes, things); effective roles are widest paths over alive edges and record grants. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`; a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `sync.0`) are plain deltas judged by their aspect, a `sync.0` one carrying the steps it records.
 - Records as writes and destruction are modeled from notes/expiry-creation-design.md §3 and spec/commits.md §4 Unjudgeable: a part on a thing whose record is not held, or that is destroyed, is not held.
 - A `created.0` part is one `Delta::Created` write; a second minting of a thing is never generated. `Held::records` are raw records from wherever they came.
-- Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
+- Grant as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
 - `retention^.0`: one entry per AK name and the default; no `retain`, `final` or `MAX_RETENTION_ENTRIES`; an entry's `expires` is read by the generator's writers only.
 
 **CRDT** (values are crdt-model's: what it leaves out is left out here too)

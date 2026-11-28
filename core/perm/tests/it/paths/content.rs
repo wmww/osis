@@ -1,5 +1,5 @@
 //! Small worlds of content, addenda, covers and purges (A1 step 3b): the model's `tiny`
-//! worlds hold edge writes alone, so these are drawn here over the model's `World` and judged by
+//! worlds hold grant writes alone, so these are drawn here over the model's `World` and judged by
 //! the model as the oracle. Account A (H's) mints T1, A2 is K's; at 1 H pairs B, X and N5, shares
 //! T1 with A2 at write, and K gives Z write on A2; halfway H removes X. Parties (X one in three)
 //! write A's edges (admin or none,

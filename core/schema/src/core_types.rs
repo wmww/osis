@@ -18,7 +18,7 @@ pub fn is_role_class(ak: &str) -> bool {
 }
 
 /// Whether `ak` is never compaction-snapshotted (spec/commits.md §2): the role timeline walks
-/// every edge write.
+/// every grant write.
 pub fn never_compacted(ak: &str) -> bool {
     ak == "roles.0" || ak == "signers.0"
 }

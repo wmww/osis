@@ -257,7 +257,7 @@ impl CreationRecord {
             MintedWith::Key(k) => Some(k),
         }
     }
-    /// The holder of the record's admin edge from the start: its mint admin (the record edge) or
+    /// The holder of the record's admin grant from the start: its mint admin (the record grant) or
     /// its key (the record's key).
     pub fn holder(&self) -> Holder {
         match self.minted_with {

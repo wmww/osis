@@ -59,7 +59,7 @@ fn expired_creation_destroys_the_thing_spec_commits_6() {
 }
 
 // spec/commits.md §5 (Destruction): authority that passed through a destroyed thing stands as its
-// held edge writes say, its gone creations and role-class parts staying however it was destroyed: a
+// held grant writes say, its gone creations and role-class parts staying however it was destroyed: a
 // write on T along [K], made before K expired, reads on once the node has dropped what K's
 // destruction drops
 #[test]

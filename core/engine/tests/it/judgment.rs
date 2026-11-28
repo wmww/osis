@@ -258,7 +258,7 @@ fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: Time, order: &[To
 }
 
 /// What a node holding `ids` shows of them, as a user could see it: each held part's validity (or
-/// its edge write applied in the walk), each touched thing's roster and each touched aspect's read.
+/// its grant write applied in the walk), each touched thing's roster and each touched aspect's read.
 pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, String)> {
     let hex = |c: &CommitId| osis_base::hex::encode(&c.0);
     let mut held: Vec<(osis_base::Ts, CommitId)> = ids.iter().filter_map(|c| e.header(c).map(|h| (h.ts, *c))).collect();
@@ -271,7 +271,7 @@ pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> 
         for (ai, a) in h.aspects.iter().enumerate() {
             things.insert(a.tid);
             aspects.insert((a.tid, a.ak.clone()));
-            // an edge write has no content verdict: it applies in the walk or not (§5.1)
+            // a grant write has no content verdict: it applies in the walk or not (§5.1)
             let valid = match a.ak.as_str() {
                 "roles.0" if e.edge_write_applied(&a.tid, c) => "applied",
                 "roles.0" => "unapplied",

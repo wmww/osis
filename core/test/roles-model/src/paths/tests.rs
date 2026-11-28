@@ -574,7 +574,7 @@ fn nothing_through_the_removed_edge_is_exempt() {
     assert!(rd.void.is_empty() && !rd.shows(tg) && rd.role(X, A) == Gone && rd.role(H, A) == Admin);
     // exempt, the timed grant stays and H's admin ends at 7
     assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).role(H, A) == Gone);
-    // untrusted, the removal applies with H's record edge and drops the timed grant alike
+    // untrusted, the removal applies with H's record grant and drops the timed grant alike
     assert_eq!(fixed(&w, &[]).roles, rd.roles);
     assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
 }
@@ -710,7 +710,7 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
     let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
     let rd = fixed(&w, &[r]);
     assert!(rd.valid.contains(&listed) && !rd.valid.contains(&unlisted));
-    // the record edge T1 -> D1 lowered by an admin of T1 (explicitly, listing nothing): B's
+    // the record grant T1 -> D1 lowered by an admin of T1 (explicitly, listing nothing): B's
     // write through it before falls, H's grant on D1 by another path stands
     let (mut w, ..) = paired();
     let bc = w.content(B, 3, &[A], D1);
@@ -759,8 +759,8 @@ fn a_self_removal_raises_nothing() {
 }
 
 /// The thief backdates its own leave before the removal: the removal still audits against the
-/// edge as restored (admin), so X's backdated writes before the leave fall unless listed
-/// (spec/permissions.md §5.1, Edge as restored).
+/// grant as restored (admin), so X's backdated writes before the leave fall unless listed
+/// (spec/permissions.md §5.1, Grant as restored).
 #[test]
 fn a_backdated_leave_shields_nothing_from_the_removal() {
     let (mut w, ..) = paired();
@@ -770,7 +770,7 @@ fn a_backdated_leave_shields_nothing_from_the_removal() {
     let leave = w.edge(X, 5, &[], A, X, Gone, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
     // with the leave put in question (finding 14) it is dropped; without, it stands and R still
-    // audits against the edge as restored
+    // audits against the grant as restored
     for in_q in [true, false] {
         let rd = fixed_but(&w, &[r], |x| x.leave_in_question = in_q);
         assert!(rd.applied.contains(&leave) != in_q && rd.lowered.contains(&r));
@@ -779,7 +779,7 @@ fn a_backdated_leave_shields_nothing_from_the_removal() {
 }
 
 /// An `until` passing audits nothing; the next explicit write on that edge audits against the
-/// edge as restored: B, admin until 5, grants N5 at 3; N5 stands past 5; H's removal of B at 7
+/// grant as restored: B, admin until 5, grants N5 at 3; N5 stands past 5; H's removal of B at 7
 /// listing nothing drops it.
 #[test]
 fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
@@ -1844,7 +1844,7 @@ fn a_self_removal_lowers_in_every_component() {
 
 /// spec/permissions.md §7, a link: L, timed with the flag, grants; its `until` passing and the
 /// finalize audit nothing (the grantee's writes stand by their own keys); the next explicit
-/// removal of L audits against the edge as restored and drops the grants made by it it does not
+/// removal of L audits against the grant as restored and drops the grants made by it it does not
 /// list.
 #[test]
 fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
@@ -1884,7 +1884,7 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
 }
 
-/// The edge as restored reads a value's role and flag alike, its `until` disregarded (notes/
+/// The grant as restored reads a value's role and flag alike, its `until` disregarded (notes/
 /// write-path-design.md §1 W3): H gives N5 write with the flag; N5 grants Z read by it and writes
 /// content; H sets N5 write with the flag until 3 at 4 (ended at its own `ts`), listing both; H
 /// removes N5 at 5 listing nothing. Restored, N5's edge gave write with the flag before the
@@ -1943,7 +1943,7 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
     assert!(fixed_but(&w, &[], |r| r.purge_exact = false).purged.contains(&b_as_b));
 }
 
-/// An edge write whose holder is its target is not applied (spec/permissions.md §1), whoever
+/// A grant write whose holder is its target is not applied (spec/permissions.md §1), whoever
 /// writes it: A's admin H granting A admin on A, and A acting as itself on its own edge, set
 /// nothing; H's grant to X beside them applies.
 #[test]
@@ -1959,7 +1959,7 @@ fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
 
 /// One commit states one path (notes/path-form.md, One path): X, granted admin on A, writes A,
 /// T1 (minted by A) and D1 (minted by T1) stating [A]: A is the path's end, the others hang from
-/// it by record edges, and every part rests on (X, A) alone above the descent. H's removal of X
+/// it by record grants, and every part rests on (X, A) alone above the descent. H's removal of X
 /// cuts them alike. A thing the path's end does not reach (A2), and a thing listed before the
 /// end (A stated [A, T1]: named twice), are written by no part of it.
 #[test]
@@ -2164,7 +2164,7 @@ fn a_fallen_cover_takes_nothing_honest() {
     assert!(rd.valid.contains(&xc) && rd.shows(b) && rd.shows(x));
 }
 
-// ---- A commit of several edge writes (spec/commits.md §2; notes/a1-spec/README.md, OPEN 10) ----
+// ---- A commit of several grant writes (spec/commits.md §2; notes/a1-spec/README.md, OPEN 10) ----
 
 /// X's edge granted by B and by N5; X removes B and N5 in one commit, listing nothing. Its parts
 /// are judged in holder order: the removal of B drops B's grant of X, N5's grant still keeping X's
@@ -2193,10 +2193,10 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
     assert_eq!(rd.self_taken, Set::from([rb]));
 }
 
-/// A commit of several edge writes is judged part by part like any, the part on an edge of its
+/// A commit of several grant writes is judged part by part like any, the part on an edge of its
 /// own stated path last (spec/commits.md §2; notes/a1-spec/README.md, OPEN 14). X removes B and
 /// leaves A in one commit: both apply. H, along [A],
-/// takes T1's record edge off D1 (the edge its descent ends with) and grants N5 admin on D1: the
+/// takes T1's record grant off D1 (the edge its descent ends with) and grants N5 admin on D1: the
 /// grant applies by the path as it stood, then the removal, judged as any lowering, applies and
 /// drops nothing of its own commit (no list can name it). Naming one holder twice is bad input.
 /// Control (`-refuse-shapes`: a self-removal or a part on the commit's own path refuses the
@@ -2429,7 +2429,7 @@ fn a_writers_commit_on_a_thing_falls_together_where_its_parts_need_differ() {
 }
 
 /// The nodes' views of story world `m` whose reading under `rules` differs from `Rules::fixed`'s:
-/// what users observe or which edge-class parts apply.
+/// what users observe or which grant-class parts apply.
 fn views_differing(m: &Sim, rules: &Rules) -> u64 {
     let f = Rules::fixed();
     m.honest()
@@ -2504,20 +2504,20 @@ fn a_writer_of_an_admin_holder_grants_up_to_its_own_role() {
 }
 
 /// A thing detached from its folder (notes/a1-spec/README.md Open 21): H mints A (the folder),
-/// A mints T. H grants itself admin on T by [A] (its direct edge (H, T)), then removes A's record
-/// edge on T by its descent []: both apply. A record edge
-/// is an edge like any (the walk starts it at admin and edge writes move it), and a descent rests
-/// on each of its record edges as they stand at the part's key: so H's later content and grant on
+/// A mints T. H grants itself admin on T by [A] (its direct grant (H, T)), then removes A's record
+/// edge on T by its descent []: both apply. A record grant
+/// is an edge like any (the walk starts it at admin and grant writes move it), and a descent rests
+/// on each of its record grants as they stand at the part's key: so H's later content and grant on
 /// T, stated along the descent [] or through [A], apply nowhere, though H holds admin on T by its
-/// own direct edge, which no unmarked path can state (a hop from a mint ancestor is a descent).
-/// Marking the hop H to T as the direct edge, both apply, as today's walk has it.
+/// own direct grant, which no unmarked path can state (a hop from a mint ancestor is a descent).
+/// Marking the hop H to T as the direct grant, both apply, as today's walk has it.
 #[test]
 fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
     const T: Thing = 40;
     let mut w = World::new(&[(H, A), (A, T)]);
     let g = w.push(H, 1, &[A], T, Kind::set(H, Admin));
     let cut = w.push(H, 2, &[], T, Kind::set(A, Gone).listing(w.cut(&[g])));
-    assert_eq!(w.hops(cut), [(H, A), (A, T)], "the removal of A's record edge rests on its descent");
+    assert_eq!(w.hops(cut), [(H, A), (A, T)], "the removal of A's record grant rests on its descent");
     let by_descent = w.content(H, 3, &[], T);
     let through_a = w.content(H, 3, &[A], T);
     let marked = w.push_marked(H, 3, &[], T, Kind::Content, &[0]);
@@ -2537,9 +2537,9 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
 }
 
 /// Why the hop is stated, not read off what is held (notes/a1-spec/README.md Open 21): H, two
-/// record edges above T, makes M admin on T and writes T by the descent []. M then grants H read
+/// record grants above T, makes M admin on T and writes T by the descent []. M then grants H read
 /// on T, stamped before H's write. Were a hop from a mint ancestor read as direct wherever a
-/// direct edge is held (`push_marked` standing for that reading), M's grant would turn H's write
+/// direct grant is held (`push_marked` standing for that reading), M's grant would turn H's write
 /// into one through a read edge: invalid. M, by granting, decides how H's earlier writes are
 /// read. Stated, H's write stays a descent and valid whatever edge M writes.
 #[test]
@@ -2551,7 +2551,7 @@ fn a_hop_read_by_the_direct_edges_held_lets_another_admin_void_a_mint_ancestors_
     let stated = w.content(H, 3, &[], T);
     let as_direct = w.push_marked(H, 3, &[], T, Kind::Content, &[0]);
     let rd = fixed(&w, &[]);
-    assert!(rd.valid.contains(&stated) && !rd.valid.contains(&as_direct), "no direct edge: {rd:?}");
+    assert!(rd.valid.contains(&stated) && !rd.valid.contains(&as_direct), "no direct grant: {rd:?}");
     w.push(M, 2, &[], T, Kind::set(H, Role::Read));
     let rd = fixed(&w, &[]);
     assert!(rd.valid.contains(&stated) && !rd.valid.contains(&as_direct), "M's read grant: {rd:?}");
@@ -2582,9 +2582,9 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
 /// The one-encoding rule (spec/permissions.md §1 Path, Direct mark): a mark only on a
 /// hop otherwise read as a descent of two steps or more. B holds a direct grant on T1 (B is on no
 /// record chain of T1): [] marked applies nowhere, unmarked applies. A, T1's mint admin, holds the
-/// record edge, which is its direct edge: its write by [] marked applies nowhere, unmarked applies.
+/// record grant, which is its direct grant: its write by [] marked applies nowhere, unmarked applies.
 /// A mark past the members (hop 1 of a path of one hop) applies nowhere. H's marked hop, where H
-/// holds a direct edge on T1, applies; where it holds none, nowhere (no edge, not the descent).
+/// holds a direct grant on T1, applies; where it holds none, nowhere (no edge, not the descent).
 /// (A, minted by H, signs by a key H grants.)
 #[test]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
@@ -2658,7 +2658,7 @@ fn a_party_with_both_routes_is_cut_off_by_removing_both() {
 }
 
 /// The thief with the far ancestor's key (spec/permissions.md §1 Path, Direct mark): H
-/// holds T1 by its direct grant only (A's record edge removed), B by its own. After B removes H's
+/// holds T1 by its direct grant only (A's record grant removed), B by its own. After B removes H's
 /// grant, the thief holding H's key backdates a marked write and a marked grant of Z: both fall,
 /// trusting the removal or not; a grant along the cut descent applies nowhere at all.
 #[test]
@@ -2682,7 +2682,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
 
 /// The mark meets the other rules (spec/permissions.md §1 Path, Direct mark; §5.1):
 /// T1 minted with admin A, A with admin H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
-/// detaches T1 (A's record edge removed, listing those grants). Along its marked direct hop H
+/// detaches T1 (A's record grant removed, listing those grants). Along its marked direct hop H
 /// grants X write and writes content; X writes. B removes H listing H's content: H's grant of X
 /// rests on the removed edge, so it falls with X's write unless B's list names it too; the listed
 /// content stays. The grant stated by the cut descent instead applies nowhere.
@@ -2712,7 +2712,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 }
 
 /// `tiny_detached` reaches every case its doc names (counted over its first 300 worlds, every
-/// count above zero): a marked hop applying, one applying nowhere (no direct edge), a mark off a
+/// count above zero): a marked hop applying, one applying nowhere (no direct grant), a mark off a
 /// descent of two steps or more (on no descent, on a one-step descent, past the hops), A's record
 /// edge removed (T1 detached), and an unmarked descent applying nowhere.
 #[test]
@@ -2879,7 +2879,7 @@ fn idle_gate(w: &World, trust: &[Id]) -> Vec<Id> {
 /// Finding 35 (accepted, counted; the smallest `tiny` world counted in `idle N`): H grants N5 admin
 /// at 2; N5, in one commit at 2, sets H's admin to end at 4 and grants B admin; B grants H admin
 /// again at 4; H removes N5 at 6, listing nothing. Held, B's grant gives H admin at 6: H's removal is
-/// judged, its drops take N5's commit (H's edge is its record edge again), so B's grant applies
+/// judged, its drops take N5's commit (H's edge is its record grant again), so B's grant applies
 /// nowhere in the end: H admin, N5 and B none. Without B's grant H's admin ended at 4 and its removal
 /// has no right: N5 and B admins, H none. No dispute either way: H's removal applies; N5's end on H
 /// is a grant (`Until::Plain`). As a lowering judged at its key (`Until::AtKey`) the same: its drops
@@ -2917,7 +2917,7 @@ fn b_ends_h(end: Kind) -> (World, Id, Id, Vec<Vec<Id>>) {
 }
 
 /// Finding 36 (accepted, counted): in `b_ends_h`, held, Z's grant gives H admin at 12: H's removal
-/// drops B's writes, Z's grant among them, and H's edge is its record edge again: B and Z none, H
+/// drops B's writes, Z's grant among them, and H's edge is its record grant again: B and Z none, H
 /// admin. Without it H's admin ended at 8: B and Z admins, H none. Nobody is hostile and no dispute
 /// is shown. As a lowering judged at its key (`Until::AtKey`) B's end drops nothing: the same. With
 /// B removing H at 6 in place of the end date the world reads the same, unshown: the class is a
@@ -3445,7 +3445,7 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     assert!(rd.valid.contains(&on_t1) && rd.valid.contains(&on_a), "{rd:?}");
 }
 
-/// The same for an edge-class part, which a lowering's audit drops: X's one commit grants K write
+/// The same for a grant-class part, which a lowering's audit drops: X's one commit grants K write
 /// on T1 through [A] and B write on A; H removes X from A listing the commit in T1's leaf alone:
 /// the grant on T1 stays, the grant on A drops; listed in both leaves, both stay.
 #[test]
@@ -3490,7 +3490,7 @@ fn a_thing_signs_by_the_key_its_record_holds_or_one_an_admin_grants() {
 }
 
 /// K3: a key's grant is an edge like any. A's admins write it at any role, beside other keys; a
-/// key acts as its thing by the role its grant gives (at write: content, no edge write); an admin
+/// key acts as its thing by the role its grant gives (at write: content, no grant write); an admin
 /// removes a key by the ordinary removal, and what the key signed falls unless listed (K4).
 #[test]
 fn a_keys_grant_is_written_and_removed_like_any_grant() {
@@ -3773,7 +3773,7 @@ fn an_idle_grant_after_its_grantors_removal_moves_no_first_point_back() {
 /// As above for a may-grant grant (C2 by G1): a grant whose path gave may-grant only by a value
 /// ended at its key counts for nothing, the flag on its last hop (B holding write with the flag on A
 /// until 3, granting on A) or the role on a hop before it (B holding write on A until 3, granting
-/// on T1 through [A], whose record edge gives admin).
+/// on T1 through [A], whose record grant gives admin).
 #[test]
 fn an_idle_may_grant_grant_with_no_right_moves_no_first_point_back() {
     for two in [false, true] {

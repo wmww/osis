@@ -19,7 +19,7 @@ pub enum Wake {
     /// A thing entering the node closure (`Reason::Outside`): its content parts may apply
     /// (`atomic::wake_entered`, in the transaction it enters).
     Enters(Tid),
-    /// The role inputs held moving (an edge write, a record, a rotation): a reach or an epoch.
+    /// The role inputs held moving (a grant write, a record, a rotation): a reach or an epoch.
     Moved,
     /// The steps this thing's `sync.0` records moving (`Core::steps_recorded`): a delete key a
     /// part lists for a thing whose record chain holds it may be placed (`Reason::Miskeyed`).

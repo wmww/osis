@@ -585,11 +585,11 @@ indexes! {
     pub void: JSet<CommitId>,
     /// Per held commit, the things on which a delta of it lists a level-1 or level-3 delete key
     /// no step places before it (`sync_ids::steps`, spec/crypto.md §7 Checked keys): its deltas
-    /// on that thing are invalid, its edge writes there read by nothing. Persisted with the
+    /// on that thing are invalid, its grant writes there read by nothing. Persisted with the
     /// commit's parts row; judged again as the steps or records it reads move
     /// (`Core::rekey`).
     pub miskeyed: JSet<(CommitId, Tid)>,
-    /// Role commits whose `miskeyed` things moved: their edge writes are read again
+    /// Role commits whose `miskeyed` things moved: their grant writes are read again
     /// (`validity::resolve_unresolved`). Empty between transactions.
     pub rekeyed: JSet<CommitId>,
     /// Things whose record chain became known: the keys every commit on them lists are judged
@@ -1014,7 +1014,7 @@ pub struct Core {
     /// Test harnesses: each grant by the flow also signals its holder (`Engine::signal_grant`),
     /// as the `osis` library's grant does unless quiet (`Engine::set_signal_grants`).
     pub signal_grants: bool,
-    /// The edge writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
+    /// The grant writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
     pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
     pub(crate) commits_watched: bool,
@@ -1071,7 +1071,7 @@ pub struct Core {
     /// of the engine's history. A copy starts empty, as for `unchecked_states`.
     #[cfg(debug_assertions)]
     pub(crate) unchecked_rows: BTreeSet<(Tid, Ak)>,
-    /// Debug builds: what a load from the commit records read of each role commit's edge writes
+    /// Debug builds: what a load from the commit records read of each role commit's grant writes
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
     pub(crate) rebuilt_perm: BTreeMap<CommitId, crate::apply::validity::PermParts>,
@@ -1405,7 +1405,7 @@ impl Core {
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
-        // the removals whose gathering it may move are due again for addenda; an edge write that
+        // the removals whose gathering it may move are due again for addenda; a grant write that
         // is new or whose status moved is judged again with its commit's other parts: a
         // may-grant grant's boxes rest on how it applies (`validity::Judge::by_path`)
         crate::flows::addenda::note_changed(self, &c);
@@ -1502,14 +1502,14 @@ impl Core {
         self.ix.keysets.get(&k).filter(|v| self.carried_held(v))
     }
 
-    /// Whether this node holds the demotions keyset `v` carries: the edge writes of each commit
+    /// Whether this node holds the demotions keyset `v` carries: the grant writes of each commit
     /// it carries (`HeldKeyset::demotions`).
     fn carried_held(&self, v: &HeldKeyset) -> bool {
         v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some())
     }
 
     /// Whether this node holds left-out cause `c` (spec/crypto.md §4, Left out; Carried): its
-    /// edge writes (a departure's or a grant's), or a `keys.0` part of it (a rotation commit's).
+    /// grant writes (a departure's or a grant's), or a `keys.0` part of it (a rotation commit's).
     pub(crate) fn cause_held(&self, c: &CommitId) -> bool {
         self.ix.held.edge_commit(c).is_some() || self.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == "keys.0" && (m.holds(ai) || m.is_dropped(ai))))
     }

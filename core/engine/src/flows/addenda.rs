@@ -58,7 +58,7 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
 }
 
 /// The walk changed (`osis_perm::Changed`): the removals whose gathering may have moved are due
-/// again (`wake`). A removal not applying reads nothing else (`gather`), so its own edge write's
+/// again (`wake`). A removal not applying reads nothing else (`gather`), so its own grant write's
 /// status moving is its only trigger: no write elsewhere gathers it, however many such removals
 /// are held.
 pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
@@ -76,10 +76,10 @@ pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
 /// The removals a walk change `c` may have moved the gathering of (`gather`) are due again,
 /// gathered anew; the work is per edge and delta `c` names, never per party behind them. A
 /// gathering reads, besides R's own status (`note_changed`), only R's edge histories before R
-/// (whether each write is a cut: the edge as restored before it) and the held deltas stated
+/// (whether each write is a cut: the grant as restored before it) and the held deltas stated
 /// through R's edges (`Paths::through`, `rests`: facts of their own commits). So R, filed under
 /// each edge its writes are on (`file_wake`), is woken by an edge whose history changed at or
-/// before R's `ts`, a record edge of its target coming or going, and a delta new in the walk
+/// before R's `ts`, a record grant of its target coming or going, and a delta new in the walk
 /// stated through its edge, stamped no later than R and received before it (`window`: a
 /// removed party's backdated content judges nothing).
 ///
@@ -97,7 +97,7 @@ fn wake(core: &mut Core, c: &osis_perm::Changed) {
     for (&e, k) in &c.walk.edges {
         on(core, e, k.ts, &mut due, None);
     }
-    // a record edge coming or going moves every edge into its thing as restored
+    // a record grant coming or going moves every edge into its thing as restored
     for t in &c.created {
         osis_base::costs::count("addenda: wake lookups", 1);
         let (lo, hi) = (osis_base::Holder::Thing(Tid::from_bytes([0; osis_base::format::TID_LEN])), osis_base::Holder::Key(osis_base::SignKey([0xff; 32])));

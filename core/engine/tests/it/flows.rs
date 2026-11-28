@@ -731,7 +731,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 Frontier (at R's point): C rewrites Bob's admin edge with a ts
+// spec/permissions.md §5.1 Frontier (at R's point): C rewrites Bob's admin grant with a ts
 // ahead of everyone's clock (within MAX_DRIFT) after granting it; Bob then removes C. His
 // frontier lists both writes on his chain, so the removal stands either way.
 #[test]
@@ -2258,7 +2258,7 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
 // creates O (a chat) with itself as mint admin: its creation commit
 // carries `created.0` alone on O, a dependent of account 0 until its first grant makes it
 // independent. It grants account 1 admin, accounts 2 and 3 write. Its admins are
-// equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
+// equal: account 1 removes account 0's record grant, stored nowhere. Writer 2 rotates
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
 #[test]
@@ -2324,7 +2324,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(lp.peers[3].engine.role_on(&t), Some(Role::Write));
 }
 
-// spec/permissions.md §2: removing a mint admin's record edge, which no entry holds, resets an
+// spec/permissions.md §2: removing a mint admin's record grant, which no entry holds, resets an
 // entry of the removal's own delta: it ends the edge at every node in any arrival order (the
 // commits that made the thing and the second admin before it, or the removal first).
 #[test]
@@ -2350,7 +2350,7 @@ fn record_edge_removal_any_order_spec_perm_2() {
     send_carried(&mut lp, 1, 3, &rev);
     for i in 1..4 {
         let r = lp.peers[i].engine.roster(&o);
-        assert!(!r.contains_key(&ps[0]), "peer {i}: the record edge is gone");
+        assert!(!r.contains_key(&ps[0]), "peer {i}: the record grant is gone");
         assert_eq!(r.get(&ps[1]).map(|e| e.role), Some(Role::Admin), "peer {i}");
     }
 }
@@ -2393,7 +2393,7 @@ fn lower(holder: Tid, e: ct::Grant) -> Demotion {
     Demotion { holder, new: Some(e), retain: None }
 }
 
-/// An admin edge ending well after now at peer `i`.
+/// An admin grant ending well after now at peer `i`.
 fn timed_admin(lp: &LocalPeer, i: usize) -> ct::Grant {
     ct::Grant { until: Some(osis_base::Time(lp.peers[i].engine.now().0 + 1_000_000_000)), ..edge_of(Role::Admin) }
 }
@@ -2425,7 +2425,7 @@ fn the_last_standing_admin_is_kept_spec_perm_1() {
     assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None, "still dependent");
 }
 
-// spec/permissions.md §1 (The last admin: a timed admin edge is no standing admin): an admin
+// spec/permissions.md §1 (The last admin: a timed admin grant is no standing admin): an admin
 // leaving while the other admin's edge has an `until` is refused; with the other's `until`
 // dropped, the same leave goes through.
 #[test]
@@ -2448,14 +2448,14 @@ fn a_timed_admin_is_no_remaining_admin_spec_perm_1() {
 fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    // an edge write in the scope that leaves an admin goes unmarked
+    // a grant write in the scope that leaves an admin goes unmarked
     let g = lp.peers[0].engine.leaving_adminless(|e| e.grant(&t, &ps[1], &edge_of(Role::Write))).unwrap();
     assert!(g.commits.iter().all(|c| !lp.peers[0].engine.header(c).unwrap().adminless), "the mark is on no write that needs none");
     spread(&mut lp);
     assert!(leaves_no_admin(lp.peers[0].engine.demote(&t, &remove(ps[0])), t), "unmarked, refused");
     let done = lp.peers[0].engine.leaving_adminless(|e| e.demote(&t, &remove(ps[0]))).unwrap();
     let c = done.commits[0];
-    assert!(lp.peers[0].engine.header(&c).unwrap().adminless, "the mark is on the edge write");
+    assert!(lp.peers[0].engine.header(&c).unwrap().adminless, "the mark is on the grant write");
     spread(&mut lp);
     for i in 0..2 {
         let e = &lp.peers[i].engine;
@@ -2477,7 +2477,7 @@ fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
 }
 
 // spec/permissions.md §1 (The last admin: a dependent thing left so stays dependent): marked,
-// the last admin edge of a dependent thing goes; the thing stays dependent, its mint admin's
+// the last admin grant of a dependent thing goes; the thing stays dependent, its mint admin's
 // node still reads it by derivation, and nobody writes it.
 #[test]
 fn a_dependent_thing_marked_adminless_stays_dependent_spec_perm_1() {
@@ -2528,7 +2528,7 @@ fn concurrent_leaves_leave_no_admin_spec_perm_1() {
 
 // spec/permissions.md §1 (The last admin), §5.1 (drops): G's admin Y (granted by P) made Z the
 // only standing admin of T, a thing minted with G, by granting Z and then removing G's record
-// edge on T. P removing Y from G audits Y's edge writes, T's included, but P's frontier lists
+// edge on T. P removing Y from G audits Y's grant writes, T's included, but P's frontier lists
 // every write of Y's it holds, so at P they stand: the removal goes through and T keeps Z.
 #[test]
 fn a_removal_by_audit_keeps_what_its_writer_holds_spec_perm_1() {
@@ -2551,7 +2551,7 @@ fn a_removal_by_audit_keeps_what_its_writer_holds_spec_perm_1() {
 }
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count): a node of
-// account P, the mint admin of a thing, removes P's record edge (another admin
+// account P, the mint admin of a thing, removes P's record grant (another admin
 // stays). Its only authority there came through P, so it is a self-removal: no rotation, and
 // it applies at every node.
 #[test]
@@ -2572,7 +2572,7 @@ fn mint_admin_record_edge_removed_by_its_node_spec_permissions_2() {
 
 // spec/permissions.md §1 (mint admin removable), notes/moves.md: a move is a grant then a
 // removal. T minted in a content commit with admin account A; A grants holder B admin
-// on T, then B's admin removes A's record edge: T keeps its tid and content, B's nodes read and
+// on T, then B's admin removes A's record grant: T keeps its tid and content, B's nodes read and
 // write it, A's node opens nothing written since (the removal rotated T) and cannot write it.
 #[test]
 fn move_by_grant_then_remove_spec_perm_1() {
@@ -2587,7 +2587,7 @@ fn move_by_grant_then_remove_spec_perm_1() {
     assert!(aks_of(&lp, 1, &done.commits[0]).contains("secrets.0"), "an explicit demotion: T rotated");
     spread_sealed(&mut lp);
     for i in 0..2 {
-        assert_eq!(lp.peers[i].engine.roster(&t).get(&a), None, "peer {i}: A's record edge is gone");
+        assert_eq!(lp.peers[i].engine.roster(&t).get(&a), None, "peer {i}: A's record grant is gone");
         assert_eq!(lp.peers[i].engine.roster(&t).get(&b).map(|e| e.role), Some(Role::Admin), "peer {i}");
     }
     assert_eq!(lp.peers[0].engine.role_on(&t), None);

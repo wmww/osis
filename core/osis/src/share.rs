@@ -67,7 +67,7 @@ pub enum HolderKind {
     Public,
 }
 
-/// `f` on the engine, its edge writes allowed to leave a thing with no admin when `adminless`.
+/// `f` on the engine, its grant writes allowed to leave a thing with no admin when `adminless`.
 fn marked<R>(e: &mut osis_engine::Engine, adminless: bool, f: impl FnOnce(&mut osis_engine::Engine) -> R) -> R {
     match adminless {
         true => e.leaving_adminless(f),

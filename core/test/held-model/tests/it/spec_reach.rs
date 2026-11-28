@@ -136,8 +136,8 @@ fn reach_a_chain_stub_carries_a_removal_to_the_units_reading_through_it() {
     }
 }
 
-/// The rule with record edges left out of the chains (the control): A's keys open O through its
-/// record edge alone, so no chain is found and the gap stays.
+/// The rule with record grants left out of the chains (the control): A's keys open O through its
+/// record grant alone, so no chain is found and the gap stays.
 #[test]
 fn records_chains_climb_a_mint_admins_record_edge() {
     let (w, late) = finding_19(true, true);
@@ -145,7 +145,7 @@ fn records_chains_climb_a_mint_admins_record_edge() {
     assert!(gaps_under(&w, &rule).iter().any(|f| f.sid == R && f.id == late));
 }
 
-/// A record edge on the other route: finding 18's world with D minted by A in place of Y granting A write on D. X grants K
+/// A record grant on the other route: finding 18's world with D minted by A in place of Y granting A write on D. X grants K
 /// write on D (by descent through A) and Y grants A write on R; K writes D directly; X removes K
 /// from A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R. No node holding
 /// the removal holds R: every rule has the gap at R.

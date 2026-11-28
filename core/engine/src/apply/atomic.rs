@@ -728,13 +728,13 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
 }
 
 /// The applied commits among `judged` whose every held part is unjudgeable now pend
-/// (spec/commits.md §4 Unjudgeable): a step's `sync.0` write or an edge write on a stated path
+/// (spec/commits.md §4 Unjudgeable): a step's `sync.0` write or a grant write on a stated path
 /// may fall after a commit applied. Each is forgotten as never received, the parts of it that
 /// waited alone with it, and named for redelivery: sync opens its entries again
 /// (`Engine::take_redeliver`), so it pends as a commit arriving unjudgeable does, carried by
 /// them, and applies when what it awaits arrives; with no entry left it stays never received
 /// (Pending storage). Its parts' flags read false meanwhile, so what it gave the states went with
-/// them; its edge writes leave the timelines here, marking stale what they reached.
+/// them; its grant writes leave the timelines here, marking stale what they reached.
 ///
 /// Not this node's own: one turning unjudgeable counts as its own invalid part, kept and its user
 /// told (spec/commits.md §4, `retention::goes_invalid`). O(`judged`), a held part read only for a
@@ -771,7 +771,7 @@ fn pend_again(tx: &mut Tx<'_>, judged: &BTreeSet<CommitId>) -> Result<()> {
 }
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
-/// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
+/// records and grant writes reach perm as on apply (a certificate copy may bring a commit's
 /// `roles.0` delta after its `created.0` one), and held deltas are re-judged.
 pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Parts) -> Result<()> {
     tx.core.touch();
@@ -803,7 +803,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
-    // a late role-class part may change what perm reads of the commit: its edge writes or the
+    // a late role-class part may change what perm reads of the commit: its grant writes or the
     // role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
@@ -828,7 +828,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let with_keys = read.first(n);
     let pend = super::keys::before_join(tx, &h, id, &with_keys, meta.valid())?;
     let mut j = joins(tx, &h, id, merged, &parts, meta.valid())?;
-    // the record's `node/perm` row: the commit's held parts read, also its edge writes again
+    // the record's `node/perm` row: the commit's held parts read, also its grant writes again
     let perm_parts = h.kind.is_role().then(|| read.perm());
     tx.put_commit(id, merged, &meta, Shred::No, perm_parts)?;
     // a leftover set aside at a purge's fall is stale once a copy joined whole

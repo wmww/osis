@@ -95,7 +95,7 @@ fn an_asked_reseal_writes_only_what_differs_spec_permissions_3() {
     assert_eq!(ask(&mut lp), 0, "met: nothing more");
 }
 
-// spec/permissions.md §4 (stranded): no edge write of anything off the chain. Peer 0 knows X, a
+// spec/permissions.md §4 (stranded): no grant write of anything off the chain. Peer 0 knows X, a
 // independent thing of peer 2's on no path to T; a report naming T that carries a later grant on X leaves
 // peer 0 without it.
 #[test]

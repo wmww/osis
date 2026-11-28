@@ -140,7 +140,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     core.ix.rekeyed.remove(id);
     super::set_pending(core, id, None);
     core.ix.unresolved.remove(id);
-    // perm reads nothing of a commit not held: its edge writes
+    // perm reads nothing of a commit not held: its grant writes
     core.ix.held.remove(id);
     core.stale_commits.remove(id);
     if void {

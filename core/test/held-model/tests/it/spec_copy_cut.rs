@@ -91,7 +91,7 @@ fn the_hand_worlds_read_as_whole_copies_spec_permissions_4() {
     assert!(judge(&w, &w.cut(Rule::Spec)).a_keysets.contains(&1));
 }
 
-/// Evidence closed over edge-class and `sync.0` parts only: a `keys.0` part whose author's grant
+/// Evidence closed over grant-class and `sync.0` parts only: a `keys.0` part whose author's grant
 /// no other part needs is unjudgeable, so its keyset is not sealed to.
 #[test]
 fn a_keyset_without_its_evidence_reads_otherwise_spec_permissions_4() {

@@ -8,7 +8,7 @@
 //! current values hold a strong to it (`refs::to`, ephemeral aspects included) or whose held
 //! history does (`refs::kept`, held fires included; a weak only points and needs nothing), one in the node closure holding a card of it or naming it
 //! its inbox, one whose record names it mint admin, one
-//! whose held edge write names it holder (`Held::named_on`), one a held commit acting as it writes on
+//! whose held grant write names it holder (`Held::named_on`), one a held commit acting as it writes on
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
@@ -243,7 +243,7 @@ pub(crate) enum Root {
 /// Why `x` needs `t` held (the module doc, `needs`).
 #[derive(Clone, Debug)]
 pub(crate) enum Need {
-    /// `t` is named holder on `x` by a held edge write (`Held::named_on`).
+    /// `t` is named holder on `x` by a held grant write (`Held::named_on`).
     Holder,
     /// A pending commit `t` signed, or one awaiting `t`'s record first, writes on `x`.
     Pending(osis_base::CommitId),
@@ -279,7 +279,7 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 /// (`refs::to`), those holding a card of it or of a thing naming it its inbox, those a
 /// pending commit it signed or whose first awaited record it is (`Indexes::pend_by`) writes on
 /// (a record only another part awaits is due once the commit pends on it), and, in the node
-/// closure, those a held commit on it has a part missing on and those an edge write on it names
+/// closure, those a held commit on it has a part missing on and those a grant write on it names
 /// holder. The rule (`holding`) and the explainer (`Engine::why_kept`)
 /// both read it.
 pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {

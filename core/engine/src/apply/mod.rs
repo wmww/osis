@@ -972,7 +972,7 @@ fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> s
 }
 
 /// What thing `a.tid` waits for: its `created.0` record, the record chain up to its top, an
-/// edge write on each edge of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
+/// grant write on each edge of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
 fn thing_wait(
     core: &crate::engine::Core,
     h: &Header,
@@ -983,7 +983,7 @@ fn thing_wait(
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
     // a destroyed thing is unknown, but for what judges its destruction written before it and its
-    // edge writes whatever their stamp (`retention::destroy`); a minting never restores it, so one
+    // grant writes whatever their stamp (`retention::destroy`); a minting never restores it, so one
     // waits while it is destroyed
     let destroyed = || {
         !crate::retention::destroy::judges_destruction(a.ak.as_str())
@@ -1002,10 +1002,10 @@ fn thing_wait(
             ChainStep::Up { .. } | ChainStep::Key(_) => {}
         }
     }
-    // every edge of the path stated for the thing is a record edge or has a held edge write
+    // every edge of the path stated for the thing is a record grant or has a held grant write
     // ordered before the part; an external fire needs no path (spec/permissions.md §5.2 External
     // fires), and a path not opened here holds no part. An edge part is read here as a
-    // self-removal after every edge write of its commit, the least any edge write needs (its path
+    // self-removal after every grant write of its commit, the least any grant write needs (its path
     // to the holder it ends at): `examine` reads its writes once decoded (`edge_unreached`)
     let (along, direct) = path.filter(|_| !a.ak.external())?;
     let edge = validity::edge_ak(a.ak.as_str());
@@ -1013,7 +1013,7 @@ fn thing_wait(
     validity::unreached(core, h.signer, h.key, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
 }
 
-/// The decoded `roles.0` parts among `whole` whose every edge write is unjudgeable
+/// The decoded `roles.0` parts among `whole` whose every grant write is unjudgeable
 /// (spec/commits.md §4, `validity::writes_unreached`). `skip`: parts held before, read by what the
 /// index holds of them (`Indexes::unresolved`).
 fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: &[(usize, Decoded)], chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>) -> Vec<usize> {
@@ -1678,7 +1678,7 @@ impl Engine {
     /// `ingest` of a commit taken only for what it proves here (a fire's carried commit, a
     /// stranded report's holder keys, spec/permissions.md §4), carried by `from` while it pends
     /// (`carriers`; `None`: by nothing, so nothing of it pends past this transaction): one that
-    /// applies with a part it brings judged invalid or an edge write not applied
+    /// applies with a part it brings judged invalid or a grant write not applied
     /// (`judged_valid`) keeps nothing, as if never received (`None`), and so does one this build
     /// would park.
     pub fn ingest_valid(&mut self, bytes: &[u8], from: Option<carriers::Carrier>) -> Result<Option<Ingested>> {
@@ -2381,7 +2381,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             crate::engine::index::load(tx)?;
         }
         let _s = osis_base::costs::span("open: adapt");
-        // perm's inputs: the edge writes of the role commits, oldest first, from what the
+        // perm's inputs: the grant writes of the role commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_perm(tx)?;
         let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, m)| (m.view.ts, *id)).collect();
@@ -2522,7 +2522,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // flips)
     let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
     keys::refresh_independent(tx, &things, false)?;
-    // a commit read before the record it needs (a nested edge write `ts`-ordered before its
+    // a commit read before the record it needs (a nested grant write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;
     if fast {
@@ -2971,7 +2971,7 @@ mod tests {
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §5.1; spec/commits.md §2: the role content rules bind writers
-    // only; a received commit breaking them is applied and judged by perm per edge write, so
+    // only; a received commit breaking them is applied and judged by perm per grant write, so
     // delivery order cannot change the held set.
     #[test]
     fn content_rules_writer_side_only_spec_perm_5_1() {
@@ -3005,7 +3005,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
     }
 
-    // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer mints A with admin X, B with admin A and C with admin B in one
+    // spec/permissions.md §1 (record grant; record chain; max_chain_depth), §5: a writer mints A with admin X, B with admin A and C with admin B in one
     // commit; the commit is valid wherever applied. With a mint admin the writer may not write,
     // the same chain fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]

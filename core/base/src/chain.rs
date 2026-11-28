@@ -1,7 +1,7 @@
 //! The record-chain walk (spec/permissions.md §1): every walk up creation records goes through
 //! `record_chain`, so the chain's stop rules and its depth limit live in one place. The chain goes
 //! up mint-admin links (derivation and the depth cap count them); it says nothing about
-//! authority, which is the role timeline's (a record edge may be removed).
+//! authority, which is the role timeline's (a record grant may be removed).
 
 use crate::format::MAX_CHAIN_DEPTH;
 use crate::ids::{CreationRecord, Tid};

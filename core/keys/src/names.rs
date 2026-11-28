@@ -1,4 +1,4 @@
-//! A rotation's names (spec/crypto.md §4): the edge writes on the actor its rotator held that
+//! A rotation's names (spec/crypto.md §4): the grant writes on the actor its rotator held that
 //! pin a holder below a role (each applied write lowering a holder, and each write giving a
 //! holder a role that applied nothing there, marked void), read from its own role timeline and
 //! carried in every history box the rotation writes; the keyset commits to them by their digest,
@@ -17,7 +17,7 @@ pub struct Key {
     pub commit: CommitId,
 }
 
-/// One named edge write on the actor: its commit's key and the holder whose edge it writes;
+/// One named grant write on the actor: its commit's key and the holder whose edge it writes;
 /// `void`: it applied nothing at the rotator (else it applied, lowering the holder).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
@@ -55,7 +55,7 @@ impl Own {
     }
 }
 
-/// What one history entry names: the edge writes its rotator held that pin a holder below a
+/// What one history entry names: the grant writes its rotator held that pin a holder below a
 /// role, and the rotation commit itself when it departs a holder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Names {
@@ -137,7 +137,7 @@ pub trait Held {
     /// (spec/crypto.md §4, Names: the entry is bound to that body; Covers).
     fn publishes(&self, r: Role, e: &osis_crypto::Epoch, digest: &NamesDigest) -> bool;
     /// The commit `own` names (by `ts`, author and `blind`) is a role commit applied here with
-    /// its `roles.0` delta on the actor, resolved, each of its edge writes on the actor standing
+    /// its `roles.0` delta on the actor, resolved, each of its grant writes on the actor standing
     /// here (spec/crypto.md §4, Met).
     fn departed(&self, own: &Own) -> bool;
     /// Whether `own` is the departs mark of the held commit at `key` (`Own::is_of` its header).

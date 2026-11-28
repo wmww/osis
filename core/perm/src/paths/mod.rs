@@ -1,5 +1,5 @@
 //! The permission walk along stated paths (notes/perm-paths.md; draft spec
-//! spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (an edge write)
+//! spec/permissions.md §1, §2, §5.1, §5.2, §6): every grant-class part (a grant write)
 //! is judged along the one path its commit states for its thing, in key order, each lowering
 //! judged once; every delta is judged along its path by point queries on the walk, and a purge
 //! request's right as a delta of
@@ -25,7 +25,7 @@ pub use walk::{Applied, Counts, History, Key, Way};
 
 /// The edges a part signed by `key` as `signer` on `on` along `path` (hops `direct` marked) rests
 /// on, its key hop first, as the walk reads them (spec/permissions.md §1 Hops); `holder` for an
-/// edge write, `edge_class` for an edge-class part. None where its path is not well formed, and
+/// grant write, `edge_class` for a grant-class part. None where its path is not well formed, and
 /// none for a key lowering its own grant. `mint` holds each known record's holder: its mint
 /// admin, or the key it holds.
 #[allow(clippy::too_many_arguments)]
@@ -217,7 +217,7 @@ impl Right {
     }
 }
 
-/// What the settled walk did with an edge-class part.
+/// What the settled walk did with a grant-class part.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     Applied,
@@ -283,7 +283,7 @@ pub struct Changed {
     /// What the requests whose right changed, arrived holding one or went name (draft §6): a
     /// description, never a list of deltas.
     pub purges: BTreeSet<Scope>,
-    /// Of `parts`, the edge-class parts the walk applied before the update.
+    /// Of `parts`, the grant-class parts the walk applied before the update.
     pub was_applied: BTreeSet<WriteId>,
 }
 
@@ -415,14 +415,14 @@ impl<S: Store> Paths<S> {
         commits.iter().filter(|c| !self.holds(&c.id) && seen.insert(c.id)).collect()
     }
 
-    /// Whether `c` is read exactly as given already (a commit with an edge-class part reads as
+    /// Whether `c` is read exactly as given already (a commit with a grant-class part reads as
     /// changed), and `carriers` are the held snapshots carrying it:
     /// giving it again would change nothing.
     pub fn reads(&self, c: &Commit, carriers: &[WriteId]) -> bool {
         self.timeline.parts_of(&c.id).is_empty() && !c.parts.iter().any(|p| matches!(p.kind, PartKind::Grant(_))) && self.facts.reads(c) && self.facts.carriers_moved(&c.id, carriers).is_empty()
     }
 
-    /// Whether commit `c` is held: by its edge-class parts, its role facts or its deltas.
+    /// Whether commit `c` is held: by its grant-class parts, its role facts or its deltas.
     pub fn holds(&self, c: &CommitId) -> bool {
         self.timeline.holds(c) || self.facts.holds(c)
     }
@@ -482,18 +482,18 @@ impl<S: Store> Paths<S> {
         self.timeline.last_before(holder, target, key)
     }
 
-    /// Whether held edge-class part `id` would apply at its key were its edge's value `old`
+    /// Whether held grant-class part `id` would apply at its key were its edge's value `old`
     /// there, the rest as the settled walk has it.
     pub fn would_apply(&self, id: &WriteId, old: Option<Grant>) -> bool {
         self.timeline.would_apply(id, old)
     }
 
-    /// The lowering whose drops hold edge-class part `id`.
+    /// The lowering whose drops hold grant-class part `id`.
     pub fn dropped_by(&self, id: &WriteId) -> Option<WriteId> {
         self.timeline.dropped_by(id)
     }
 
-    /// How the settled walk applies edge-class part `id` (`None`: not applied, not held).
+    /// How the settled walk applies grant-class part `id` (`None`: not applied, not held).
     pub fn way(&self, id: &WriteId) -> Option<Way> {
         self.timeline.way(id)
     }
@@ -522,7 +522,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// The held commits resting on (holder, target) (spec/permissions.md §5.1 Frontier): those
-    /// with an edge-class part resting on it or a delta stated along it.
+    /// with a grant-class part resting on it or a delta stated along it.
     pub fn resting(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let mut out = self.timeline.resting(holder, target);
         out.extend(self.facts.store.through(&(*holder, *target), std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).into_iter().map(|w| w.0));
@@ -541,7 +541,7 @@ impl<S: Store> Paths<S> {
         &self.trust
     }
 
-    /// Every held edge-class part's status.
+    /// Every held grant-class part's status.
     pub fn statuses(&self) -> BTreeMap<WriteId, Status> {
         self.timeline.statuses()
     }
@@ -611,7 +611,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// Whether held request `id` could hold role `r` (spec/commits.md §4 Could hold the
-    /// right): every edge of its path a record edge or set at `r` or above by some held edge
+    /// right): every edge of its path a record grant or set at `r` or above by some held edge
     /// write, whatever that write's validity. What a node that cannot judge acts on.
     pub fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
         self.facts.could_give(id, r)
@@ -658,19 +658,19 @@ impl<S: Store> Paths<S> {
         self.timeline.writes(holder, target)
     }
 
-    /// Every edge with an applied write, and every record edge, with its history (empty for a
-    /// record edge nothing wrote).
+    /// Every edge with an applied write, and every record grant, with its history (empty for a
+    /// record grant nothing wrote).
     pub fn histories(&self) -> BTreeMap<(Holder, Tid), History> {
         self.timeline.histories()
     }
 
     /// The value of (holder, target) just before `key`: the last applied write before it, else
-    /// the record edge's admin, else none.
+    /// the record grant's admin, else none.
     pub fn value_before(&self, holder: &Holder, target: &Tid, key: &Key) -> Option<Grant> {
         self.timeline.value_before(holder, target, key)
     }
 
-    /// The final role of each edge the settled walk set (and each record edge), every `until`
+    /// The final role of each edge the settled walk set (and each record grant), every `until`
     /// counted removed, and what it lets grant.
     pub fn finals(&self) -> BTreeMap<(Holder, Tid), (Option<Role>, Option<Role>)> {
         self.timeline.finals()
@@ -754,7 +754,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// Entries the walk keeps in memory (parts, edges, events, histories,
-    /// readers): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
+    /// readers): grant-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
         self.timeline.footprint() + self.facts.footprint()
     }

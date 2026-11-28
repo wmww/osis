@@ -126,7 +126,7 @@ pub struct Made {
     /// The commits that minted the things (each writes its thing's first value).
     mintings: BTreeSet<CommitId>,
     written: u64,
-    /// Things whose record edge a removal took (the roster then shows no mint admin either).
+    /// Things whose record grant a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
     /// The grants signalled (`give`): `(holder account, target)` to the holder's inbox then,
     /// whether a node of the holder's account was removed since, and the wall time of its latest
@@ -1042,7 +1042,7 @@ impl Model {
         let mut public_sync = hc::Set::new();
         let mut edges = hc::Edges::new();
         for (k, t) in things.iter().enumerate() {
-            // the record edge stands at admin until an edge write lowers it, which the roster then
+            // the record grant stands at admin until a grant write lowers it, which the roster then
             // shows, or removes it (`record_gone`)
             let roster = refs.holding(t).map(|r| r.engine.roster(t)).unwrap_or_default();
             if roster.is_empty() && !h.record_gone.contains(&k) {
@@ -1091,7 +1091,7 @@ impl Model {
         for r in refs.all() {
             keyless.extend(r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))));
         }
-        // an independent thing's record edge, standing while its roster shows it
+        // an independent thing's record grant, standing while its roster shows it
         let records = (0..things.len()).filter(|&k| kinds[na + k] == hc::Kind::Independent).map(|k| (mint_admin(k), na + k)).filter(|e| grants.contains_key(e)).collect();
         let world = hc::World { kinds, grants, keyless, public, public_sync, records };
         // per account a node: its node thing admin of the account, its root holding both

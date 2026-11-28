@@ -30,10 +30,10 @@ fn holds(net: &Net, rule: Rule, i: usize) -> (bool, bool) {
     (h.whole.contains(&X), h.stubs.contains(&X))
 }
 
-/// A record edge is the thing's own data: R is X's mint admin, A holds sync on X and read on R,
+/// A record grant is the thing's own data: R is X's mint admin, A holds sync on X and read on R,
 /// each told, and A strongly references X. Node 0 holds X kept unread (by A's grant) and R as the
 /// signal's stub (A reads its role entries): X's record names R, so node 0 reads X through R.
-/// Without the record edges known (X's roster is no read of A's), it keeps X unread.
+/// Without the record grants known (X's roster is no read of A's), it keeps X unread.
 #[test]
 fn entry_a_record_edge_is_known_where_its_thing_is_held() {
     for records in [true, false] {
@@ -46,7 +46,7 @@ fn entry_a_record_edge_is_known_where_its_thing_is_held() {
         net.strongs.insert((A, X));
         net.settle(Rule::SPEC);
         let h = net.held(Rule::SPEC, 0);
-        assert_eq!((h.whole.contains(&X), h.unread.contains(&X)), (records, !records), "record edges known: {records}");
+        assert_eq!((h.whole.contains(&X), h.unread.contains(&X)), (records, !records), "record grants known: {records}");
         assert!(check(&net, Rule::SPEC).is_empty());
     }
 }

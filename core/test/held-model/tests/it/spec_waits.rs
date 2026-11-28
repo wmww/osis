@@ -69,7 +69,7 @@ fn unknown_record_up_the_chain_throws_the_part_out_spec_commits_4() {
     assert!(o.revisit.contains(&10));
 }
 
-// spec/commits.md §4 (Unjudgeable): a part waits until an edge write on each edge of its stated
+// spec/commits.md §4 (Unjudgeable): a part waits until a grant write on each edge of its stated
 // path is held ordered before it: a grant ordered after it is no evidence its writer relied on
 #[test]
 fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
@@ -85,7 +85,7 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
     assert!(o.applied.contains(&10) && !o.valid[&(10, 0)]);
 }
 
-// spec/commits.md §4 (Unjudgeable): an edge write that is itself unjudgeable is no evidence: a
+// spec/commits.md §4 (Unjudgeable): a grant write that is itself unjudgeable is no evidence: a
 // forged grant to 3 by 2 (holding nothing on T) waits, and does not release 3's write after it;
 // an honest grant to 3 ordered after the forgery does
 #[test]

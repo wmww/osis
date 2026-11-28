@@ -23,7 +23,7 @@ fn a_holder_takes_from_its_piece_what_it_takes_from_whole_copies_spec_permission
         history += (cu.taken != seen(&w, Rule::NoRest, false).taken) as u64;
         if !w.reads(Rule::Spec) {
             sync_worlds += 1;
-            // a forged edge write naming T read turns nothing R receives into a header
+            // a forged grant write naming T read turns nothing R receives into a header
             forged += w.reads(Rule::AnyValidity) as u64;
             assert!(cu.learned.is_empty(), "seed {s}: a holder of sync only learns {:?}", cu.learned);
             assert_eq!(cu.holds, w.t_holds(), "seed {s}: T's holding as its steps tell it");
@@ -195,7 +195,7 @@ fn a_removal_of_sync_only_is_told_by_its_step_spec_sync_ids_2() {
 }
 
 /// XA grants H read with the may-grant flag and O1 read; H grants T sync; O1, neither admin nor
-/// may-grant, forges an edge write naming T read, and O2, holding no role, another (pending).
+/// may-grant, forges a grant write naming T read, and O2, holding no role, another (pending).
 fn forged_read() -> World {
     let commits = vec![
         Commit { id: 1, signer: XA, ts: 1, roles: None, boxes: vec![], step: Some((0, true)), history: None },
@@ -208,7 +208,7 @@ fn forged_read() -> World {
     World { commits, t_sync_only: true }
 }
 
-/// An invalid or pending edge write giving T read changes nothing R receives: T reads X only by a
+/// An invalid or pending grant write giving T read changes nothing R receives: T reads X only by a
 /// valid one, so R takes T's sync secret and learns no holder of X (spec/sync-ids.md §2 What a
 /// sync holder learns). Control: judged whatever their validity,
 /// the forged writes send T's pieces with headers and evidence, naming its granter H.

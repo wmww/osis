@@ -33,7 +33,7 @@ impl Engine {
         self.core.waits.untaken_len()
     }
 
-    /// The edge writes held role commit `id` makes, whatever the delete keys it lists (none while
+    /// The grant writes held role commit `id` makes, whatever the delete keys it lists (none while
     /// a reset names a write not held, `validity::edge_writes_of`, nor for a split commit): the
     /// applied ones (`ix.held`) less a miskeyed commit's left out.
     #[doc(hidden)]
@@ -322,7 +322,7 @@ impl Engine {
     }
 
     /// Whether held commit `c` is a role commit whose removal resets an entry of unknown
-    /// creation, so none of its edge writes applies (`apply::validity::add_role_commit`; tests).
+    /// creation, so none of its grant writes applies (`apply::validity::add_role_commit`; tests).
     #[doc(hidden)]
     pub fn unresolved(&self, c: &CommitId) -> bool {
         self.core.ix.unresolved.contains(c)
@@ -586,14 +586,14 @@ impl Engine {
         })
     }
 
-    /// The role timelines' verdicts per thing (rosters, applied and dropped edge writes): of the components as held (`false`) or of one from-scratch
+    /// The role timelines' verdicts per thing (rosters, applied and dropped grant writes): of the components as held (`false`) or of one from-scratch
     /// evaluation of the held set (tests: restored walks equal a from-scratch evaluation).
     #[doc(hidden)]
     pub fn perm_digest(&self, from_scratch: bool) -> String {
         self.core.perm_digest(from_scratch)
     }
 
-    /// Whether an edge write of commit `c` on `t` applies in the settled walk (tests).
+    /// Whether a grant write of commit `c` on `t` applies in the settled walk (tests).
     #[doc(hidden)]
     pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
         self.core.timelines().get(t).is_some_and(|tl| tl.held_on(t).any(|(w, mc, _)| mc.id == *c && tl.is_applied(&w)))
@@ -790,7 +790,7 @@ fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::Time, &crate::e
 }
 
 /// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
-/// timeline), then every applied edge write and every held one not applied, and the keyless actor
+/// timeline), then every applied grant write and every held one not applied, and the keyless actor
 /// grants.
 type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Grant>>)>, BTreeMap<osis_perm::WriteId, osis_perm::paths::Applied>, BTreeSet<osis_perm::WriteId>, BTreeSet<(Tid, Tid)>);
 

@@ -370,7 +370,7 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
     assert!(e.history_complete(&d).unwrap() && !e.passes_wanted().unwrap().contains_key(&ds));
 }
 
-// spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder
+// spec/crypto.md §4 (names): a rotation names the grant writes its rotator held that pin a holder
 // below a role, and what it names travels with it: a removal's rotation logs with it the earlier
 // removal it names.
 #[test]

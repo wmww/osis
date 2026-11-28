@@ -231,7 +231,7 @@ fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
 /// secret at n+1 (n = greatest n of its current and unsuperseded epochs, held or not; epochs merely
 /// seen, with no valid rotation commit or snapshot, never count), boxes for every holder holding
-/// the role (mint admin included while its record edge stands), the history box of every
+/// the role (mint admin included while its record grant stands), the history box of every
 /// distinct earlier established secret held with `names` (spec/crypto.md §4: the departures from
 /// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch but foreign ones, and the removal of the role's boxes at the epochs whose
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded

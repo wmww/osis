@@ -6,21 +6,21 @@
 //!
 //! The rule under test.
 //! - **Things and edges.** Signers and independent things share one namespace; an edge is
-//!   (holder, target) with a role and an optional `until`; record edges stand at the start.
-//!   Dependent things are not modelled (a descent of one step is the direct edge).
+//!   (holder, target) with a role and an optional `until`; record grants stand at the start.
+//!   Dependent things are not modelled (a descent of one step is the direct grant).
 //! - **Commits.** One signer, a `ts`, the thing written (`on`) and a stated path [A1..Ak]: the
 //!   commit uses the edges joining [signer, A1, .., Ak, on] and no other. Kinds: content, an
-//!   edge write (setting a holder's edge on `on`; a lowering carries a frontier, a leaf of commit
-//!   IDs per thing), an addendum (plain content naming a removal and commits it vouches for). A commit of several edge writes
+//!   grant write (setting a holder's edge on `on`; a lowering carries a frontier, a leaf of commit
+//!   IDs per thing), an addendum (plain content naming a removal and commits it vouches for). A commit of several grant writes
 //!   on one target (`World::commit`) is one part per write, consecutive in key order, the part on
 //!   an edge of its own stated path last.
 //! - **Edges in time.** An edge gives its role at `ts` while its `until` is later; a write
 //!   giving no role at its own `ts` (none, or an `until` passed) is a removal. A write giving admin
-//!   with a later `until` on a standing admin edge (an **end**) is a grant (`Rules::until`; as a
+//!   with a later `until` on a standing admin grant (an **end**) is a grant (`Rules::until`; as a
 //!   lowering it fails a required gate either way).
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
 //!   edges down the mint chain) where the first is a mint ancestor of the second and the path does
-//!   not mark the pair direct (`World::push_marked`), else by their direct edge. The end is the thing written, except for an edge write whose path ends at the
+//!   not mark the pair direct (`World::push_marked`), else by their direct grant. The end is the thing written, except for a grant write whose path ends at the
 //!   holder of the edge it sets: a **self-removal**, needing admin on the holder (a signer
 //!   leaving by itself states no hop).
 //! - **Walk** (§5.1 along one path). Grant writes in key order
@@ -28,17 +28,17 @@
 //!   admin at its `ts`; a self-removal only lowers. An applied explicit write taking an edge h
 //!   from admin, **as restored** (the highest role since the last explicit write on h, values an
 //!   `until` or a self-removal took included), to below puts in question every earlier held
-//!   edge-class commit whose path holds h, not dropped and not void (`Rules::audit_held`, as the
+//!   grant-class commit whose path holds h, not dropped and not void (`Rules::audit_held`, as the
 //!   seeds); those its list does not name (`listed`) join D, each with its commit's other
-//!   edge-class parts on its thing (`Drops::Commit`), and the walk restarts from the earliest. A
+//!   grant-class parts on its thing (`Drops::Commit`), and the walk restarts from the earliest. A
 //!   self-removal audits nothing. D only grows until a pass adds nothing.
 //! - **Each lowering judged once, at its key** (`Rules::self_void`; finding 16): nothing is
 //!   exempt from a lowering's drops and no entry of its list is read as absent. A lowering (an
-//!   explicit edge write giving below admin at its `ts`) is judged the first time a pass reaches
+//!   explicit grant write giving below admin at its `ts`) is judged the first time a pass reaches
 //!   it holding its right (its path giving admin) and taking its edge
 //!   from admin: where its own drops would take its authority (`keeps`: its path's edges read back
 //!   along the writes that set them, passing over its own drops) it is **void**; else it applies.
-//!   A commit of several edge writes takes effect part by part, each judged with the earlier
+//!   A commit of several grant writes takes effect part by part, each judged with the earlier
 //!   ones in effect, a lowering's `keeps` passing over its commit's earlier drops too; no part's
 //!   drops or seeds reach its own commit; the pass ends once the commit took effect
 //!   (`Rules::commit_drops`).
@@ -54,7 +54,7 @@
 //!   the commit is ordered after P's first point: per edge, the first held write giving it write
 //!   whose grantor held the right at its key in this reading, applied or dropped (`Regrant`,
 //!   `first_by_right`).
-//! - **Trust sets.** A trusted lowering R of edge h seeds D with the held edge-class commits
+//! - **Trust sets.** A trusted lowering R of edge h seeds D with the held grant-class commits
 //!   ordered before R whose path holds h, R's list does not name and whose need at h R's value
 //!   does not meet (`Rules::seeds_by_need`); a trusted write the
 //!   settled walk does not apply is void and loses its seeds, all void ones at once, and the
@@ -64,7 +64,7 @@
 //! - **Leaves.** A node sees a frontier's leaf for a thing only where its view says so
 //!   (`View::leaves`); an entry in a leaf it does not see is not listed for it.
 //! - **May-grant and finalizes** (notes/write-path-design.md §1 G1 to G5). A grant carries a
-//!   may-grant flag. An edge write without admin on its path applies as a may-grant grant where it
+//!   may-grant flag. A grant write without admin on its path applies as a may-grant grant where it
 //!   adds a grant below admin to a holder with none current, every hop of its path giving at least
 //!   its role and the last giving admin or carrying the flag; a finalize ends a grant past its
 //!   `until`. Neither is explicit: neither audits. A lowering is judged where it takes its edge
@@ -78,7 +78,7 @@
 //!   valid cover's copy of a write shows it whatever the write's own validity (spec/permissions.md
 //!   §5.2 Copies, §5.3), so a cover made by a writer not yet holding a removal carries the removed
 //!   party's late write for good: the accepted window. `Rules::cover_facts` is the alternative.
-//! - **Evidence** (`evidence`): the least set holding a unit's commits and every edge write on
+//! - **Evidence** (`evidence`): the least set holding a unit's commits and every grant write on
 //!   an edge of a held commit's path.
 //!
 //! `Sim` plays the stolen-node story over that rule (parties, ticks, honest writing and the
@@ -107,7 +107,7 @@ pub enum Kind {
         until: Option<u32>,
         frontier: BTreeMap<Thing, Set>,
         /// The may-grant flag (notes/write-path-design.md §1 G1): its holder may add holders up to
-        /// its role. An admin edge lets its holder grant every role below admin whatever this says.
+        /// its role. An admin grant lets its holder grant every role below admin whatever this says.
         may_grant: bool,
         /// A finalize: a removal carrying no frontier, ending a grant past its `until`
         /// (spec/permissions.md §2).
@@ -151,7 +151,7 @@ impl Kind {
     pub fn purge(author: Thing) -> Kind {
         Kind::Purge { names: Names::Author(author) }
     }
-    /// An edge write setting `holder`'s edge to `role`, standing, listing nothing.
+    /// A grant write setting `holder`'s edge to `role`, standing, listing nothing.
     pub fn set(holder: Thing, role: Role) -> Kind {
         Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), may_grant: false, finalize: false }
     }
@@ -198,7 +198,7 @@ pub struct Commit {
     rest: Vec<Edge>,
     /// The path names no thing twice.
     well: bool,
-    /// An edge write whose path ends at its holder: a self-removal.
+    /// A grant write whose path ends at its holder: a self-removal.
     leave: bool,
     /// The purge author: an index into [signer, path..] (notes/write-path-design.md §1).
     pa: usize,
@@ -212,7 +212,7 @@ pub struct Commit {
     /// A part of a commit of several parts one of which sets an edge of the commit's stated path
     /// (`World::group`; read only by the control `Rules::refuse_shapes`).
     own_path: bool,
-    /// The member pairs its path marks as joined by their direct edge (`World::push_marked`).
+    /// The member pairs its path marks as joined by their direct grant (`World::push_marked`).
     pub direct: Vec<usize>,
     /// The role a content-class part needs of its path (spec/permissions.md §5.2): write, or admin
     /// for a delta of an admin-only aspect. No generator here writes one needing admin.
@@ -279,7 +279,7 @@ pub struct Rules {
     /// An addendum vouches for no commit of its own signer (spec/permissions.md §5.2 Addenda
     /// asks only that its writer holds write on the thing, by any path).
     pub no_own_addendum: bool,
-    /// A node sees a frontier's leaf for every thing an edge write it holds as evidence is on,
+    /// A node sees a frontier's leaf for every thing a grant write it holds as evidence is on,
     /// besides the things it syncs (finding 5).
     pub evidence_leaves: bool,
     /// Honest writing in `Sim` (a policy, not a judging rule): the state-based rule, writing
@@ -323,7 +323,7 @@ pub struct Rules {
     /// judged and puts the may-grant grants made by it in question. False (control `-role-falls`):
     /// only a fall in role does.
     pub flag_falls: bool,
-    /// A lowering is judged, and audits, when it takes its edge as restored down in role or in
+    /// A lowering is judged, and audits, when it takes its grant as restored down in role or in
     /// the flag, dropping the writes whose need the edge no longer meets (a may-grant grant falls
     /// with a writer's edge). False (control `-admin-falls`): only a fall from admin is judged.
     pub any_fall: bool,
@@ -340,7 +340,7 @@ pub struct Rules {
     /// facts per carried commit. False (the rule, spec/permissions.md §5.2 Copies, §5.3): a valid
     /// cover's copy of a write shows it whatever the write's own validity.
     pub cover_facts: bool,
-    /// In a commit of several edge writes, a lowering's `keeps` passes over the drops of the
+    /// In a commit of several grant writes, a lowering's `keeps` passes over the drops of the
     /// commit's lowerings applied before it too (spec/commits.md §2). False (control
     /// `-own-drops`): over its own drops alone.
     pub commit_drops: bool,
@@ -360,12 +360,12 @@ pub struct Rules {
     /// does not meet, as its audit reads them (a demotion to write keeps the may-grant grants under it).
     /// False (control `-seeds-all`): every unlisted write resting on its edge.
     pub seeds_by_need: bool,
-    /// Control (`-refuse-shapes`): a commit of several edge writes carrying a self-removal or a
+    /// Control (`-refuse-shapes`): a commit of several grant writes carrying a self-removal or a
     /// part on an edge of its own stated path applies nowhere. False (the rule): it is judged part
     /// by part like any (`World::commit`), so a single-use link redemption (a may-grant grant and its
     /// signer's own leave) applies.
     pub refuse_shapes: bool,
-    /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
+    /// How a write putting an end on a standing admin grant (or shortening its end) is judged.
     pub until: Until,
     /// Purge rights by class (spec/permissions.md §6, *taken*): a request holds, over each
     /// delta it names, each member of the delta's purge-by set it holds: `admin` where it is valid
@@ -417,7 +417,7 @@ pub enum Answers {
 /// What a drop (a lowering's audit, a trusted write's seeds) takes of a commit (Open 23).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Drops {
-    /// The rule (`fixed`): a commit's edge-class parts on one thing fall together. A part another
+    /// The rule (`fixed`): a commit's grant-class parts on one thing fall together. A part another
     /// part of its commit on the same thing would be dropped beside (put in question and not
     /// listed) is dropped with it, as a list keeps a commit whole: the redemption's leave falls
     /// with its grant, so the link stays with the redemption the sharer listed.
@@ -443,7 +443,7 @@ pub enum Until {
     AtKey,
 }
 
-/// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
+/// The dispute candidates (`disputes`): held grant writes of another holder's edge giving it below
 /// admin at their `ts`, but finalizes, and of those:
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Candidates {
@@ -535,7 +535,7 @@ impl Rules {
 pub const KEYS: Thing = 0x80;
 
 /// The key thing `t`'s record holds where it names no mint admin (K1): its key hop stands at
-/// admin from the start. Such a thing takes edge writes as any thing (the hand worlds on T).
+/// admin from the start. Such a thing takes grant writes as any thing (the hand worlds on T).
 pub const fn own_key(t: Thing) -> Thing {
     KEYS | t
 }
@@ -560,7 +560,7 @@ pub struct World {
 }
 
 impl World {
-    /// Record edges, each admin.
+    /// Record grants, each admin.
     pub fn new(records: &[Edge]) -> World {
         World { records: records.to_vec(), commits: vec![] }
     }
@@ -574,10 +574,10 @@ impl World {
         self.put(key, signer, ts, path, on, kind, &[])
     }
     /// `push` with the hops `direct` (by index: hop 0 joins the signer to the first member after
-    /// it) marked direct: joined by their direct edge though the first is a mint ancestor of the
+    /// it) marked direct: joined by their direct grant though the first is a mint ancestor of the
     /// second (spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks`). A mark
     /// is allowed only on a hop otherwise read as a descent of two steps or more; on any other
-    /// (no record chain between them, a one-step descent whose record edge is the direct edge, a
+    /// (no record chain between them, a one-step descent whose record grant is the direct grant, a
     /// position past the members) the part applies nowhere, as a member named twice does.
     pub fn push_marked(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind, direct: &[usize]) -> Id {
         self.put(own_key(signer), signer, ts, path, on, kind, direct)
@@ -590,7 +590,7 @@ impl World {
         // a thing acting as itself (signed as the thing written, nothing listed) states no edge:
         // its key hop alone
         let itself = path.is_empty() && on == signer;
-        // the path's end decides the class: an edge write whose path ends at the holder is a
+        // the path's end decides the class: a grant write whose path ends at the holder is a
         // self-removal, as is a write by a key on its own key hop, acting as its thing (K4); any
         // other ends at the thing written
         let own_hop = matches!(&kind, Kind::Edge { holder, .. } if itself && *holder == key);
@@ -604,7 +604,7 @@ impl World {
             *finalize = *finalize && !leave && *holder != signer;
         }
         let marks_ok = direct.iter().all(|&k| k + 1 < all.len() && self.joins(all[k], all[k + 1]).len() >= 2);
-        // an edge write whose holder is its target is not applied (spec/permissions.md §1)
+        // a grant write whose holder is its target is not applied (spec/permissions.md §1)
         let to_itself = matches!(&kind, Kind::Edge { holder, .. } if *holder == on);
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok && !to_itself;
         // a key lowering its own grant is the holder itself: its path has no hop (it rests on
@@ -615,16 +615,16 @@ impl World {
         i
     }
     /// The hops a path of members `all` (signer first) signed by `key` rests on: the key hop
-    /// (key, signer), then each consecutive pair's joining edges, a `direct` one by its direct edge.
+    /// (key, signer), then each consecutive pair's joining edges, a `direct` one by its direct grant.
     fn path_hops(&self, key: Thing, all: &[Thing], direct: &[usize]) -> Vec<Edge> {
         let joined = all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) });
         all.first().map(|&s| (key, s)).into_iter().chain(joined).collect()
     }
-    /// One commit of several edge writes on `on` along one path (spec/commits.md §2;
+    /// One commit of several grant writes on `on` along one path (spec/commits.md §2;
     /// notes/write-path-design.md W7). Its parts take effect in holder order, but the parts on an
     /// edge the commit's stated path (signer, members, `on`) rests on last, whatever the holders'
     /// order: its final hop (a self-removal of its last thing, as in a single-use link redemption),
-    /// the record edge a descent ends with, or its key hop (a key removing itself acting as its
+    /// the record grant a descent ends with, or its key hop (a key removing itself acting as its
     /// thing). Two
     /// parts on one holder's edge are bad input, applying nowhere (the `roles.0` delta's map keys
     /// would repeat: spec/data-model.md deterministic CBOR).
@@ -647,7 +647,7 @@ impl World {
         let own = self.path_hops(key, &all, direct);
         parts.sort_by_key(|k| match k {
             Kind::Edge { holder, .. } => (own.contains(&(*holder, on)), *holder),
-            _ => panic!("a commit of several parts carries edge writes"),
+            _ => panic!("a commit of several parts carries grant writes"),
         });
         let ids: Vec<Id> = parts.into_iter().map(|k| self.put(key, signer, ts, path, on, k, direct)).collect();
         self.group(&ids);
@@ -681,23 +681,23 @@ impl World {
     pub fn part_ids(&self, cid: Id) -> impl Iterator<Item = Id> + '_ {
         (0..self.commits.len()).filter(move |&i| self.commits[i].cid == cid)
     }
-    /// The mint admin of `t`: the holder of its record edge.
+    /// The mint admin of `t`: the holder of its record grant.
     fn mint_of(&self, t: Thing) -> Option<Thing> {
         self.records.iter().find(|e| e.1 == t).map(|e| e.0)
     }
-    /// An edge or key hop standing at the start: a record edge (admin), or the key hop of the
+    /// An edge or key hop standing at the start: a record grant (admin), or the key hop of the
     /// key a thing's record holds, which is the thing's own key where it names no mint admin
     /// (notes/write-path-design.md, Keys K1; admin).
     pub fn is_record(&self, e: Edge) -> bool {
         self.records.contains(&e) || (e.0 == own_key(e.1) && self.mint_of(e.1).is_none())
     }
-    /// Every record edge and record key hop a commit rests on or sets.
+    /// Every record grant and record key hop a commit rests on or sets.
     fn record_hops(&self) -> BTreeSet<Edge> {
         let used = (0..self.commits.len()).flat_map(|i| self.rests(i).iter().copied().chain(self.sets(i)));
         self.records.iter().copied().chain(used.filter(|&e| self.is_record(e))).collect()
     }
-    /// The edges joining consecutive path members `p`, `q`: by descent (the record edges down the
-    /// mint chain) where `p` is a mint ancestor of `q`, else their direct edge.
+    /// The edges joining consecutive path members `p`, `q`: by descent (the record grants down the
+    /// mint chain) where `p` is a mint ancestor of `q`, else their direct grant.
     fn joins(&self, p: Thing, q: Thing) -> Vec<Edge> {
         let mut down = vec![];
         let mut t = q;
@@ -792,7 +792,7 @@ impl World {
         }
         f
     }
-    /// An edge write setting `holder`'s edge on `on`, standing; `frontier` is cut per thing.
+    /// A grant write setting `holder`'s edge on `on`, standing; `frontier` is cut per thing.
     pub fn edge(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, holder: Thing, role: Role, frontier: &[Id]) -> Id {
         let f = self.cut(frontier);
         self.push(signer, ts, path, on, Kind::set(holder, role).listing(f))
@@ -827,7 +827,7 @@ impl World {
     pub fn key_hop(&self, i: Id) -> Edge {
         (self.commits[i].key, self.commits[i].signer)
     }
-    /// An edge write on a key hop (its holder a key; Keys K3).
+    /// A grant write on a key hop (its holder a key; Keys K3).
     pub fn key_write(&self, i: Id) -> bool {
         matches!(&self.commits[i].kind, Kind::Edge { holder, .. } if is_key(*holder))
     }
@@ -835,21 +835,21 @@ impl World {
     pub fn well(&self, i: Id) -> bool {
         self.commits[i].well
     }
-    /// A self-removal: an edge write whose stated path ends at the holder of the edge it sets.
+    /// A self-removal: a grant write whose stated path ends at the holder of the edge it sets.
     pub fn leave(&self, i: Id) -> bool {
         self.commits[i].leave
     }
     pub fn edge_class(&self, i: Id) -> bool {
         matches!(self.commits[i].kind, Kind::Edge { .. })
     }
-    /// The edge an edge write sets.
+    /// The edge a grant write sets.
     pub fn sets(&self, i: Id) -> Option<Edge> {
         match &self.commits[i].kind {
             Kind::Edge { holder, .. } => Some((*holder, self.commits[i].on)),
             _ => None,
         }
     }
-    /// An edge write setting its edge to below admin at its own `ts`, but a finalize (which ends
+    /// A grant write setting its edge to below admin at its own `ts`, but a finalize (which ends
     /// a grant already ended).
     pub fn lowers(&self, i: Id) -> Option<Edge> {
         match &self.commits[i].kind {
@@ -857,7 +857,7 @@ impl World {
             _ => None,
         }
     }
-    /// An edge write giving admin until an end after its own `ts` (no self-removal): it lowers
+    /// A grant write giving admin until an end after its own `ts` (no self-removal): it lowers
     /// where its edge gave admin ending later, or standing.
     pub fn ends(&self, i: Id) -> Option<Edge> {
         match &self.commits[i].kind {
@@ -921,9 +921,9 @@ impl View {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Reading {
-    /// Edge-class commits the settled walk applies.
+    /// Grant-class commits the settled walk applies.
     pub applied: Set,
-    /// Applied edge writes that lowered their edge.
+    /// Applied grant writes that lowered their edge.
     pub lowered: Set,
     /// Grant writes the settled walk applies as may-grant grants (G2).
     pub by_flag: Set,
@@ -940,7 +940,7 @@ pub struct Reading {
     /// The key hops' final roles, every `until` counted removed (edges like any, kept apart from
     /// `roles` so that map holds things alone).
     pub keys: BTreeMap<Edge, Role>,
-    /// The settled walk's edge writes per edge (key, value), and its cuts: the applied explicit
+    /// The settled walk's grant writes per edge (key, value), and its cuts: the applied explicit
     /// lowerings taking an edge from write or above to below (edge, key), which content judges by.
     pub hist: BTreeMap<Edge, Vec<(Key, Val)>>,
     pub cuts: BTreeSet<(Edge, Key)>,
@@ -964,7 +964,7 @@ pub struct Reading {
     /// reading alone (`unjustified`), apart from how the walk reached it.
     pub stray: Set,
     /// Restarts (one per applying lowering that dropped something, and one per round of void
-    /// trusted writes), passes walked, edge-class commits visited from each pass's restart point
+    /// trusted writes), passes walked, grant-class commits visited from each pass's restart point
     /// on, and setters read by the void checks (`keeps`), over the whole reading.
     pub rounds: u32,
     pub passes: u64,
@@ -980,14 +980,14 @@ impl Reading {
     pub fn key_role(&self, k: Thing, t: Thing) -> Role {
         self.keys.get(&(k, t)).copied().unwrap_or(Role::None)
     }
-    /// A commit shows: valid content, or an applied edge-class commit.
+    /// A commit shows: valid content, or an applied grant-class commit.
     pub fn shows(&self, i: Id) -> bool {
         self.valid.contains(&i) || self.applied.contains(&i) || self.copied.contains(&i)
     }
     /// What users observe of the reading: what each holder can do (its role and
     /// what it may grant in the end, and the role each edge gives at the start of each `ts`, which content
     /// written there rests on, with the cuts) and which content counts (valid, copied, purged).
-    /// Which edge-class commits apply is not in it: an applied write changing none of this is
+    /// Which grant-class commits apply is not in it: an applied write changing none of this is
     /// seen by nobody (notes/path-model-findings.md 33).
     pub fn observed(&self, w: &World) -> Observed {
         let last = w.commits.iter().map(|c| c.ts).max().unwrap_or(0) + 1;
@@ -1028,7 +1028,7 @@ struct Low {
 #[derive(Clone, Default)]
 struct Pass {
     state: BTreeMap<Edge, Val>,
-    /// The edge as restored: the highest role each edge held since the last explicit write on it
+    /// The grant as restored: the highest role each edge held since the last explicit write on it
     /// (values an `until` or a self-removal took included).
     restored: BTreeMap<Edge, Role>,
     /// Each edge's flag, and what it lets its holder grant as restored (as `restored`, of
@@ -1041,7 +1041,7 @@ struct Pass {
     /// §5.1 step 3, admin first).
     by_flag: Set,
     lows: Vec<Low>,
-    /// The record edges and record key hops the world uses (`World::record_hops`), each admin
+    /// The record grants and record key hops the world uses (`World::record_hops`), each admin
     /// from the start.
     records: BTreeSet<Edge>,
 }
@@ -1084,7 +1084,7 @@ impl Need {
     }
 }
 
-/// An edge write adding a grant (no self-removal, no finalize): one that may apply as a may-grant grant (G2), with its role. One at admin never does: a path giving may-grant at admin gives
+/// A grant write adding a grant (no self-removal, no finalize): one that may apply as a may-grant grant (G2), with its role. One at admin never does: a path giving may-grant at admin gives
 /// admin (G1), so it applies as an explicit write.
 pub fn flag_grant(w: &World, i: Id) -> Option<Role> {
     let c = &w.commits[i];
@@ -1164,7 +1164,7 @@ pub(crate) fn rests_on(w: &World, rules: &Rules, j: Id, e: Edge) -> bool {
 }
 
 /// The parts lowering `r` of edge `e` drops beside `q` (its drops, each unlisted) under
-/// `Rules::drops`, of `cands` (the held edge-class parts it may drop: ordered before it, not
+/// `Rules::drops`, of `cands` (the held grant-class parts it may drop: ordered before it, not
 /// dropped, not void): under `Commit` (for seeds; the walk's audit reads it in `gone`), every
 /// part on the same thing of a commit it drops a part of; under `Part`, none.
 fn widen(w: &World, rules: &Rules, v: &View, r: Id, cands: &[Id], q: &Set) -> Set {
@@ -1211,7 +1211,7 @@ fn keeps(w: &World, rules: &Rules, p: &Pass, gone: &dyn Fn(Id) -> bool, i: Id, m
 /// those gone, grants that do not keep in turn, and self-removals giving admin at `ts` (a
 /// self-removal lowers, so it gives admin only where the edge before it did): the first left
 /// decides by giving admin at `ts` (a lowering as it stands; a self-removal not giving it
-/// refuses), a record edge at the bottom.
+/// refuses), a record grant at the bottom.
 #[allow(clippy::too_many_arguments)]
 fn setter_keeps(w: &World, rules: &Rules, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Key, ts: u32, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
     let accept = |v: Val| alive(v, ts) == Role::Admin;
@@ -1236,7 +1236,7 @@ fn setter_keeps(w: &World, rules: &Rules, p: &Pass, gone: &dyn Fn(Id) -> bool, e
     w.is_record(e)
 }
 
-/// The walk from the seeds `d0` (notes/write-path-design.md §1): edge-class commits in key
+/// The walk from the seeds `d0` (notes/write-path-design.md §1): grant-class commits in key
 /// order, skipping D. A lowering is judged the first time a pass reaches it holding its right and
 /// taking its edge from admin (`Verdict`), and keeps that verdict: in every later pass an applied
 /// one applies unjudged and unaudited, a void one is skipped. An applied lowering whose audit drops something adds its drops to D and restarts
@@ -1306,7 +1306,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             let mut by_flag = false;
             let mut as_finalize = false;
             match judged {
-                // applied for good where it lowers; where its edge as restored in this pass is below
+                // applied for good where it lowers; where its grant as restored in this pass is below
                 // its value, in role or flag, it would raise the edge: it applies there only as
                 // any write does, by admin along its path (finding 27)
                 Some(Verdict::Applied) => {
@@ -1377,7 +1377,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             let rgrant = p.rgrant.get(&e).copied().unwrap_or(Role::None).max(p.grantable_at(e, c.ts));
             let (before, after) = (if explicit { restored } else { p.at(e, c.ts) }, alive(new, c.ts));
             let after_grant = grantable(after, *may_grant);
-            // an explicit write audits against the edge as restored, once, when judged: where it
+            // an explicit write audits against the grant as restored, once, when judged: where it
             // takes the edge down (`any_fall`: in role or, `flag_falls`, in the flag; else from
             // admin)
             let falls = if rules.any_fall { restored > after || (rules.flag_falls && rgrant > after_grant) } else { restored == Role::Admin && after < Role::Admin };
@@ -1392,7 +1392,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             let mut q = vec![];
             if judged.is_none() && explicit && falls {
                 let exempt = if rules.exempt_chain { chain(w, &v.held, i) } else { Set::new() };
-                // in question: a write resting on the edge whose need there the edge as restored
+                // in question: a write resting on the edge whose need there the grant as restored
                 // met and its new value does not, of another commit (no list can name its own)
                 let alone = |j: Id| {
                     let n = need(w, rules, j, e, p.by_flag.contains(&j) || !p.applied.contains(&j));
@@ -1434,7 +1434,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             }
             p.state.insert(e, new);
             p.flag.insert(e, *may_grant);
-            // the edge as restored reads each value's role and flag with its `until` disregarded
+            // the grant as restored reads each value's role and flag with its `until` disregarded
             let raw_grant = grantable(new.0, *may_grant);
             if explicit {
                 p.restored.insert(e, new.0);
@@ -1471,7 +1471,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
     }
 }
 
-/// A trusted write's seeds: each held edge-class commit ordered before it, resting on its edge,
+/// A trusted write's seeds: each held grant-class commit ordered before it, resting on its edge,
 /// that its list does not name and (`seeds_by_need`) whose need there its value does not meet,
 /// with the trusted write that drops it.
 fn seeds(w: &World, rules: &Rules, v: &View, active: &Set) -> BTreeMap<Id, Id> {
@@ -1907,7 +1907,7 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
         .collect()
 }
 
-/// Disputes: the candidates (`Candidates`: held edge writes of another holder's edge giving it
+/// Disputes: the candidates (`Candidates`: held grant writes of another holder's edge giving it
 /// below admin at their `ts`, but finalizes; under `Candidates::Explicit` no self-removal and none
 /// applied as a may-grant grant where trusted), not trusted and not dropped by a trusted write's
 /// seeds, whose trust changes the reading (what applies, what is valid, the roles), or (`joint`)
@@ -1922,7 +1922,7 @@ pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
 }
 
 /// `disputes`, with what a candidate's trust must change given: `differs(trusting it, the
-/// reading)` (osis-perm's walk judges edge-class parts first: what applies and the roles).
+/// reading)` (osis-perm's walk judges grant-class parts first: what applies and the roles).
 pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading, &Reading) -> bool) -> Vec<Id> {
     let rd = judge(w, rules, v);
     let explicit = rules.candidates == Candidates::Explicit;
@@ -2056,10 +2056,10 @@ pub fn end_of(w: &World, rd: &Reading, r: Id) -> End {
 }
 
 /// The writers' rule (notes/write-path-design.md §1, L3) over `base` (what the list names of
-/// everything but the edge-class commits resting on the lowered edge) and `classed` (those, in the
+/// everything but the grant-class commits resting on the lowered edge) and `classed` (those, in the
 /// order received): `end(list)` is the writer's own walk's `end_of` with the lowering listing it.
 /// Where the lowering applies with everything named and its path has no end, everything is named;
-/// else each edge-class commit is kept iff the lowering applies with it and its end with it is no
+/// else each grant-class commit is kept iff the lowering applies with it and its end with it is no
 /// earlier than without (`own_end`; false, the control `-no-end`: kept iff it applies).
 pub fn writers_keep(base: Vec<Id>, classed: &[Id], own_end: bool, mut end: impl FnMut(&[Id]) -> End) -> Vec<Id> {
     let all: Vec<Id> = base.iter().chain(classed).copied().collect();
@@ -2083,8 +2083,8 @@ pub fn writers_keep(base: Vec<Id>, classed: &[Id], own_end: bool, mut end: impl 
 
 /// The evidence closure of `unit` over `avail` (spec/permissions.md §4 Evidence of a commit): the
 /// commits in `unit`, the other parts of a held commit on the same thing (a part on another thing
-/// is that thing's unit's, with its own path: notes/path-form.md), every available edge write on
-/// an edge a held part rests on or one of its edge writes sets.
+/// is that thing's unit's, with its own path: notes/path-form.md), every available grant write on
+/// an edge a held part rests on or one of its grant writes sets.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     // the edges and (commit, thing) units of what is in so far, grown by what each round adds

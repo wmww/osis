@@ -209,8 +209,8 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Key access), model `D0_fa_flip`, spec/permissions.md §1: T's mint admin is
-// X, so T's grant on X closes a cycle through the record edge and is keyless (X boxes T nothing).
-// Another admin of T removes X's record edge: T's grant is the only link left, it gains key
+// X, so T's grant on X closes a cycle through the record grant and is keyless (X boxes T nothing).
+// Another admin of T removes X's record grant: T's grant is the only link left, it gains key
 // access, and X's admin re-seals T; nothing leaks to X's side meanwhile and nobody is locked out.
 #[test]
 fn grant_on_mint_admin_keyless_until_record_edge_goes_spec_crypto_4() {
@@ -226,18 +226,18 @@ fn grant_on_mint_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     };
     lp.peers[0].clock.advance(1);
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
-    assert!(!boxes(&mut lp, 0, x, t), "T's grant on X is keyless: X's key yields T's by the record edge");
+    assert!(!boxes(&mut lp, 0, x, t), "T's grant on X is keyless: X's key yields T's by the record grant");
     lp.peers[0].clock.advance(1);
     lp.peers[0].engine.grant(&t, &d, &edge(Role::Admin)).unwrap();
     lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.reseal_after_pass(&x).unwrap().commits.is_empty(), "nothing to re-seal while the record edge stands");
+    assert!(lp.peers[1].engine.reseal_after_pass(&x).unwrap().commits.is_empty(), "nothing to re-seal while the record grant stands");
     lp.peers[1].clock.advance(1);
     removal(&mut lp, 1, t, x);
     // T's removal rotation was judged with its grant keyless: no KEM key in its read keyset; KEM
     // key due at T's pass end writes one (spec/crypto.md §3)
     lp.peers[1].engine.reseal_after_pass(&t).unwrap();
     lp.sync(1, 0).unwrap();
-    assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record edge is gone");
+    assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record grant is gone");
     let done = lp.peers[0].engine.reseal_after_pass(&x).unwrap();
     assert!(!done.commits.is_empty(), "X re-seals T: its grant has key access now");
     assert!(boxes(&mut lp, 0, x, t));
@@ -1968,7 +1968,7 @@ fn left_out_on_an_invalidated_rotation_ends_with_one_rekey_spec_crypto_4() {
 // writes), model `LO_rot`: as above, but P's rotation of N is its removal of Z, in one commit
 // writing both the edge and N's keyset. Once everything is held the removal is invalid, so Z
 // never left; it stands all the same as the rotation it also is, and M re-keys once. Fails with
-// the cause judged by its edge writes first (an invalid departure voiding the record).
+// the cause judged by its grant writes first (an invalid departure voiding the record).
 #[test]
 fn left_out_on_an_invalidated_removal_rotation_stands_as_a_rotation_spec_crypto_4() {
     let mut lp = synced(5);
@@ -1988,7 +1988,7 @@ fn left_out_on_an_invalidated_removal_rotation_stands_as_a_rotation_spec_crypto_
     removal(&mut lp, 1, n, z);
     let new: Vec<CommitId> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
     let [p_rm] = new.as_slice() else { panic!("one commit: {new:?}") };
-    assert!(lp.peers[1].engine.core.ix.held.edge_commit(p_rm).is_some() && super::members::writes_keyset(&lp.peers[1].engine.core, p_rm), "an edge write and a keyset");
+    assert!(lp.peers[1].engine.core.ix.held.edge_commit(p_rm).is_some() && super::members::writes_keyset(&lp.peers[1].engine.core, p_rm), "a grant write and a keyset");
     lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
     lp.sync(1, 4).unwrap();
     rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
@@ -2038,7 +2038,7 @@ fn left_out_world() -> (LocalPeer, Tid, Tid, Epoch) {
 
 /// Peer `i` removes D from M alone (`removal_alone`), and g0 alone gets it, then rotates G: it
 /// judges k0 by order (it reads no secret of M), so it leaves M out and records k0 with the
-/// removal's edge write as its cause. Returns the removal's commits.
+/// removal's grant write as its cause. Returns the removal's commits.
 fn g0_leaves_m_out(lp: &mut LocalPeer, i: usize, m: Tid, g: Tid, k0: Epoch) -> BTreeSet<CommitId> {
     let d = lp.peers[2].engine.tid();
     let before = commit_ids(lp, i);

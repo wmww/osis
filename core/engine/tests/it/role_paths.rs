@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Role commits state real paths (notes/a1-spec/README.md step 3, Role paths; notes/a1-spec/
 //! permissions.md §1 Path, §2): each role commit the engine writes states the path by which its
-//! signer reaches what it writes, and the engine judges each edge write as a walk afresh over the
+//! signer reaches what it writes, and the engine judges each grant write as a walk afresh over the
 //! stated paths does (`walk_afresh`).
 
 use crate::common;
@@ -112,9 +112,9 @@ fn above(e: &osis_engine::Engine, p: Tid, q: Tid) -> bool {
 }
 
 /// The role and the may-grant role hop `p` to `q` gives just before `point`: admin for a descent, else `p`'s
-/// direct edge on `q` (`None`: no edge held).
+/// direct grant on `q` (`None`: no edge held).
 fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> Option<(Role, Option<Role>)> {
-    // a hop marked direct reads the direct edge, and only off a descent of two steps or more
+    // a hop marked direct reads the direct grant, and only off a descent of two steps or more
     if marked {
         assert!(above(e, p, q) && e.core.created(&q).and_then(|r| r.mint_admin()) != Some(p), "a mark off a descent of two steps: {p:?} {q:?}");
     } else if above(e, p, q) {
@@ -130,7 +130,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
 // every role commit states a real path. Over the representative world, each role commit A holds
 // states one path, purge index 0, whose hops from its signer to each thing it writes (to the
 // holder, for a self-removal) are held edges or descents just before its key, giving what the
-// commit needs there: the signer's role on the thing (admin for an admin's edge write, its role
+// commit needs there: the signer's role on the thing (admin for an admin's grant write, its role
 // for a rotation), admin up to the holder for a self-removal, the granted role as
 // may-grant on the last edge for a may-grant grant. Every kind the table names is met.
 #[test]
@@ -180,7 +180,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
                 let kind = if has("roles.0") && h.frontier.is_none() && ops.iter().all(|(_, v)| v.is_none()) {
                     "finalize"
                 } else if has("roles.0") {
-                    "admin edge write"
+                    "admin grant write"
                 } else if has("keys.0") {
                     "rotation"
                 } else {
@@ -190,7 +190,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             }
         }
     }
-    for k in ["leave", "leave through a holder", "redemption", "may-grant", "finalize", "admin edge write", "rotation"] {
+    for k in ["leave", "leave through a holder", "redemption", "may-grant", "finalize", "admin grant write", "rotation"] {
         assert!(seen.contains_key(k), "no {k}: {seen:?}");
     }
     assert!(lens.contains_key(&1) && lens.contains_key(&3), "paths through one and three holders: {lens:?}");
@@ -201,7 +201,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
 }
 
 /// A walk afresh (`osis_perm::paths::Paths::evaluate`, notes/perm-paths.md) over the role commits
-/// engine `e` holds: each edge write a part along the path its commit states for its target (its
+/// engine `e` holds: each grant write a part along the path its commit states for its target (its
 /// value and frontier as `e`'s timeline reads them); `e`'s trust set; records for every thing
 /// named. With each part's ID in `e`'s timeline and its target.
 pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
@@ -260,7 +260,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
     (osis_perm::paths::Paths::evaluate(&records, trust, &commits), ids)
 }
 
-/// Where engine `e`'s timeline differs from `walk_afresh`: each edge write whose applied/not
+/// Where engine `e`'s timeline differs from `walk_afresh`: each grant write whose applied/not
 /// differs, and each edge whose final role differs (every `until` counted removed).
 pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
     let (paths, ids) = walk_afresh(e);
@@ -271,7 +271,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
         let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::MayGrant));
         if old != new {
             let (signer, holder, _) = tl.edge_op(w).unwrap();
-            out.push(format!("edge write {:?} by {signer:?} on ({holder:?}, {t:?}): engine {old}, afresh {:?}", w.0, paths.status(nid)));
+            out.push(format!("grant write {:?} by {signer:?} on ({holder:?}, {t:?}): engine {old}, afresh {:?}", w.0, paths.status(nid)));
         }
     }
     let finals = paths.finals();
@@ -290,7 +290,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
 }
 
 // spec/permissions.md §5.1 step 5 (the walk is a function of the held commits): the engine's
-// timeline, updated as commits came, gives every edge write the verdict and every edge the final
+// timeline, updated as commits came, gives every grant write the verdict and every edge the final
 // role a walk afresh over the stated role paths gives, at every node of the representative world.
 #[test]
 fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
@@ -301,7 +301,7 @@ fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
 }
 
 /// The newest role commit at peer `i` writing `holder`'s edge on `t`: its header, and a walk
-/// afresh's status of that edge write.
+/// afresh's status of that grant write.
 fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
     let e = &lp.peers[i].engine;
     let tl = e.core.timelines().get(&t).unwrap();
@@ -350,10 +350,10 @@ fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
 }
 
 // spec/commits.md §2: a role commit changes at most one grant, a shape rule binding the writer
-// alone; a receiver judges each edge write on its own. B, admin of T1 by its own grant and
+// alone; a receiver judges each grant write on its own. B, admin of T1 by its own grant and
 // of T2 only through H, writes past the writer's rules one role commit granting C write on both.
 // No one path serves both things, so it states the Interim one; it is written, and a receiver
-// judges T1's edge write on its own. Fails where the writer asserts one path for every role
+// judges T1's grant write on its own. Fails where the writer asserts one path for every role
 // commit, shape rules skipped or not.
 #[test]
 fn a_hostile_role_commit_on_things_reached_apart_is_written_spec_commits_2() {
@@ -376,7 +376,7 @@ fn a_hostile_role_commit_on_things_reached_apart_is_written_spec_commits_2() {
     assert_eq!(lp.peers[0].engine.roster(&t1).get(&pc).map(|e| e.role), Some(Role::Write));
 }
 
-// spec/permissions.md §2 May-grant grant ("an edge write whose path gives admin on T is
+// spec/permissions.md §2 May-grant grant ("a grant write whose path gives admin on T is
 // explicit, whatever it sets"): B holds admin on T through H and a direct write grant with the
 // may-grant flag; its grant of read to C states the admin path [H], not its own flag's (the empty
 // path), and applies as an explicit grant, not a may-grant grant.
@@ -429,11 +429,11 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
 }
 
 // spec/permissions.md §1 Path, Direct mark; spec/wire.md §4 `marks` (README Open 21): A
-// makes G and T with admin G, takes admin on T by its own grant and removes G's record edge there
+// makes G and T with admin G, takes admin on T by its own grant and removes G's record grant there
 // (detaching T from G). A's later content and role writes on T state the empty path with
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
 // role), and are applied by the engine and by a walk afresh alike: B, granted write, reads A's
-// value; no edge write's verdict or final role differs. Before its own grant, A's writes state the
+// value; no grant write's verdict or final role differs. Before its own grant, A's writes state the
 // descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
 // too.
 #[test]
@@ -466,7 +466,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     assert_eq!(path(before), osis_commit::Path::default(), "the descent, unmarked");
     let marked = osis_commit::Path { purge: 0, things: vec![], direct: 1 };
     assert_eq!(path(content), marked);
-    assert_eq!(path(both), marked, "the direct edge, fewer edges than the descent");
+    assert_eq!(path(both), marked, "the direct grant, fewer edges than the descent");
     assert!(!role.is_empty() && role.iter().all(|id| path(*id) == marked), "{role:?}");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
     assert_eq!(lp.peers[1].engine.core.timelines().role(&ps[1], &t, At::END), Some(Role::Write));
@@ -480,7 +480,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
 }
 
 // notes/principles.md Check scaling, spec/permissions.md §1 Path, Direct mark: finding
-// a detached thing's path (A's direct edge, marked) walks the things reaching it, as many at 10n
+// a detached thing's path (A's direct grant, marked) walks the things reaching it, as many at 10n
 // unrelated role commits held as at n.
 #[test]
 fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {

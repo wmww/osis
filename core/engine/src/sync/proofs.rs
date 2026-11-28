@@ -101,7 +101,7 @@ impl Core {
         (out, until)
     }
 
-    /// The lowerings this node's reading applies (spec/permissions.md §5.1): edge writes on a
+    /// The lowerings this node's reading applies (spec/permissions.md §5.1): grant writes on a
     /// thing's grant giving below admin at their `ts`.
     fn applied_lowerings(&self) -> Vec<Lowering> {
         let tl = self.timelines();
@@ -151,7 +151,7 @@ impl Core {
 impl Engine {
     /// What this node proves on a connection, in proof order (spec/wire.md §11.2 Prove): its node
     /// thing claiming each thing it holds a grant on (its accounts), or nothing past itself where
-    /// it holds none, then its held link keys by ascending tid; and as copies the edge writes on
+    /// it holds none, then its held link keys by ascending tid; and as copies the grant writes on
     /// those claimed edges, with their evidence and records.
     pub fn proving(&mut self) -> Result<Proving> {
         let me = self.core.tid();
@@ -163,7 +163,7 @@ impl Engine {
         Ok(Proving { provers, copies })
     }
 
-    /// Certificate copies of the edge writes on `holder`'s grants on `targets`, with their
+    /// Certificate copies of the grant writes on `holder`'s grants on `targets`, with their
     /// evidence and records (`copies_of`).
     fn path_copies(&mut self, holder: &Tid, targets: &BTreeSet<Tid>) -> Result<Certificates> {
         let mut seeds = Vec::new();

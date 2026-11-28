@@ -9,7 +9,7 @@
 //! (`T`), commit (`C`) and step (`S`: step IDs and their keys) types so it runs over held-model's
 //! worlds as over the engine's.
 //!
-//! The closure (E1, notes/a2-spec/README.md Open 2): a member brings every held edge write on each
+//! The closure (E1, notes/a2-spec/README.md Open 2): a member brings every held grant write on each
 //! edge of its stated paths and on each edge it writes, whatever their validity or order, and the
 //! `sync.0` writes recording the steps that place the delete keys it lists.
 
@@ -50,7 +50,7 @@ pub type Required<C, T, S, H = T> = BTreeMap<CopyId<C, T>, Reason<T, S, H>>;
 /// Copies recording a step that places a listed key (`Evidence::stepped`).
 pub type Stepped<C, T> = BTreeSet<CopyId<C, T>>;
 
-/// An edge write's facts (its edge is (holder, the copy's thing)).
+/// A grant write's facts (its edge is (holder, the copy's thing)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Write<H> {
     pub holder: H,
@@ -58,7 +58,7 @@ pub struct Write<H> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind<H> {
-    /// A part with no edge write: content, a purge request, a compaction snapshot, a `sync.0` write.
+    /// A part with no grant write: content, a purge request, a compaction snapshot, a `sync.0` write.
     Content,
     Write(Write<H>),
 }
@@ -122,7 +122,7 @@ impl<T, S, H> Part<T, S, H> {
 /// Why a copy is in a sync ID's evidence (the first reason found).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reason<T, S, H = T> {
-    /// An edge write on an edge the set uses.
+    /// A grant write on an edge the set uses.
     Edge(Edge<T, H>),
     /// It records this step of the base's sync ID, on the path placing a listed delete key.
     Step(T, S),
@@ -172,7 +172,7 @@ struct HeldStep<C, S> {
 struct Ix<C, T, S, H> {
     copies: HeldCopies<C, T, S, H>,
     on_thing: BTreeMap<T, BTreeSet<C>>,
-    /// Copies with an edge write on the edge.
+    /// Copies with a grant write on the edge.
     on_edge: BTreeMap<Edge<T, H>, BTreeSet<CopyId<C, T>>>,
     /// Steps recorded per (base, step ID).
     steps: BTreeMap<(T, S), HeldStep<C, S>>,
@@ -291,7 +291,7 @@ where
     }
 }
 
-/// The edges a part's edge write sets (at most one).
+/// The edges a part's grant write sets (at most one).
 fn own_edge<T: Copy, S, H: Copy>(p: &Part<T, S, H>, on: T) -> Option<Edge<T, H>> {
     match p.kind {
         Kind::Write(w) => Some((w.holder, on)),
@@ -381,7 +381,7 @@ where
     }
 
     /// The evidence of copies `seeds` alone (spec/permissions.md §4 Evidence of a commit): the
-    /// closure from what each brings (its parts' known path edges, the edges its edge writes set,
+    /// closure from what each brings (its parts' known path edges, the edges its grant writes set,
     /// the delete keys it lists), the seeds left out. What a Prove's copies or a stranded fire carry
     /// beside their copies.
     /// Beside the members, the copies recording a step placing a listed key (`stepped`), seeds
@@ -783,9 +783,9 @@ struct Added<C, T, H> {
 }
 
 /// The closure step (spec/permissions.md §4 Evidence of a commit), from `work` over the held
-/// copies: an edge brings every held copy with an edge write on it; a delete key brings the copies
+/// copies: an edge brings every held copy with a grant write on it; a delete key brings the copies
 /// recording each step from the base's genesis to a step bearing it; a copy (outside the unit)
-/// brings its parts' known path edges, the edges its edge writes set and the delete keys it lists.
+/// brings its parts' known path edges, the edges its grant writes set and the delete keys it lists.
 fn close<C, T, S, H>(ix: &Ix<C, T, S, H>, unit: &BTreeSet<T>, cl: &mut Closure<C, T, S, H>, mut work: Vec<Item<C, T, S, H>>, counts: &mut Counts) -> Added<C, T, H>
 where
     C: Ord + Copy + Hash,

@@ -820,7 +820,7 @@ impl Core {
     /// by chains of grants with key access (`reads_now`), or the public does by its own grant on
     /// that actor (`public_reads`). `t`'s own role: a thing reads as itself.
     /// Invariant: a thing above an independent `a` on its record chain opens `a` only by its role
-    /// there (a record edge is a grant), never by being its mint admin: once that edge is lowered
+    /// there (a record grant is a grant), never by being its mint admin: once that edge is lowered
     /// or removed `a` leaves `t`'s sync unit, so whatever entry of `a`'s parts later arrives under
     /// `t`'s sync ID (sealed under `t`'s epochs from before `a` was keyed) waits outside the node
     /// closure (`retention::needed::applies_on`), as one that arrived before the loss went.
@@ -1005,7 +1005,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
     let carried = !opens.is_empty() || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a));
-    // X's record naming an owner or a thing of the unit its mint admin: the record edge is X's
+    // X's record naming an owner or a thing of the unit its mint admin: the record grant is X's
     // grant the unit's readers hold by that record, so they hold X's stub whatever became of it
     let record = !carried && own.iter().any(|o| record_admin(core, c, o, &a).is_some());
     if !enters && (carried || fired) || record {
@@ -1029,7 +1029,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
 }
 
 /// The mint admin of independent `a` where `a`'s record names unit `c`'s owner `o` or a thing `c`
-/// holds whole (spec/sync-set.md §2 Stubs): its record edge is `a`'s grant that `c`'s readers
+/// holds whole (spec/sync-set.md §2 Stubs): its record grant is `a`'s grant that `c`'s readers
 /// hold by `a`'s record, so `c` carries `a`'s stub with that edge's writes, whatever `c`'s role on
 /// `a` is now. Who writes it: `a`'s minting (the record), fixed in `a`'s tid.
 pub(crate) fn record_admin(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Tid> {

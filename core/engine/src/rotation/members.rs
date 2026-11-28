@@ -16,13 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The order of an actor grant (spec/crypto.md §4, key access): an edge by the write that began
-/// its standing (`None`: a record edge, since before every change, so never the one left
+/// its standing (`None`: a record grant, since before every change, so never the one left
 /// keyless), then a grant being written now.
 type Order = (u8, Option<osis_perm::Point>);
 
 /// The actor grants this node holds (spec/crypto.md §4, key access): each holder actor's standing
-/// on each thing with a timeline (`Timeline::standing_since`, record edges included), and the
-/// record edge of each of `also` without a timeline here (nothing wrote it: in force).
+/// on each thing with a timeline (`Timeline::standing_since`, record grants included), and the
+/// record grant of each of `also` without a timeline here (nothing wrote it: in force).
 fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
     for t in &core.timelines().things() {
@@ -48,7 +48,7 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
 }
 
 /// The keyless grants among the actor grants of one component's timeline `tl`: each holder
-/// actor's standing on each thing (`Timeline::standing_since_all`, record edges included), as
+/// actor's standing on each thing (`Timeline::standing_since_all`, record grants included), as
 /// `grants` gathers them. A keyless grant closes a cycle of actor grants (`osis_keys::key_access`),
 /// and a cycle lies in one component, so the union over components is the answer over all.
 pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
@@ -119,8 +119,8 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
     if core.edge_holders(target).iter().any(|(m, _)| m == holder) {
         return key_access(core).contains(&(*target, *holder));
     }
-    // the grants held with this one last, and the record edges of both ends (an actor whose
-    // mint admin is the target closes a cycle through its record edge, though it holds nothing
+    // the grants held with this one last, and the record grants of both ends (an actor whose
+    // mint admin is the target closes a cycle through its record grant, though it holds nothing
     // yet)
     let mut gs = grants(core, &[*target, *holder]);
     gs.push(Grant { order: (2, None), target: *target, holder: *holder });
@@ -314,11 +314,11 @@ pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<
 /// Whether left-out cause `c`, held here, stands (spec/crypto.md §4, Left out): a commit writing
 /// a keyset (a rotation) while held, valid or not: valid, its keyset supersedes what it lists or
 /// is an epoch a departed party holds; invalid, it is a keyset no box may name; any other while
-/// one of its edge writes is a departure's that its holder still has here, other than this
+/// one of its grant writes is a departure's that its holder still has here, other than this
 /// node's own (`super::others`), or a grant still keyless here.
 ///
 /// Invariant: a cause stops standing only where this node can show what it showed is gone. An
-/// edge write's departure ends with a regrant or its invalidity, a keyless grant with key
+/// grant write's departure ends with a regrant or its invalidity, a keyless grant with key
 /// access, each judged by this node's own walk over held commits; a commit writing a keyset as
 /// well (a removal's own rotation) stands as a rotation, since a record does not say which of
 /// its writes it was named for. A keyset proves its block by
@@ -601,13 +601,13 @@ pub(crate) fn box_blocked(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Resul
 
 /// Whether `a`'s epoch `e` of role `r` boxes a holder past its key access to `a`, by a box of
 /// its `secrets.0` state (spec/crypto.md §4, rule 4: a node that may rotate `a` re-keys while a
-/// current epoch does), with the causes (Left out: the keyless grants' edge writes); `None`
+/// current epoch does), with the causes (Left out: the keyless grants' grant writes); `None`
 /// when it does not.
 pub(crate) fn keyless_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Option<BTreeSet<CommitId>>> {
     Ok(tainted(tx, a, r)?.contains(e).then(|| keyless_causes(tx.core, a)))
 }
 
-/// The edge writes of the keyless grants on `a` (spec/crypto.md §4, Left out: a taint's or a box
+/// The grant writes of the keyless grants on `a` (spec/crypto.md §4, Left out: a taint's or a box
 /// past key access's cause), each as the write that began its standing.
 fn keyless_causes(core: &Core, a: &Tid) -> BTreeSet<CommitId> {
     let mut out = BTreeSet::new();

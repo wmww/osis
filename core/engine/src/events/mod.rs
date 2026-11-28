@@ -63,7 +63,7 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// A creation record arrived: `thing`'s mint-admin edge, the start of its roster.
+    /// A creation record arrived: `thing`'s mint-admin grant, the start of its roster.
     Created { thing: Tid },
     /// A reference index row naming each of these targets on that aspect appeared or went
     /// (`refs`): their backlinks changed. Only once a backlinks watch was asked for
@@ -81,7 +81,7 @@ pub enum Event {
     /// unknown): a commit answered `Err` may have landed, so any read may answer otherwise.
     Reloaded,
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
-    /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
+    /// grant write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
     DisputeDetected { commit: CommitId, op: u32, holder: osis_base::Holder, target: Tid, author: Tid, trust: bool },
     Diagnostic(Diagnostic),
 }

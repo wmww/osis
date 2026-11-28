@@ -9,7 +9,7 @@ const K: u16 = 2;
 const D: u16 = 100;
 const D2: u16 = 101;
 
-/// A record edge (the mint admin's) as a hop.
+/// A record grant (the mint admin's) as a hop.
 fn rec(a: u16, b: u16) -> Edge<u16> {
     (a, b)
 }
@@ -128,7 +128,7 @@ fn a_thing_entering_a_unit_reads_its_bodies_once() {
         w.ev.add_sid(200);
         w.work(|w| w.ev.join(&200, D))
     };
-    // the b writes and Hk's grant on D, each write's 3 path edges and the grant's record edge
+    // the b writes and Hk's grant on D, each write's 3 path edges and the grant's record grant
     let (a, c) = (at(10), at(100));
     assert_eq!((a.bodies, c.bodies), (11, 101));
     assert_eq!((a.atoms, c.atoms), (31, 301));

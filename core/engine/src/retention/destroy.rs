@@ -4,14 +4,14 @@
 //! deletes them at peers by the dropped-body path), its states and per-aspect rows, but what
 //! judges its destruction (`judges_destruction`: its record, its gone mintings, its role-class
 //! parts, the destroying requests' parts). Records are identity, `created.0` is existence: authority
-//! that passed through it stands as its held edge writes say. What stays is
+//! that passed through it stands as its held grant writes say. What stays is
 //! held by the ordinary rules, never its own: while the thing is in the node closure or a held thing
 //! needs it (`retention::needed`), released whole as any thing; the requests are commits carrying a
 //! purge request, kept as any (spec/commits.md §5 Forgetting, lasting). So a minting arriving later
 //! falls under a held request as any named delta does. What a dependent needs travels with the
 //! dependent: its holders place the record and frozen history under its sync IDs
 //! (`Engine::destroyed_upstream`). `Core::exists` says the thing is gone all the same. A later write
-//! on it is a write on an unknown thing, but an edge write: the walk reads every held edge write
+//! on it is a write on an unknown thing, but a grant write: the walk reads every held grant write
 //! whatever its stamp, so a destruction's right is judged as any request's (`kept_whole`).
 
 use crate::engine::records;
@@ -33,9 +33,9 @@ pub(crate) fn judges_destruction(ak: &str) -> bool {
     ak == CREATED || osis_schema::core_types::is_role_class(ak) || osis_commit::retention::destroying_request(ak)
 }
 
-/// Aspects a destroyed thing keeps whatever their stamp: its mintings, and its edge writes (the
+/// Aspects a destroyed thing keeps whatever their stamp: its mintings, and its grant writes (the
 /// walk's input, taken whatever their stamp, `thing_wait`): its destruction's right is judged as
-/// any request's, by every held edge write (spec/commits.md §5 Destruction), so a removal stamped
+/// any request's, by every held grant write (spec/commits.md §5 Destruction), so a removal stamped
 /// after it reads the same in every arrival order.
 pub(crate) fn kept_whole(ak: &str) -> bool {
     ak == CREATED || crate::apply::validity::edge_ak(ak)
@@ -273,7 +273,7 @@ fn reads_again(t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) {
 }
 
 /// Drops everything of `t` (`apply_destructions`) but what judges its destruction
-/// (`judges_destruction`) written before it, and its edge writes whatever their stamp (the module
+/// (`judges_destruction`) written before it, and its grant writes whatever their stamp (the module
 /// doc).
 fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     // what stays still reads as gone (`Core::exists`): observers hear it

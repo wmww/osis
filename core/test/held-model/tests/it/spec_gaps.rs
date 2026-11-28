@@ -11,7 +11,7 @@ use roles_model::paths::{self, Set};
 use roles_model::Role;
 use std::collections::BTreeMap;
 
-/// Two random trust sets over `w`'s edge writes (each lowering or other edge write with one
+/// Two random trust sets over `w`'s grant writes (each lowering or other grant write with one
 /// chance in two), from `seed`.
 pub fn trust_sets(w: &World, seed: u64) -> Vec<Set> {
     let mut rng = roles_model::Rng::thread(seed, 2);
@@ -258,7 +258,7 @@ fn gaps_show() {
 /// Finding 20 (`wide` seed 14204407699, split and late, shrunk): K writes O through [A], where A
 /// holds only read on O, after X removed K from A; nobody honest syncs A and O. The write is
 /// invalid everywhere (no write reaches O through A), with or without the removal: O's evidence
-/// closure over everything holds the removal (an edge write on (K, A)), which nothing delivers to
+/// closure over everything holds the removal (a grant write on (K, A)), which nothing delivers to
 /// O and which moves no verdict there. Once W raises A to write on O (backdated, after the
 /// removal), the removal decides K's write and no node holding it holds O: the gap under every
 /// rule (finding 17's class).
@@ -319,7 +319,7 @@ fn gaps_the_thief_logs_nothing_only_a_grant_it_withholds_brings() {
 /// A removal riding another write (`wide` seed 14204407714, split, shrunk): X removes K and Q from A in one commit; Q
 /// (its node honest, syncing A and D) then writes D through [A], A holding only read on D; the
 /// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. The removal reaches
-/// R by riding Q's write: D's evidence takes every edge write on (Q, A), the removal's commit
+/// R by riding Q's write: D's evidence takes every grant write on (Q, A), the removal's commit
 /// among them, and with it every write on the edges that commit sets, so Y holds it and R's reader
 /// requires it: no gap.
 #[test]
@@ -343,7 +343,7 @@ fn gaps_a_removal_rides_a_write_through_a_read_hop() {
 /// Finding 23 (`wide` seed 14204407685, shrunk): the stolen K writes R through [A, O], A holding
 /// only read on O (W's grant), O write on R; X, W and Y each sync their own thing alone and the
 /// thief logs no grant giving below write. The node holding everything judges the write invalid
-/// (no write reaches R through a read hop); R's reader holds no edge write on (A, O) and pends:
+/// (no write reaches R through a read hop); R's reader holds no grant write on (A, O) and pends:
 /// W's read grant is evidence of the write, but no node holding it syncs R. Lazy delivery leaves it
 /// behind as it does a removal: every rule holds against its reference and the gap is at R,
 /// pending where the node holding everything refuses (neither shows the write).

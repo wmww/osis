@@ -56,13 +56,13 @@ pub struct World {
     /// The independent things the public holds sync on, by its own grant: every party's role
     /// there is sync (`entry`: a reference to one brings its stub).
     pub public_sync: Set,
-    /// The record edges `(mint admin, t)` among `grants` that stand, of independent things: in
+    /// The record grants `(mint admin, t)` among `grants` that stand, of independent things: in
     /// `t`'s record, so known wherever anything of `t` is held (`entry::Know`).
     pub records: BTreeSet<(T, T)>,
 }
 
 /// The keyless grants among actor grants `(g, t)` (holder `g` on target `t`) taken in `order`
-/// (record edges first, then by the write starting each standing; spec/crypto.md §4 Key access):
+/// (record grants first, then by the write starting each standing; spec/crypto.md §4 Key access):
 /// a grant is keyless when `t`'s key already yields `g`'s over the grants given key access before
 /// it (`t` holds, through such grants, one on `g`), so it would close a cycle.
 pub fn keyless_of(order: &[(T, T)]) -> BTreeSet<(T, T)> {

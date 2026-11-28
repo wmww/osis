@@ -13,7 +13,7 @@
 (* are the closure over boxes to it and the history boxes of what it opens.   *)
 (* Rule picks the Met rule:                                                    *)
 (*   "named":   a commit whose removal resets an unknown entry applies none  *)
-(*              of its edge writes, and a name is met when its commit is held *)
+(*              of its grant writes, and a name is met when its commit is held *)
 (*              so resolved (a removal names the writes it ends);             *)
 (*   "old":     a name is met when its commit is held, a commit's known      *)
 (*              writes apply alone (the negative control).                    *)

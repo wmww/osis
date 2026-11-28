@@ -1,4 +1,4 @@
-//! Abstract edge-write records the node hands perm (spec/permissions.md §5.1; core types of
+//! Abstract grant-write records the node hands perm (spec/permissions.md §5.1; core types of
 //! spec/data-model.md §9). The node adapts commit headers and deltas into these; perm parses no
 //! bytes. Every record is untrusted: perm never panics on one.
 
@@ -110,7 +110,7 @@ impl Frontier {
     }
 }
 
-/// One `roles.0` edge write of a role commit: the edge of `holder` on `target`, `None`
+/// One `roles.0` grant write of a role commit: the edge of `holder` on `target`, `None`
 /// for a removal.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GrantOp {
@@ -120,7 +120,7 @@ pub struct GrantOp {
     pub edge: Option<Grant>,
 }
 
-/// The edge writes of a role commit (spec/commits.md §2).
+/// The grant writes of a role commit (spec/commits.md §2).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RoleCommit {
     pub id: CommitId,

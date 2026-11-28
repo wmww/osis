@@ -93,7 +93,7 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     assert!(o.valid[&(7, 0)] && o.valid[&(10, 0)]);
 }
 
-// spec/permissions.md §1 (mint admin; Path), §5.2: a path through an account's record edge; an
+// spec/permissions.md §1 (mint admin; Path), §5.2: a path through an account's record grant; an
 // admin of the account writes along [account], and loses that with an explicit demotion
 #[test]
 fn record_edge_through_an_account_spec_permissions_1() {
@@ -110,8 +110,8 @@ fn record_edge_through_an_account_spec_permissions_1() {
     assert!(!evaluate(&cs(true)).valid[&(11, 0)]);
 }
 
-// spec/permissions.md §2 (Self-removal): node 2, admin of the account by its record edge,
-// removes the account's record edge on 12 along the path [account], which ends at the holder: a
+// spec/permissions.md §2 (Self-removal): node 2, admin of the account by its record grant,
+// removes the account's record grant on 12 along the path [account], which ends at the holder: a
 // self-removal, not a finalize
 #[test]
 fn record_edge_removed_by_an_admin_of_the_mint_admin_spec_permissions_2() {
@@ -121,7 +121,7 @@ fn record_edge_removed_by_an_admin_of_the_mint_admin_spec_permissions_2() {
     assert!(o.valid[&(10, 0)] && !o.valid[&(11, 0)]);
 }
 
-// spec/permissions.md §1: the mint admin's record edge is an edge like any
+// spec/permissions.md §1: the mint admin's record grant is an edge like any
 #[test]
 fn mint_admin_is_an_edge_spec_permissions_1() {
     let on13 = |id, author, h| Commit { parts: vec![Part { thing: 13, ..part(REG, PurgeBy::AuthorOrAdmin, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
@@ -139,7 +139,7 @@ fn mint_admin_is_an_edge_spec_permissions_1() {
 
 // spec/permissions.md §5.2 (Content), spec/commits.md §4 (Unjudgeable): a delta stated along the
 // account, the account its purge author, is valid only where every edge of that path gives write;
-// it waits while an edge of the path is neither a record edge nor set by a held grant
+// it waits while an edge of the path is neither a record grant nor set by a held grant
 #[test]
 fn a_delta_along_an_account_rests_on_its_signers_edge_there_spec_permissions_5_2() {
     let as_account = |id, author, h| Commit { author: ACCOUNT, parts: vec![Part { thing: 12, ..part(REG, PurgeBy::AuthorOrAdmin, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) }.along(&[ACCOUNT]);

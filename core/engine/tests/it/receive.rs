@@ -120,12 +120,12 @@ fn pending_until_created_spec_commits_4() {
     assert!(lp2.peers[0].engine.pending().iter().any(|(c, _)| *c == pk.id));
 }
 
-// spec/commits.md §4 (Unjudgeable): a held edge write ordered before a part, a removal as a grant,
+// spec/commits.md §4 (Unjudgeable): a held grant write ordered before a part, a removal as a grant,
 // makes that edge of its stated path arrived. 1 makes t and u, u's mint admin t, removes from t
 // the grant 0 never had, then grants 0 read; 0 forges one commit granting 2 admin on both, each
 // along its own edge on the thing. At a node holding all but the grant, the removal is the held
 // write on 0's edge on t: the forgery's part on t is held, invalid; its part on u waits (the path
-// it states to u is 0's own edge on u, which no write set: the record edge from t to u is no edge
+// it states to u is 0's own edge on u, which no write set: the record grant from t to u is no edge
 // of it, §1 Path), the grant changing neither. Both rosters stay as 1 wrote them.
 #[test]
 fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {

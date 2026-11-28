@@ -1,5 +1,5 @@
 # Call role grants "grants", not "edges"; let a node act as several things
-> Summary: Engine and perm types and some defined spec terms still say "edge" for a role grant (`Edge`, `EdgeWrite`, "edge write", "edge admin", "record edge"); Tess dislikes "edge" for a permission: rename to "grant". Second: the `osis` API acts as one thing per node (`author()`, its node thing); expose `Osis::act_as(actor)` so a caller can act as any thing the node holds roles on, `author()` the default.
+> Summary: Engine and perm types and some defined spec terms still say "edge" for a role grant (`Edge`, `EdgeWrite`, "grant write", "edge admin", "record grant"); Tess dislikes "edge" for a permission: rename to "grant". Second: the `osis` API acts as one thing per node (`author()`, its node thing); expose `Osis::act_as(actor)` so a caller can act as any thing the node holds roles on, `author()` the default.
 > Priority: low
 > Tags: api, perm, naming
 

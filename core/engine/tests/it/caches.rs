@@ -157,7 +157,7 @@ fn new_things_between_opens_read_alike() {
 }
 
 // spec/commits.md §4 (applies in one storage transaction): all or none; spec: none (rebuildable caches): a crash at any durable write
-// of a content commit and then of edge writes, then open: the open computes what a rebuild of
+// of a content commit and then of grant writes, then open: the open computes what a rebuild of
 // what landed computes
 #[test]
 fn crash_at_every_write_keeps_caches_exact() {

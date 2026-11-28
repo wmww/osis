@@ -187,7 +187,7 @@ fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
     for _ in 0..n {
         make(e, d, d);
     }
-    // minted with the node thing: the node enters it by its record edge's piece (a thing
+    // minted with the node thing: the node enters it by its record grant's piece (a thing
     // minted with the local node root would have no carrier, spec/sync-set.md §2 First entry)
     let me = e.tid();
     let a = make(e, me, d);
@@ -345,7 +345,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");
             }
             // the node reads every independent thing (it made them): roots D's strongs to them
-            // (the model's last thing is its node thing, admin of each by its record edge)
+            // (the model's last thing is its node thing, admin of each by its record grant)
             let me = kinds.len();
             let mut mine = w.clone();
             mine.kinds.push(hc::Kind::Independent);

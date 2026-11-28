@@ -157,7 +157,7 @@ impl Core {
         self.created(tid)?.mint_admin()
     }
 
-    /// Current holders of `actor` with their role and `until` (alive edges), its record edge
+    /// Current holders of `actor` with their role and `until` (alive edges), its record grant
     /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<Time>)> {
         let ts = now_ts(self);
@@ -168,7 +168,7 @@ impl Core {
     }
 
     /// The holders of `actor` for keys (spec/crypto.md §4): every holder of an edge on it by
-    /// `rotation::key_role` (its record edge included while it stands), every held applied
+    /// `rotation::key_role` (its record grant included while it stands), every held applied
     /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
     /// stays until it is finalized (spec/permissions.md §2). A destroyed thing is none: it holds
     /// no keys and nobody stands in for it (spec/crypto.md §4, Holder actors, Destroyed).
@@ -177,7 +177,7 @@ impl Core {
     }
 
     /// The direct holders of `actor` for keys with destroyed things among them (`key_holders`
-    /// keeps them out): every edge on it by `rotation::key_role`, its record edge included while
+    /// keeps them out): every edge on it by `rotation::key_role`, its record grant included while
     /// it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
         match self.timelines().on(actor) {

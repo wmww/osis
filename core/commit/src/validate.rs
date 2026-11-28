@@ -90,7 +90,7 @@ impl Header {
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
-            // the role timeline walks every edge write (spec/commits.md §2)
+            // the role timeline walks every grant write (spec/commits.md §2)
             if kind == Kind::RoleSnapshot && osis_schema::core_types::never_compacted(ak) {
                 return Err(Error::Invalid("compaction snapshot of roles.0"));
             }

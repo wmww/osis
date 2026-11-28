@@ -5,9 +5,9 @@
 //! record); a sync-only cut does not, so a node keeping Y unread holds a sync box and a step.
 //!
 //! The world: P is independent; Y is minted with admin P. Parties: A, an admin of P (so of Y, by
-//! the record edge); W, a writer of P; W2, a writer of P removed before it writes; X, a stranger.
+//! the record grant); W, a writer of P; W2, a writer of P removed before it writes; X, a stranger.
 //! Y may be made independent by A (a rotation: the keyset, a box to P at epoch 1, a `sync.0` step
-//! bearing epoch 1's sync key) and A may grant G and G2 read on Y (an edge write and a box each)
+//! bearing epoch 1's sync key) and A may grant G and G2 read on Y (a grant write and a box each)
 //! and K sync (a sync-only box: K keeps Y unread). Hostile parts: W, W2 or X boxing R, P or G at a
 //! made-up epoch, or writing a step bearing one; A planting a box and a step with no keyset.
 //! Validity is judged at each part's point: a box needs write on Y, a keyset, a step or an edge
@@ -38,14 +38,14 @@ pub enum Part {
     Box { signer: Id, holder: Id, epoch: u32, read: bool },
     /// a `sync.0` step bearing `epoch`'s sync key, verified to its genesis
     Step { signer: Id, epoch: u32 },
-    /// an edge write naming `holder`
+    /// a grant write naming `holder`
     Edge { signer: Id, holder: Id },
 }
 
 /// The epochs a rotation of Y makes; a made-up one is any other.
 pub const MADE: u32 = 1;
 
-/// Each party's role on Y when its part is judged: A admin (record edge of P), W write, the
+/// Each party's role on Y when its part is judged: A admin (record grant of P), W write, the
 /// others none (W2 removed before it writes).
 fn role(signer: Id) -> u8 {
     match signer {
@@ -76,7 +76,7 @@ pub enum Rule {
     KeysetOnly,
     /// Control: a box counts only where the node does not open Y as dependent (it opens P).
     NotOpenedDependent,
-    /// Control: a box counts only beside a held valid edge write on Y.
+    /// Control: a box counts only beside a held valid grant write on Y.
     BesideEdge,
 }
 

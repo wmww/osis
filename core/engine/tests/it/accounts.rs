@@ -11,7 +11,7 @@ use osis_schema::core_types as ct;
 // from A; A's `keys.0` names the inbox, whose setting takes both inbox signals, and A's card is on
 // the profile; the node holds A
 // (a strong from its root) and reads all three, the inbox and profile in A's sync unit, with
-// admin on each by A's record edge.
+// admin on each by A's record grant.
 #[test]
 fn minting_an_account_spec_permissions_8() {
     let mut p = Peer::new(1, T0).unwrap();

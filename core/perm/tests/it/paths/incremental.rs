@@ -62,7 +62,7 @@ impl Tracked {
 }
 
 /// Whether `ch`, reported by the update from `a` to `b`, is what the two readings differ by:
-/// exact for edge-class statuses, history, cuts and re-grant points; every new part reported;
+/// exact for grant-class statuses, history, cuts and re-grant points; every new part reported;
 /// any other delta reported is one whose validity changed (an addendum's); and every delta whose
 /// verdict or purge changed is reachable from `ch` by `Changed`'s rule. A part of a commit in
 /// `renewed` may be reported as new.
@@ -517,7 +517,7 @@ fn a_verdict_kept_past_a_later_restart_would_misjudge() {
     }
 }
 
-// Draft §5.1 step 3 and step 5 (a commit's edge-class parts on a thing fall together; nothing is
+// Draft §5.1 step 3 and step 5 (a commit's grant-class parts on a thing fall together; nothing is
 // undropped): X's one commit removes N5 from A (dropping N5's grant of Z) and lowers B to write;
 // H then removes X listing nothing (or listing X's commit), dropping both of X's lowerings, the
 // applied one's drop staying. Trusting nothing or H's removal: every arrival order and every

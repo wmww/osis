@@ -103,7 +103,7 @@ pub(super) fn run(start: u64, n: u64, alike: Alike) -> Vec<String> {
         note(alike(&inp.records, &inp.trust, &inp.commits, i, i % 4 == 0), &|| format!("content world {i}\n{}", m::tiny_trace(&w)));
         let (records, commits) = super::shapes::soup(i);
         note(alike(&records, &BTreeSet::new(), &commits, i, true), &|| format!("soup {i}\n{commits:#?}"));
-        // a soup under its first edge-class part trusted
+        // a soup under its first grant-class part trusted
         let p = Paths::evaluate(&records, BTreeSet::new(), &commits);
         if let Some(id) = p.statuses().into_keys().next() {
             note(alike(&records, &BTreeSet::from([id]), &commits, i, false), &|| format!("soup {i} trusting {id:?}\n{commits:#?}"));
@@ -236,7 +236,7 @@ fn any_lookup_order_reads_alike() {
     }
 }
 
-/// An edge write on `on` along `path` setting `holder` to `role` (none: a removal), its frontier
+/// A grant write on `on` along `path` setting `holder` to `role` (none: a removal), its frontier
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
     let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(t), list.iter().map(|&c| cid(c)))));
@@ -452,7 +452,7 @@ fn liveness_reads_alike_in_every_arrival_order() {
 
 // notes/perm-paths.md, Components: a part that cannot apply (B holds nothing on A,
 // so its path through [A] waits) ordered before a lowering already judged on an edge it rests on
-// (H's removal of A's record edge on T1, by H's marked direct hop) is put in question by that
+// (H's removal of A's record grant on T1, by H's marked direct hop) is put in question by that
 // lowering as from scratch: its component is walked again from it. Arriving last, it was left
 // out of the lowering's drops.
 #[test]

@@ -23,10 +23,10 @@ pub struct Held {
     /// The thing it is signed as, and the key that signed it.
     pub signer: Tid,
     pub key: SignKey,
-    /// Its parts but its edge writes, in the node's numbering (`WriteId(id, index)`): a delta, or
+    /// Its parts but its grant writes, in the node's numbering (`WriteId(id, index)`): a delta, or
     /// `PartKind::None` where nothing is read.
     pub parts: Vec<paths::Part>,
-    /// Its edge writes, where it has any that count: op k is `WriteId(id, k)` in this layer's
+    /// Its grant writes, where it has any that count: op k is `WriteId(id, k)` in this layer's
     /// queries, along the path the commit states for its target, the frontier naming commits
     /// whole.
     pub role: Option<Arc<RoleCommit>>,
@@ -37,12 +37,12 @@ pub struct Held {
 }
 
 impl Held {
-    /// Its parts but its edge writes, as the walk's input.
+    /// Its parts but its grant writes, as the walk's input.
     pub fn deltas(self) -> paths::Commit {
         paths::Commit { id: self.id, ts: self.ts, signer: self.signer, key: self.key, parts: self.parts }
     }
 
-    /// Its parts and its edge writes as the walk's input: op k is part `parts.len() + k`, along
+    /// Its parts and its grant writes as the walk's input: op k is part `parts.len() + k`, along
     /// the path the commit states for its target, the frontier naming commits whole.
     pub fn commit(&self) -> paths::Commit {
         let mut parts = self.parts.clone();
@@ -105,24 +105,24 @@ pub fn point_of(k: Key) -> Point {
 pub struct Changed {
     /// What the walk reports (`paths::Changed`).
     pub walk: paths::Changed,
-    /// Things whose record came or went: their record edge with it.
+    /// Things whose record came or went: their record grant with it.
     pub created: BTreeSet<Tid>,
     /// The held deltas whose verdict may have moved (`Paths::reached`).
     pub reached: BTreeSet<WriteId>,
-    /// The edge writes (commit, op) that are new or whose status changed.
+    /// The grant writes (commit, op) that are new or whose status changed.
     pub ops: BTreeSet<WriteId>,
     /// Of `ops`, those the walk applied before the update.
     pub was_applied: BTreeSet<WriteId>,
     /// The commits given that were not held before.
     pub fresh: BTreeSet<CommitId>,
-    /// The things whose held edge writes (`Timeline::held_on`) changed.
+    /// The things whose held grant writes (`Timeline::held_on`) changed.
     pub held: BTreeSet<Tid>,
     /// The things the timeline came to know or know no more (`Timeline::knows`).
     pub known: BTreeSet<Tid>,
 }
 
 impl Changed {
-    /// The grants of things (holder, target) whose value at some key changed, a record edge
+    /// The grants of things (holder, target) whose value at some key changed, a record grant
     /// that came or went aside (`created`). Key grants are no part of a role (spec/permissions.md
     /// §1 Effective role): what they change is the validity `reached` names.
     pub fn edges(&self) -> impl Iterator<Item = (Tid, Tid)> + '_ {
@@ -139,22 +139,22 @@ pub struct Timeline<S: Store = MemStore> {
     now: Edges,
     /// The applied writes on grants of things in key order, each with its edge (holder, target).
     log: BTreeMap<Key, (Tid, Tid)>,
-    /// Per target, the things whose grant on it a held edge write sets, applied or not.
+    /// Per target, the things whose grant on it a held grant write sets, applied or not.
     into: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Per target, the keys whose grant on it a held edge write sets, applied or not (never
+    /// Per target, the keys whose grant on it a held grant write sets, applied or not (never
     /// taken out).
     keys_into: BTreeMap<Tid, BTreeSet<SignKey>>,
     /// Per thing whose record is not held, the held commits with a path member whose record
     /// chain stops at it: given again when the record comes (their hops read the chain).
     waiting: BTreeMap<Tid, BTreeSet<CommitId>>,
-    /// The held commits with edge writes, as given: each with its other parts, which its ops
+    /// The held commits with grant writes, as given: each with its other parts, which its ops
     /// are numbered after in the walk.
     roles: BTreeMap<CommitId, (Arc<RoleCommit>, Vec<paths::Part>)>,
-    /// Per target, the held commits with an edge write on it.
+    /// Per target, the held commits with a grant write on it.
     on: BTreeMap<Tid, BTreeSet<CommitId>>,
-    /// The trust set as given (`set_trust`): edge writes (commit, op), held or not yet.
+    /// The trust set as given (`set_trust`): grant writes (commit, op), held or not yet.
     trusted: BTreeSet<WriteId>,
-    /// The things an edge write held at some point named as its holder (never taken out: a
+    /// The things a grant write held at some point named as its holder (never taken out: a
     /// superset of those held now).
     holders: BTreeSet<Tid>,
 }
@@ -189,7 +189,7 @@ impl<S: Store> Timeline<S> {
     /// Brings the timeline up to what `held` holds: `commits` names every commit whose reading
     /// (`HeldSet::commit`) may have changed since the last update, held or not, `things` every
     /// thing whose record came or went. A commit read as it was is not taken again (one with
-    /// edge writes would have its component walked again from its key), so the update reports
+    /// grant writes would have its component walked again from its key), so the update reports
     /// what moved, never what was touched.
     pub fn update(&mut self, held: &dyn HeldSet, commits: &BTreeSet<CommitId>, things: &BTreeSet<Tid>) -> Changed {
         let mut out = Changed::default();
@@ -207,7 +207,7 @@ impl<S: Store> Timeline<S> {
                     forced.extend(self.waiting.remove(t).unwrap_or_default());
                 }
                 (None, Some(_)) => {
-                    // a part whose hops read the record edge (a mint admin's, or the record's
+                    // a part whose hops read the record grant (a mint admin's, or the record's
                     // key's) loses it: given again
                     if let Some(h) = self.records.holder(t) {
                         forced.extend(self.paths.through(&h, t));
@@ -292,7 +292,7 @@ impl<S: Store> Timeline<S> {
                 }
             }
         }
-        // known by a record or a held edge write: a thing whose edge writes changed was known
+        // known by a record or a held grant write: a thing whose grant writes changed was known
         // before by those or by its record, which only `things` move
         out.known = was.iter().filter(|(t, w)| self.knows(t) != **w).map(|(t, _)| *t).collect();
         for t in &out.held {
@@ -315,7 +315,7 @@ impl<S: Store> Timeline<S> {
                 merge(&mut out.walk, more);
             }
         }
-        // a record edge that came or went does so from the start
+        // a record grant that came or went does so from the start
         for (t, h) in came.iter().chain(&went) {
             let Holder::Thing(a) = h else { continue };
             let last = self.paths.last(h, t).map(|(_, w)| w.value);
@@ -338,7 +338,7 @@ impl<S: Store> Timeline<S> {
         }
     }
 
-    /// Replaces the trust set (spec/permissions.md §5.1 Trust set): edge writes (commit, op).
+    /// Replaces the trust set (spec/permissions.md §5.1 Trust set): grant writes (commit, op).
     pub fn set_trust(&mut self, trust: &BTreeSet<WriteId>) -> Changed {
         self.trusted = trust.clone();
         let trust = trust.iter().filter_map(|w| self.part_of(w)).collect();
@@ -352,7 +352,7 @@ impl<S: Store> Timeline<S> {
         Timeline::new(self.trusted.clone())
     }
 
-    /// The held trusted edge writes.
+    /// The held trusted grant writes.
     pub fn trust(&self) -> BTreeSet<WriteId> {
         self.paths.trust().iter().filter_map(|w| self.op_of(w)).collect()
     }
@@ -406,33 +406,33 @@ impl<S: Store> Timeline<S> {
         out.was_applied = out.walk.was_applied.iter().filter_map(|w| self.op_of(w)).collect();
     }
 
-    /// The walk's ID of edge write `w` (commit, op).
+    /// The walk's ID of grant write `w` (commit, op).
     fn part_of(&self, w: &WriteId) -> Option<WriteId> {
         let (_, parts) = self.roles.get(&w.0)?;
         Some(WriteId(w.0, u32::try_from(parts.len()).ok()?.checked_add(w.1)?))
     }
 
-    /// The edge write (commit, op) the walk's part `w` is, if one.
+    /// The grant write (commit, op) the walk's part `w` is, if one.
     fn op_of(&self, w: &WriteId) -> Option<WriteId> {
         let (_, parts) = self.roles.get(&w.0)?;
         Some(WriteId(w.0, w.1.checked_sub(u32::try_from(parts.len()).ok()?)?))
     }
 
-    // ---- edge writes, each (commit, op) ----
+    // ---- grant writes, each (commit, op) ----
 
-    /// The held commit `id` with edge writes.
+    /// The held commit `id` with grant writes.
     pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
         self.roles.get(id).map(|x| &x.0)
     }
 
-    /// An edge write held here: its signer, holder and target.
+    /// A grant write held here: its signer, holder and target.
     pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Holder, Tid)> {
         let c = self.role_commit(&w.0)?;
         let op = c.ops.get(usize::try_from(w.1).ok()?)?;
         Some((c.signer, op.holder, op.target))
     }
 
-    /// The edge writes held on `t`, applied or not, each with its ID, commit and op.
+    /// The grant writes held on `t`, applied or not, each with its ID, commit and op.
     pub fn held_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t GrantOp)> + 't {
         self.on.get(t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == *t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
     }
@@ -442,12 +442,12 @@ impl<S: Store> Timeline<S> {
         self.on.get(&t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
     }
 
-    /// The edge writes applied on `t`, each with its commit and op.
+    /// The grant writes applied on `t`, each with its commit and op.
     pub fn applied_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t GrantOp)> + 't {
         self.held_on(t).filter(|(w, _, _)| self.is_applied(w)).map(|(_, c, o)| (c, o))
     }
 
-    /// What the settled walk did with held edge write `w`.
+    /// What the settled walk did with held grant write `w`.
     pub fn status(&self, w: &WriteId) -> Option<Status> {
         self.paths.status(&self.part_of(w)?)
     }
@@ -462,7 +462,7 @@ impl<S: Store> Timeline<S> {
         self.paths.way(&self.part_of(w)?)
     }
 
-    /// The commits holding the seeds held edge write `w` would have were it trusted
+    /// The commits holding the seeds held grant write `w` would have were it trusted
     /// (spec/permissions.md §5.1 Seeds): what Sides' held first reads.
     pub fn seed_commits(&mut self, w: &WriteId) -> BTreeSet<CommitId> {
         match self.part_of(w) {
@@ -471,37 +471,37 @@ impl<S: Store> Timeline<S> {
         }
     }
 
-    /// Whether held edge write `w` would apply at its key were its holder's edge `old` there, the
+    /// Whether held grant write `w` would apply at its key were its holder's edge `old` there, the
     /// rest as the walk has it: its verdict over another state of its own edge, such as a second
     /// removal of a holder another write removed first (spec/crypto.md §4, Covers).
     pub fn applies_over(&self, w: &WriteId, old: Option<Grant>) -> bool {
         self.part_of(w).is_some_and(|p| self.paths.would_apply(&p, old))
     }
 
-    /// Applied edge write `w`: what it found on its edge.
+    /// Applied grant write `w`: what it found on its edge.
     pub fn applied(&self, w: &WriteId) -> Option<paths::Applied> {
         self.paths.applied(&self.part_of(w)?).map(|x| x.1)
     }
 
-    /// Every held edge write the settled walk applies, with its commit's point.
+    /// Every held grant write the settled walk applies, with its commit's point.
     pub fn applied_writes(&self) -> BTreeMap<WriteId, Point> {
         self.ops().filter(|(w, _)| self.is_applied(w)).collect()
     }
 
-    /// Every held edge write in the drop set, with the point of the lowering whose drops hold it
+    /// Every held grant write in the drop set, with the point of the lowering whose drops hold it
     /// (a trusted write's seed: its own point).
     pub fn dropped_writes(&self) -> BTreeMap<WriteId, Point> {
         let by = |w: &WriteId| self.part_of(w).and_then(|p| self.paths.dropped_by(&p)).and_then(|d| self.paths.key(&d)).map(point_of);
         self.ops().filter(|(w, _)| self.status(w) == Some(Status::Dropped)).map(|(w, p)| (w, by(&w).unwrap_or(p))).collect()
     }
 
-    /// Every held edge write with its commit's point.
+    /// Every held grant write with its commit's point.
     fn ops(&self) -> impl Iterator<Item = (WriteId, Point)> + '_ {
         self.roles.values().flat_map(|(c, _)| (0u32..).zip(&c.ops).map(move |(k, _)| (WriteId(c.id, k), c.point())))
     }
 
-    /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
-    /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
+    /// The commit of the grant write in force on (`holder`, `target`): the last applied one, when
+    /// it set a value (spec/permissions.md §2: the next grant write resets the entry it created).
     pub fn in_force(&self, holder: &Holder, target: &Tid) -> Option<CommitId> {
         self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
     }
@@ -532,17 +532,17 @@ impl<S: Store> Timeline<S> {
         keys.filter_map(|k| Some((k, self.key_grant(&k, thing).filter(|e| ts.is_none() || e.alive_at(ts))?))).collect()
     }
 
-    /// Whether a held edge write names `t` as its holder.
+    /// Whether a held grant write names `t` as its holder.
     pub fn holds_edge(&self, t: &Tid) -> bool {
         self.holders.contains(t)
     }
 
-    /// Whether a thing's record or an edge write on it is held.
+    /// Whether a thing's record or a grant write on it is held.
     pub fn knows(&self, t: &Tid) -> bool {
         self.records.link(t).is_some() || self.on.contains_key(t)
     }
 
-    /// Every thing with a held record or edge write on it, in tid order.
+    /// Every thing with a held record or grant write on it, in tid order.
     pub fn things(&self) -> BTreeSet<Tid> {
         self.records.links().map(|(t, _)| *t).chain(self.on.keys().copied()).collect()
     }
@@ -558,7 +558,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// Whether an explicit write of `new` on (`holder`, `target`) at `ts`, after every held
-    /// write, takes the edge down (§5.1): the edge as restored gives or lets grant more.
+    /// write, takes the edge down (§5.1): the grant as restored gives or lets grant more.
     pub fn audits(&self, holder: &Holder, target: &Tid, new: Option<Grant>, ts: Ts) -> bool {
         let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
         let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
@@ -613,7 +613,7 @@ impl<S: Store> Timeline<S> {
 
     /// Each holder of `thing` whose current edge does not say retain (§2), with the point of the
     /// write since which it has held such an edge without a break (`None`: since before every
-    /// write: its record edge).
+    /// write: its record grant).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
         let mut out: BTreeMap<Tid, Option<Point>> = self.records.mint_admin(thing).map(|a| (a, None)).into_iter().collect();
         for (k, h, v) in self.writes_on(thing) {
@@ -650,7 +650,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
-    /// of it (or its record edge) gave: lowered, not ended (`ended`).
+    /// of it (or its record grant) gave: lowered, not ended (`ended`).
     pub fn lowered(&self, thing: &Tid, ts: Ts) -> BTreeSet<Tid> {
         let mut top: BTreeMap<Tid, Role> = self.records.mint_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
         for (_, h, v) in self.writes_on(thing) {
@@ -664,7 +664,7 @@ impl<S: Store> Timeline<S> {
 
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: whether each
     /// one's edge ended saying retain (`Grant::ends_retaining`), the point of its last write
-    /// (`None`: its record edge, never written) and the role the edge last gave (a removal's
+    /// (`None`: its record grant, never written) and the role the edge last gave (a removal's
     /// value saying retain gives none: the role before it).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (bool, Option<Point>, Role)> {
         let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.records.mint_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();

@@ -1153,7 +1153,7 @@ fn a_dependent_thing_leaving_goes_while_its_sync_id_stays_spec_sync_set_3() {
 
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
 // spec/sync-set.md §3 (Nothing of R stays): node 0 makes an independent thing under its
-// account, held from D, grants the account admin on it by an edge write and releases it; no own
+// account, held from D, grants the account admin on it by a grant write and releases it; no own
 // entry of a commit forgotten then stays under any sync ID, D's included (the grant's commit goes
 // there as a grant naming the account, spec/sync-judgement.md §2, until nothing held needs the
 // thing).

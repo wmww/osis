@@ -1,6 +1,6 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
 //! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed` less
-//! chain stubs: every edge write on a stated path's edges), the oracle: at every step of a
+//! chain stubs: every grant write on a stated path's edges), the oracle: at every step of a
 //! world, for every node's held set and every sync ID's held entries, under every sync ID, the
 //! copies the derivation keeps incrementally and computes from scratch equal the model's required
 //! copies. Hand worlds per model test naming a rule or finding; the derivation's own (a waiting path entry, delete-key steps); count tests.
@@ -53,7 +53,7 @@ fn copies_of(w: &World, h: &Set) -> BTreeMap<CopyId<Id, Thing>, Vec<Id>> {
 }
 
 /// `h` holds some parts of a commit on a thing and not others. The model writes each part of a
-/// commit as an event of its own; no node holds such a set: a commit's edge writes on a thing are
+/// commit as an event of its own; no node holds such a set: a commit's grant writes on a thing are
 /// one `roles.0` delta (spec/crdt.md §2: one delta per tid and aspect), and a copy is held whole or
 /// not at all (spec/permissions.md §4 Copies). Not compared.
 fn splits_a_copy(w: &World, h: &Set) -> bool {
@@ -209,7 +209,7 @@ fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
 }
 
 // Interim (issues/engine-evidence-trails-model.md): the engine reads no key hop until A4; a story
-// world with an edge write on a key hop or a commit signed by a key other than its signer's own (moves 54, 55) is
+// world with a grant write on a key hop or a commit signed by a key other than its signer's own (moves 54, 55) is
 // the model's alone
 fn other_keys(sim: &paths::Sim) -> bool {
     (0..sim.w.commits.len()).any(|j| sim.w.key_write(j) || sim.w.commits[j].key != paths::own_key(sim.w.commits[j].signer))

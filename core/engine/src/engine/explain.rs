@@ -87,7 +87,7 @@ fn root(core: &Core, x: &Tid, r: &Root) -> String {
 fn need(core: &Core, x: &Tid, n: &Need) -> String {
     let x = label(core, x);
     match n {
-        Need::Holder => format!("{x} has a held edge write naming it holder"),
+        Need::Holder => format!("{x} has a held grant write naming it holder"),
         Need::Pending(c) => format!("pending commit c:{} on {x} is signed by it or awaits its record", short(c)),
         Need::Acting(c) => format!("held commit c:{} on {x} acts as it", short(c)),
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
@@ -124,7 +124,7 @@ fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
 }
 
 /// The widest paths into `t` over the timelines' current edges (each thing's roster now, its
-/// record edge included; with no timeline, its mint admin), as `View::roles_to` walks them for
+/// record grant included; with no timeline, its mint admin), as `View::roles_to` walks them for
 /// `role_now`: per holder reached, its role and the next step toward `t`.
 fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
     let at = osis_perm::At::now(crate::flows::now_ts(core));
@@ -147,7 +147,7 @@ fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
     best
 }
 
-/// One edge of a path: holder `h` on `x`, by the role commit in force or its record edge.
+/// One edge of a path: holder `h` on `x`, by the role commit in force or its record grant.
 fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
     let on = core.timelines().on(x);
     let r = match &on {
@@ -156,8 +156,8 @@ fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
     };
     let by = match on.as_ref().and_then(|o| o.in_force(h)) {
         Some(c) => format!("c:{}", short(&c)),
-        None if core.mint_admin(x) == Some(*h) => "record edge".into(),
-        None => "no edge write in force".into(),
+        None if core.mint_admin(x) == Some(*h) => "record grant".into(),
+        None => "no grant write in force".into(),
     };
     format!("-[{} {by}]->", r.unwrap_or_else(|| "?".into()))
 }
@@ -298,7 +298,7 @@ impl Engine {
     /// (notes/test-harnesses.md, Why kept and row dumps): the role `rotation::role_here` gives and
     /// the role commits' (`rotation::role_here`); per identity of the node (account, itself, key
     /// actors) its role and the widest current path to `t` (direct, chain, account),
-    /// each edge by the role commit in force or the record edge; the secrets held of the actor `t`'s derive from, with that actor's role
+    /// each edge by the role commit in force or the record grant; the secrets held of the actor `t`'s derive from, with that actor's role
     /// when it is another, and `lost_due`'s clauses (without its side effects).
     #[doc(hidden)]
     pub fn why_role(&mut self, t: &Tid) -> String {

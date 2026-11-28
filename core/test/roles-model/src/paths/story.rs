@@ -125,7 +125,7 @@ pub struct Move {
 /// right); 41 withholds the removal from K until the settle and writes T1 after it, which K
 /// receives at once and compacts T1 carrying (an honest writer compacting before it holds the
 /// removal); 42 is X's own cover of T1, backdated, carrying its writes there; 43 is X removing H and
-/// B in one commit (spec/commits.md §2), listing nothing; 44 to 46 put an end date on an admin edge
+/// B in one commit (spec/commits.md §2), listing nothing; 44 to 46 put an end date on an admin grant
 /// (`Until`): X ending H's admin at the removal, backdated; X ending H's admin a tick after its own
 /// `ts`, stamped after the theft; X ending A's admin on T1 at the removal through A2, backdated (the
 /// edge above the signer's on B's removal of A2 from T1, where B makes it). 47 to 53 lower an honest
@@ -247,7 +247,7 @@ impl Sim {
         self.deliver(i, made, rng, hostile);
         i
     }
-    /// One commit of several edge writes (`World::commit`), received as one.
+    /// One commit of several grant writes (`World::commit`), received as one.
     fn put_parts(&mut self, c: (Thing, u32, &[Thing], Thing, Vec<Kind>), made: u32, rng: &mut Rng, hostile: bool) -> Vec<Id> {
         let (signer, ts, path, on, parts) = c;
         let ids = self.w.commit(signer, ts, path, on, parts);
@@ -258,7 +258,7 @@ impl Sim {
         }
         ids
     }
-    /// One commit of edge writes on several things, each `(path, on, kind)` (`World::group`),
+    /// One commit of grant writes on several things, each `(path, on, kind)` (`World::group`),
     /// received as one by every node syncing one of them.
     fn put_group(&mut self, signer: Thing, ts: u32, parts: Vec<(&[Thing], Thing, Kind)>, made: u32, rng: &mut Rng, hostile: bool) -> Vec<Id> {
         let ids: Vec<Id> = parts.into_iter().map(|(path, on, kind)| self.w.push(signer, ts, path, on, kind)).collect();
@@ -363,7 +363,7 @@ impl Sim {
         m.put((H, 1, &[A], D1, grant(J, Role::Admin)), 1, rng, false);
         m.put((H, 1, &[A, ORG], T2, grant(D1, Role::Write).may_grant()), 1, rng, false);
         m.put((J, 3, &[D1], T2, Kind::Content), 3, rng, false);
-        // J grants RD2 read on T2 by D1's flag: an edge-class write resting on (D1, T2)
+        // J grants RD2 read on T2 by D1's flag: a grant-class write resting on (D1, T2)
         m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
         // B removes J from D1 by [A] at 4 (a descent of two steps); J writes T2 after it, and at 10
         // makes D1 leave T2 (an honest holder thing's leave)
@@ -910,7 +910,7 @@ impl Sim {
         self.held_at(n, None)
     }
     /// The node's view by `t`: leaves for the things it syncs, and with `Rules::evidence_leaves`
-    /// for every thing a held edge write is on. Its trust set: the sides it recorded (`sides`:
+    /// for every thing a held grant write is on. Its trust set: the sides it recorded (`sides`:
     /// its own lowerings and those it held first); B's user (`Setup::b_side_x`) chooses X's
     /// removal of H until it chooses H's removal of X at `AFTER` (`choose`); from `AFTER` on, what
     /// its user chose then (`chose`). The nodes that trust nothing record nothing: a node with no
@@ -1367,7 +1367,7 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
 
 /// Whether the reading without `x` held observes what `rd` does, `x` aside (`Reading::observed`:
 /// roles over time, what each may grant, valid and purged content), and whether it applies the same
-/// edge-class commits (counted, not a property: finding 33).
+/// grant-class commits (counted, not a property: finding 33).
 pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bool, bool) {
     let (seen, same, _) = no_effect_of(w, rules, v, rd, &rd.observed(w), &[x]);
     (seen, same)
@@ -1387,8 +1387,8 @@ pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, seen: &Obs
     (a == b, o.applied == less(&rd.applied), roles)
 }
 
-/// The held commits whose edge-class parts all do nothing in the reading, each as its held parts:
-/// edge writes it does not apply (void, refused, or never given a verdict), but those dropped (a
+/// The held commits whose grant-class parts all do nothing in the reading, each as its held parts:
+/// grant writes it does not apply (void, refused, or never given a verdict), but those dropped (a
 /// dropper's effect) or trusted (a trust set's). A node holds a
 /// commit whole, so a commit is idle only where every part is.
 pub fn idle(w: &World, v: &View, rd: &Reading) -> Vec<Vec<Id>> {
@@ -1438,7 +1438,7 @@ pub fn effects(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Vec<Effect> 
 }
 
 /// Who an idle commit's effect is a fight among (notes/path-model-findings.md 34 to 36): its parts
-/// and every edge-class commit whose applying it changes (`involved`); of them, those whose signer
+/// and every grant-class commit whose applying it changes (`involved`); of them, those whose signer
 /// held what they need at their key in no reading (`illegit`: the node's; without the commit; with
 /// each held explicit lowering of another holder trusted besides, with and without it; trusting
 /// nothing): applied in none, nor every edge of their path giving admin there (a key lowering
@@ -1487,7 +1487,7 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
 /// at the end), counted. Of each idle write (`effects`), counted, not failing (an idle write may
 /// decide a fight among admins, judged once: notes/path-model-findings.md 34 to 36): an effect
 /// users observe with no dispute shown, as `void` (a void lowering), `unapplied` (any other
-/// lowering) or `idle` (any other edge write), by trust (`unshown T`/`N`), whether it is
+/// lowering) or `idle` (any other grant write), by trust (`unshown T`/`N`), whether it is
 /// the thief's and which side of H's removal it decides; one with a dispute shown (`fight`); any
 /// effect in an honest history (`honest`); `void shown`, `unapplied shown`, `idle shown` (only which
 /// writes apply differs). Failing, `idle gains`: an unshown effect making a commit of the thief's
@@ -2141,7 +2141,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
 // ---- The void step in small worlds (notes/path-model-findings.md 16, 17) ----
 
 /// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
-/// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
+/// by a random party at a random `ts`, one in four carrying two or three grant writes on distinct
 /// holders (`tiny_commit`), each setting a random party's edge to admin (standing, or one in three
 /// until two ticks on) or none, listing each earlier write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
@@ -2212,19 +2212,19 @@ pub fn tiny_flags(i: u64, n: usize) -> World {
 }
 
 /// A small world of a thing detached from its folder (spec/permissions.md §1 Path,
-/// Direct mark): T1 minted with admin A, A with admin H, so H is T1's mint ancestor two record edges up. `n` commits by
+/// Direct mark): T1 minted with admin A, A with admin H, so H is T1's mint ancestor two record grants up. `n` commits by
 /// a random party at a random `ts`, one in five on A (granting or removing a party's admin there,
 /// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
-/// T1's record edge, a third of the time: removing it detaches T1) to admin (standing or until two
+/// T1's record grant, a third of the time: removing it detaches T1) to admin (standing or until two
 /// ticks on) or none (half the time),
 /// listing each earlier write with probability one half. Each commit on T1 states, for H: the
 /// descent [], the descent through [A], [] with its hop marked direct (H's direct grant), or one in
 /// eight each [A] with a one-step hop marked or [] with a mark past its hops; for another party: []
-/// (its direct edge), [A], or one in eight each [] marked (a mark on no descent), [A] with its
+/// (its direct grant), [A], or one in eight each [] marked (a mark on no descent), [A] with its
 /// one-step hop A to T1 marked, [] with a mark past its hops (each mark off a descent of two steps
 /// or more: the part applies nowhere). Half the worlds open with H
-/// granting itself admin on T1 by [A] (its direct edge) at 1. A stolen key of the far
-/// ancestor, a removed far ancestor backdating by its direct edge, a mark where no direct edge
+/// granting itself admin on T1 by [A] (its direct grant) at 1. A stolen key of the far
+/// ancestor, a removed far ancestor backdating by its direct grant, a mark where no direct grant
 /// stands, and a party holding both routes using the one a removal did not cut are each some
 /// world's commits.
 pub fn tiny_detached(i: u64, n: usize) -> World {
@@ -2260,7 +2260,7 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
         let kind = match rng.below(5) {
             0 => Kind::Content,
             r => {
-                // A, T1's mint admin, a third of the time: its record edge, lowered to detach T1
+                // A, T1's mint admin, a third of the time: its record grant, lowered to detach T1
                 let h = if rng.below(3) == 0 { A } else { parties[rng.below(5)] };
                 let k = match r {
                     1 => Kind::set(h, Role::Admin),
@@ -2280,7 +2280,7 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
 /// H as mint admin, T1 with A. `n` commits at random `ts`, each signed by a party's own key as
 /// itself, or (one in two) by RK or TK as A or as a party (the key's grant there, `signers.0`);
 /// on A (one in two), T1 or a party's node thing; acting as itself where it writes its own thing,
-/// else by its direct edge or (one in two, past a party) through A: [N, A, T1] and [N, A, N']. Half
+/// else by its direct grant or (one in two, past a party) through A: [N, A, T1] and [N, A, N']. Half
 /// the worlds open with H granting RK admin on A at 1, half with B granting RK admin on B (a
 /// node's second key), a quarter with N5 granting TK write on N5; a key signs as A, as the party
 /// the opening grants it on, or as any party, a third each. Content one in five, else one part or (one in four) two or three on
@@ -2567,7 +2567,7 @@ impl TinyStats {
 /// sets an edge with no current grant, its role below admin, every hop before its last (its key
 /// hop first) giving that role and the last giving admin or that role with the flag, at its `ts`.
 pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
-    // edge `e`'s value and flag just before `i` in key order (a record edge starts at admin)
+    // edge `e`'s value and flag just before `i` in key order (a record grant starts at admin)
     let before = |e: Edge, i: Id| -> (Role, bool) {
         let start = if w.is_record(e) { (Role::Admin, false) } else { (Role::None, false) };
         let k = w.key(i);
@@ -2583,7 +2583,7 @@ pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
             let Kind::Edge { role: r, .. } = w.commits[i].kind else { return true };
             let Some((&last, hops)) = w.rests(i).split_last() else { return true };
             let (lr, lf) = before(last, i);
-            let held = before(w.sets(i).expect("an edge write"), i).0 > Role::None;
+            let held = before(w.sets(i).expect("a grant write"), i).0 > Role::None;
             held || r >= Role::Admin || hops.iter().any(|&e| before(e, i).0 < r) || !(lr == Role::Admin || (lf && lr >= r))
         })
         .collect()
@@ -2615,7 +2615,7 @@ pub fn unaudited_flag_grants(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
         .collect()
 }
 
-/// The value edge or key hop `e` gives just before `i` in the reading's own history (a record edge
+/// The value edge or key hop `e` gives just before `i` in the reading's own history (a record grant
 /// or record key hop starting at admin), its `until` read at `i`'s `ts`.
 fn before_in(w: &World, rd: &Reading, e: Edge, i: Id) -> Role {
     let start = if w.is_record(e) { (Role::Admin, None) } else { (Role::None, None) };
@@ -2644,7 +2644,7 @@ pub fn unright_key_writes(w: &World, rd: &Reading) -> Vec<Id> {
 /// The commits signed by a key that show past an applied explicit lowering of that key hop, after
 /// them, not listing them, which takes the hop from what they applied by (admin for an explicit
 /// write, its role as what the hop lets grant for a may-grant grant, write for a finalize and
-/// content) to below the least they could apply by (W3: for an edge write adding a grant its role
+/// content) to below the least they could apply by (W3: for a grant write adding a grant its role
 /// as what the hop lets grant; else the same), read from the reading's own history (K4: a lowered
 /// key's commits fall unless the lowering lists them), each with that lowering. Content whose key
 /// gives write in the end is left to re-grant.
@@ -2697,12 +2697,12 @@ pub fn unaudited_key_commits(w: &World, v: &View, rd: &Reading) -> Vec<(Id, Id)>
 /// `unaudited_key_commits`),
 /// `illegit gains N`/`T`/`V` (an idle write's unshown effect never makes apply, nor is, a write whose signer held its right in no
 /// reading: `fight_among`). Counted: of each idle write (a void lowering, any other lowering, any
-/// other edge write, held and doing nothing), an effect users observe (`Reading::observed`)
+/// other grant write, held and doing nothing), an effect users observe (`Reading::observed`)
 /// with no dispute shown (`void`, `unapplied N`/`T`/`V`, `idle N`/`T`/`V`; findings 34 to 36), each
 /// classified as a fight among parties holding their right in some reading (`fight legit`) or not
 /// (`fight illegit`); any effect in a world whose lists all follow the writers' rule (`honest`,
 /// `lists_honest`); `fight` (an effect, a dispute shown), `void shown`, `unapplied shown`, `idle
-/// shown` (only which edge writes apply changes: nobody sees it, finding 33), `stray` (a drop
+/// shown` (only which grant writes apply changes: nobody sees it, finding 33), `stray` (a drop
 /// whose dropper does not apply at the end), and the worlds whose lists are honest
 /// (`honest worlds`).
 pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
@@ -2842,7 +2842,7 @@ pub fn tiny_trace(w: &World) -> String {
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
         let by = if c.key == own_key(c.signer) { String::new() } else { format!(" by {}", name(&c.key)) };
-        // the thing written and the path, where it is not A by the direct edge
+        // the thing written and the path, where it is not A by the direct grant
         let at = if c.on == A && c.path.is_empty() { String::new() } else { format!(" on {} via {:?}", name(&c.on), c.path.iter().map(name).collect::<Vec<_>>()) };
         if let Kind::Edge { holder, role, frontier, until, may_grant, finalize } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *may_grant { " may grant" } else { "" }, until.map_or(String::new(), |u| format!(" until {u}"))) };

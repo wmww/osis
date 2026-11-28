@@ -1033,7 +1033,7 @@ fn addenda_wake(k: usize) -> Work {
 
 // spec/permissions.md §5.2 (Addenda); spec/requirements.md, Scale; notes/principles.md
 // (Fast by construction): a removed party's commits stamped before its removal arriving after
-// it, edge writes among them, cost the same whatever the removed party holds: the removal is
+// it, grant writes among them, cost the same whatever the removed party holds: the removal is
 // woken by what the commits name (their edges and stated paths), never by the removed party's
 // reach.
 #[test]
@@ -1315,7 +1315,7 @@ fn long_aspect_writes_are_flat() {
     all_linear("a writer removed", &a[2], &b[2]);
 }
 
-/// n edge writes on one thing by its mint admin (5 holders granted and removed in turn), then
+/// n grant writes on one thing by its mint admin (5 holders granted and removed in turn), then
 /// a fresh node ingesting them one by one: (its work; then the mint admin's grant to a new
 /// holder, its removal of a holder, and the joiner ingesting those two).
 fn role_history_join(n: usize) -> [Work; 4] {
@@ -1361,7 +1361,7 @@ const PAGED_HISTORY: usize = 64;
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (a node that starts holding a thing
 // fetches and judges all of its role history: O(the history)): a fresh node ingesting n and 10n
-// edge writes on one thing one by one does linear work, and at the end of the history a grant,
+// grant writes on one thing one by one does linear work, and at the end of the history a grant,
 // a removal and their arrival do flat work: perm places each write without walking the
 // history, and the node re-judges only the commits whose writes apply otherwise
 // (`Changed::reached`).
@@ -1816,7 +1816,7 @@ fn open_is_linear_in_role_commits() {
 }
 
 /// The path wait's work for a write acting as `r` on `x` at a node holding three layers of forged
-/// edge writes on `x`, each unjudgeable (spec/commits.md §4 Unjudgeable) though its part is held
+/// grant writes on `x`, each unjudgeable (spec/commits.md §4 Unjudgeable) though its part is held
 /// (it also writes its own path's end, which is judgeable): one through each of `n` fresh things
 /// (`fs`) on `e`'s edge, one through `e` on each of `n` things' (`qs`), one through each of those
 /// on `r`'s. The write reads `r`'s edge: `n` writes, each reading one `qs` edge, each reading `e`'s.

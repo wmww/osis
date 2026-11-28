@@ -1,5 +1,5 @@
 //! Finalizing timed edges (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): an edge
-//! past its `until` is no departure for keys until a node with write (an admin for an admin edge)
+//! past its `until` is no departure for keys until a node with write (an admin for an admin grant)
 //! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 is mint admin of `t` (account A),
 //! 1 and 3 write on it (W, W2), 2 is the timed guest G, whose clock lags: it reads on as long as
 //! keys let it, so what it reads shows what the writers' keys gave it.
@@ -125,7 +125,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
     }
 }
 
-// spec/permissions.md §2 (Finalize): an ended admin edge needs an admin: a writer neither
+// spec/permissions.md §2 (Finalize): an ended admin grant needs an admin: a writer neither
 // finalizes it nor has a finalize of it apply; the mint admin's does.
 #[test]
 fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
@@ -136,7 +136,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
     raw_finalize(&mut lp, 1, t, ps[2]);
     spread(&mut lp);
     for i in 0..4 {
-        assert!(holds(&lp, i, t, ps[2]), "peer {i}: a writer's finalize of an admin edge applies nothing");
+        assert!(holds(&lp, i, t, ps[2]), "peer {i}: a writer's finalize of an admin grant applies nothing");
     }
     let (a, _) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
     assert_eq!(a.commits.len(), 1, "the mint admin finalizes it");

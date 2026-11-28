@@ -111,7 +111,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
 /// grants belong to the thing granted): the node syncs `a` or redeems a link of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
-/// thing whose grants count, by a held edge write. A grant of any other thing is held as some commit's certificate
+/// thing whose grants count, by a held grant write. A grant of any other thing is held as some commit's certificate
 /// and gives the node nothing, whoever it names. The walk down from `a` through what it is
 /// named on, stopping at the first thing synced: O(the things reached, each once).
 pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
@@ -380,7 +380,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
 #[derive(Clone, Copy)]
 struct Way {
     /// The grant had key access as it last stood for keys, its holder is not destroyed, and it
-    /// is alive (an edge, a record edge included, from a holder that is itself kept) or ended by
+    /// is alive (an edge, a record grant included, from a holder that is itself kept) or ended by
     /// a removal saying retain or by its `until` passing on a grant written to retain.
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.

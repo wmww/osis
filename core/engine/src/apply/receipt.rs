@@ -194,7 +194,7 @@ impl DemotionScope {
 
 /// What lowering the edges `edges` (holder, target) puts in question (spec/permissions.md §5.1
 /// Frontier): every commit with a part resting on one of them. Of those held, their signers and
-/// the things they write (an edge-class part by its path, a delta along it:
+/// the things they write (a grant-class part by its path, a delta along it:
 /// `osis_perm::paths::Paths::resting`). Of those not held (forgotten under a cover, or never
 /// received: Own cover), who could have signed one and where: whatever reaches the holder by held
 /// grants and records, on whatever the target reaches. The frontier lists each signer's received

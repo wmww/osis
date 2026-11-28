@@ -60,7 +60,7 @@ pub(crate) enum Step {
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     SetGrant { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
-    /// the may-grant flag: a bare edge write like `SetGrant`, or with `flow` through `Engine::grant` (its
+    /// the may-grant flag: a bare grant write like `SetGrant`, or with `flow` through `Engine::grant` (its
     /// authority checks, secrets, boxes, rotations). Scripted only (`random_step` never draws
     /// it): a refusal panics. A may-grant grant needs the flow, which first makes G (dependent
     /// in the setup) independent, about 12 KB.
@@ -131,7 +131,7 @@ pub(crate) enum Step {
     /// not know first, so it may hold no path to it.
     Forged { by: usize, a: usize, b: usize, how: u8, op: u8, k: u8, v: u8 },
     /// A commit past the writer's rules with a part that hashes right and is bad by itself, `how` % 2:
-    /// a content write on `a` and `b`, `b`'s part not decoding; an edge write on both, `b`'s not
+    /// a content write on `a` and `b`, `b`'s part not decoding; a grant write on both, `b`'s not
     /// decoding.
     BadPart { by: usize, a: usize, b: usize, how: u8 },
     /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`, linked.
@@ -140,7 +140,7 @@ pub(crate) enum Step {
     // `PurgeSet`, `Two` and `TwoGrants` too):
     /// A new thing whose mint admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
-    /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
+    /// A bare grant write past the writer's rules (`Engine::commit_hostile`):
     /// `holder`'s edge on `t` set to `role` with the may-grant flag or not, or removed.
     Hostile { by: usize, t: usize, holder: usize, role: Option<Role>, may_grant: bool },
     /// A `keys.0` write of one field of `t`, unchecked: 1 (`write`) to none, 5 (`deposit_seed`).
@@ -181,13 +181,13 @@ pub(crate) enum Step {
     // record-only things and the flows (`random_step` never draws these):
     /// `by` makes a thing by its record alone, whose mint admin is itself, or thing `admin` (needing
     /// write on it), with a write on it: a dependent thing deriving from its mint admin, whose
-    /// record edge no entry holds.
+    /// record grant no entry holds.
     RecordOnly { by: usize, admin: Option<usize> },
     /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a dependent
     /// target is made independent first.
     GrantFlow { by: usize, t: usize, holder: usize, role: Role },
     /// `by` removes `holder`'s edge (a peer, or 3: G) on `t`, or lowers it to write, through
-    /// `Engine::demote`: a mint admin's record edge included (a removal of no entry,
+    /// `Engine::demote`: a mint admin's record grant included (a removal of no entry,
     /// spec/permissions.md §2).
     RemoveFlow { by: usize, t: usize, holder: usize, lower: bool },
 }
@@ -1387,7 +1387,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             }
             Step::Hostile { by, t, holder, role, may_grant } => {
                 let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Grant { may_grant, ..edge(r) }));
-                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("an edge write writes");
+                noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("a grant write writes");
                 Some(by)
             }
             Step::HostileKeys { by, t, field } => {
@@ -2989,7 +2989,7 @@ impl Seen {
             (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.purged_permanent > 0 && s.by_author > 0),
             (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered drop of a replaced body", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered drops judged").is_some_and(|n| *n > 0)),
             (Emphasis::Settings, "a setting fell", |s| s.fallen > 0),
-            (Emphasis::RecordOnly, "a mint admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
+            (Emphasis::RecordOnly, "a mint admin's record grant removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
             (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
             (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
             (Emphasis::Settled, "a settled history judged before its exchange", |s| s.settled > 0),
@@ -3489,7 +3489,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             let v = 2 * lists.below(5) as u8;
             h.extend([Old(Box::new(Typed { by: 0, t: 0, op: 32, k: 0, v })), Typed { by: 1, t: 0, op: 33, k: 0, v: v + 1 }]);
         }
-        // a record-only thing (thing 1), another admin, and its mint admin's record edge removed
+        // a record-only thing (thing 1), another admin, and its mint admin's record grant removed
         // two two-part commits by G's mint admin (`withhold` holds one in part), every peer
         // given them, then its snapshots of both aspects covering them (`covered_away` leaves
         // those parts out)
@@ -4690,7 +4690,7 @@ fn keep_for_d_named(h: &[Step]) -> (usize, usize) {
     (judged, later)
 }
 
-// spec/permissions.md §5.1 (Trust set): 2 removes 0's record edge on G while 0, not having seen
+// spec/permissions.md §5.1 (Trust set): 2 removes 0's record grant on G while 0, not having seen
 // it, lowers 2 to read. A node given 0's write first trusts it (its default side) until it takes
 // the walk's side; held-model has no trust set, so every delivery takes the walk's side before
 // each judgment, held-model's after every ingest included.
@@ -4934,7 +4934,7 @@ fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
 }
 
 // spec/permissions.md §3 Lost access, No secret taken back: 0 makes T with admin G, takes admin there
-// and removes G's record edge, grants G read (T is made independent, its secrets boxed to G), writes T's
+// and removes G's record grant, grants G read (T is made independent, its secrets boxed to G), writes T's
 // `t:docs.0`, then removes G. A reader of G given that as made takes T's read secrets with the
 // grant and keeps them past the removal until a pass begun after the loss ends (When it learns
 // it); one given T's creation last applies the rest at once, where its roles give no secret, and
@@ -5187,10 +5187,10 @@ fn a_removal_ordered_before_a_forgery_is_evidence_on_two_record_linked_things_sp
     check(5019, &h, Cfg { model: true, ..NAMED }).unwrap();
 }
 
-// spec/permissions.md §5.1 step 4: 0 grants G admin on its thing t and lowers its own record edge
+// spec/permissions.md §5.1 step 4: 0 grants G admin on its thing t and lowers its own record grant
 // there to write, so 0 is t's admin through G alone; 2 then removes 0 from G with a frontier
 // listing none of those writes. 0's class on t falls with it (t is reached from G by G's grant,
-// not by a record chain), so the grant and the lowering go to D and t reads its record edge
+// not by a record chain), so the grant and the lowering go to D and t reads its record grant
 // alone, as held-model (and roles-model's joint walk) judge it.
 #[test]
 fn a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_5_1() {

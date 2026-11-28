@@ -29,7 +29,7 @@ pub struct Side {
 }
 
 /// An open dispute as the engine reports it (`Engine::disputes`, `Event::DisputeDetected`):
-/// `author`'s edge write `op` of `commit`, lowering `holder` on `target`, which held writes
+/// `author`'s grant write `op` of `commit`, lowering `holder` on `target`, which held writes
 /// `author` had not received void; trusting it turns that around.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisputeInfo {
@@ -260,9 +260,9 @@ impl crate::engine::Engine {
         (out.into_values().collect(), left)
     }
 
-    /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust
+    /// Takes a side in the dispute over grant write `op` of `commit` lowering `holder`: trust
     /// it (the author's side) or not (the walk's). Stays until chosen again or R is forgotten. `UnknownCommit`
-    /// when no held edge write is that.
+    /// when no held grant write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Holder, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
         if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == holder) {

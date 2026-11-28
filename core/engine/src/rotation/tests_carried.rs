@@ -421,7 +421,7 @@ fn keyset_held_only_with_its_demotions_spec_crypto_4() {
 // spec/requirements.md Permissions (a parent never depends on who reads through its members);
 // spec/crypto.md §4 (Carried demotions): a reader's removal from Xd travels nowhere above it. A
 // holds X1's keysets made knowing R's removal, but not the removal: R still reads Xd as A sees
-// it, X1's keysets carry nothing, and A holds no edge write of Xd it did not hold before.
+// it, X1's keysets carry nothing, and A holds no grant write of Xd it did not hold before.
 #[test]
 fn reader_removal_stays_below_spec_crypto_4() {
     let mut s = shape(2);
@@ -432,7 +432,7 @@ fn reader_removal_stays_below_spec_crypto_4() {
     assert!(s.lp.peers[A].engine.core.ix.held.edge_commit(&rm.rm).is_none(), "A holds R's removal");
     assert_eq!(s.lp.peers[A].engine.core.role_now(&r, &xd), Some(Role::Read), "A learns R left Xd");
     let now: BTreeSet<CommitId> = s.lp.peers[A].engine.core.ix.held.commits_on(&xd).iter().map(|c| c.id).collect();
-    assert_eq!(now, before, "A learns an edge write of Xd");
+    assert_eq!(now, before, "A learns a grant write of Xd");
     assert!(s.lp.peers[A].engine.core.keysets_of(&x1).all(|(_, _, k)| k.demotions.is_empty()), "X1's keysets carry a reader's removal");
 }
 
@@ -710,7 +710,7 @@ fn own_demotion_keyset_held_only_with_its_own_edge_writes_spec_crypto_4() {
         }
     }
     assert!(s.lp.peers[c].engine.core.ix.keysets.contains_key(&(x1, r, e)), "its body noted");
-    assert!(s.lp.peers[c].engine.core.ix.held.edge_commit(&rm).is_none(), "the removal's edge writes held");
+    assert!(s.lp.peers[c].engine.core.ix.held.edge_commit(&rm).is_none(), "the removal's grant writes held");
     assert!(s.lp.peers[c].engine.core.keyset(&x1, r, &e).is_none(), "held without the removal");
     for pk in s.lp.packages_for(B, c).unwrap().into_iter().filter(|p| p.id == rm) {
         s.lp.peers[c].receive(&pk.bytes, pk.blobs).unwrap();
@@ -720,7 +720,7 @@ fn own_demotion_keyset_held_only_with_its_own_edge_writes_spec_crypto_4() {
 
 // spec/crypto.md §4 (Held keyset; Carried demotions), spec/commits.md §5 Keep bounds: B's removal
 // of W from X1 rotates X1 in its own commit, so X1's keysets carry it by `demotes`, held only with
-// that commit's edge writes. B may rotate read again, compacts X1's `keys.0` (and perhaps
+// that commit's grant writes. B may rotate read again, compacts X1's `keys.0` (and perhaps
 // `secrets.0`) and drops what that covers past `ROLE_KEEP` (after a read rotation, the removal's
 // `keys.0` part too): a node granted X1 afterwards, fed what B holds in any order, holds the
 // removal's keysets still current (read's superseded by the rotation: `keys.0` holds current ones

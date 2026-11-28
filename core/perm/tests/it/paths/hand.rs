@@ -2,7 +2,7 @@
 //! same names), each read by the walk and the model at the views the model's test reads, so every
 //! rule has a small named world besides the random runs. Each world is built as the model's test
 //! builds it; `agree` compares the whole reading (statuses, histories, final roles and may-grants,
-//! void trusted writes, disputes). Content commits are left out: the walk judges edge-class parts.
+//! void trusted writes, disputes). Content commits are left out: the walk judges grant-class parts.
 //! spec/permissions.md §1, §2, §5.1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 #[test]
 fn descent_leaves_and_until() {
     rows(&[
-        // spec/permissions.md §1: a write by descent rests on the record edges; a lowering of a record
+        // spec/permissions.md §1: a write by descent rests on the record grants; a lowering of a record
         // edge audits what goes through it.
         ("a_write_by_descent_is_judged_along_the_record_edges", || {
             let (mut w, ..) = paired();
@@ -24,9 +24,9 @@ fn descent_leaves_and_until() {
             let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
             (w, vec![vec![], vec![low]])
         }),
-        // notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct edge, by [A]) and removes A's
-        // record edge on T1 by the descent []: later content and grants by H stated along the descent or
-        // through [A] rest on the removed record edge and apply nowhere; marking the hop H to T1 direct
+        // notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct grant, by [A]) and removes A's
+        // record grant on T1 by the descent []: later content and grants by H stated along the descent or
+        // through [A] rest on the removed record grant and apply nowhere; marking the hop H to T1 direct
         // (H's own grant), they apply, as in the model.
         ("a_detached_things_owner_writes_it_only_by_a_marked_direct_hop", || {
             let mut w = account();
@@ -41,8 +41,8 @@ fn descent_leaves_and_until() {
             (w, vec![vec![], vec![cut]])
         }),
         // The one-encoding rule (draft §1 Path, Direct mark): a mark on a hop not otherwise read as a
-        // descent of two steps or more applies nowhere (B's direct grant; A's record edge, on H's path
-        // through A; a hop past the members); H's marked hop applies where it holds a direct edge, nowhere
+        // descent of two steps or more applies nowhere (B's direct grant; A's record grant, on H's path
+        // through A; a hop past the members); H's marked hop applies where it holds a direct grant, nowhere
         // before. A's own writes stand nowhere: its record names a mint admin, so its key hop gives
         // nothing.
         ("a_mark_off_a_descent_of_two_steps_applies_nowhere", || {
@@ -105,7 +105,7 @@ fn descent_leaves_and_until() {
             let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
             (w, vec![vec![], vec![rk]])
         }),
-        // spec/permissions.md §5.1: the edge as restored reads each value's role with its `until`
+        // spec/permissions.md §5.1: the grant as restored reads each value's role with its `until`
         // disregarded, a value already ended at its own `ts` included: H gives B admin ending at 2 at 3
         // (a lowering), B grants N5 at 4 (holding nothing), H removes B at 5 listing nothing: restored at
         // admin, the removal falls and drops B's grant. (No model hand test: the walk's own world.)
@@ -122,7 +122,7 @@ fn descent_leaves_and_until() {
 }
 
 // A final hop marked direct is the path's last edge (draft §1 Path's last edge): the path's
-// may-grant reads the direct edge, as the model.
+// may-grant reads the direct grant, as the model.
 #[test]
 fn a_marked_final_hop_is_the_last_edge() {
     let mut w = account();
@@ -643,7 +643,7 @@ fn may_grant_and_finalizes() {
             (w, vec![vec![], vec![r]])
         }),
         // spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would set its edge's
-        // flag (its role not above the edge as restored) applies only by admin along its path. N6,
+        // flag (its role not above the grant as restored) applies only by admin along its path. N6,
         // admin by H's grant, gives Z write and then read with the flag (a fall, judged and applied); B
         // gave Z read at 2; B removes H not listing H's grant of N6, and the restart finds N6 with no
         // authority: Z stays at B's read, with no flag. (No model hand test: the walk's own.)
@@ -773,7 +773,7 @@ fn a_flag_kept_below_the_granted_role_keeps_the_grants_it_still_covers() {
     agree_all(&w, &[]);
 }
 
-// ---- Several edge writes in one commit ----
+// ---- Several grant writes in one commit ----
 
 // spec/commits.md §2: a commit's lowerings judged part by part, `keeps` passing over the
 // commit's earlier drops (control `-own-drops`).
@@ -880,7 +880,7 @@ fn a_link_redemption_grants_once_and_ends_the_link() {
     agree_all(&w2, &[end]);
 }
 
-// notes/a1-spec/README.md Open 23 (draft §5.1 step 3: a drop takes a commit's edge-class parts on
+// notes/a1-spec/README.md Open 23 (draft §5.1 step 3: a drop takes a commit's grant-class parts on
 // its thing together): a single-use link redeemed twice, the sharer listing what it saw, at nodes
 // trusting nothing and trusting the removal; roles-model
 // `a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed`, its worlds.

@@ -20,7 +20,7 @@ impl Engine {
     }
 
     /// The role `actor` holds on `t` now as this node acts by it: its effective role
-    /// (spec/permissions.md §1) over the held edge writes.
+    /// (spec/permissions.md §1) over the held grant writes.
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
         self.core.role_now(actor, t)
     }
@@ -130,7 +130,7 @@ impl Engine {
 /// Mints the things of `recs` independent (spec/permissions.md §3), in order, each one's record
 /// in its own-secrets rotation, ahead of `muts`, the commits the transaction writes for them.
 /// What the transaction gives each that a keyset written now carries a KEM key for (spec/crypto.md
-/// §3, Published KEM keys): admin on a thing minted after it (its record edge), a card of it
+/// §3, Published KEM keys): admin on a thing minted after it (its record grant), a card of it
 /// (every role), a setting enabling a signal (`rotation::kem::by_setting`). What `muts` write in
 /// one's `keys.0` (its inbox, `flows::cards::put_inbox`) moves into its minting rotation: one
 /// commit, not a second role commit beside it.

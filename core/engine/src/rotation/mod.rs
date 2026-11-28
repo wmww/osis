@@ -129,7 +129,7 @@ pub(crate) enum Block {
 /// `blocked_epoch`, with why (a box reason where any is found, else a missed departure) and the
 /// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest edge
 /// write a covering epoch must name (`Departure::newest_needed`), each stale box's superseding
-/// keyset's rotation commit, each keyless grant's edge write, each counting record's causes, and
+/// keyset's rotation commit, each keyless grant's grant write, each counting record's causes, and
 /// for a box or rotator departure no edge shows, the rotation commit of each epoch its holder holds
 /// (`departures::departure_causes`). The whole walk is judged, so every cause is found: every
 /// block has one.

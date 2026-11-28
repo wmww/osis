@@ -2,7 +2,7 @@
 //! `Rules::purging` (purge rights by class, copies, own covers;
 //! A1 steps 3 and 4: notes/perm-paths.md; spec/permissions.md §1, §2,
 //! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
-//! its trust set) both read: every edge-class part's status, every edge's history, the final
+//! its trust set) both read: every grant-class part's status, every edge's history, the final
 //! roles and may-grants, the trusted writes left void, every delta's validity, the copies valid
 //! snapshots show, the purged deltas and copies, what a request could hold, and the dispute set.
 //! spec/permissions.md §5.1, §5.2.

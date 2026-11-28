@@ -1,5 +1,5 @@
 //! Validity through osis-perm (spec/permissions.md §5): each held commit is given to the walk as
-//! its reading (`reading`: edge writes, deltas along their stated paths), each delta is judged by
+//! its reading (`reading`: grant writes, deltas along their stated paths), each delta is judged by
 //! a point query (layer 2), and a change of the walk re-judges the deltas it reaches; an aspect with a flip is rebuilt from its held bodies
 //! (un-merge or re-merge, spec/crdt.md §4.6). Also the role-commit content rules
 //! osis-commit cannot see (spec/commits.md §2).
@@ -42,7 +42,7 @@ pub(crate) fn header_frontier(h: &Header) -> Option<Arc<Frontier>> {
     h.frontier.clone().map(|ids| Arc::new(Frontier::of_sorted(ids)))
 }
 
-/// Whether `ak` holds edge writes (`roles.0` of things, `signers.0` of keys): perm reads them.
+/// Whether `ak` holds grant writes (`roles.0` of things, `signers.0` of keys): perm reads them.
 pub(crate) fn edge_ak(ak: &str) -> bool {
     Grants::of(ak).is_some()
 }
@@ -99,7 +99,7 @@ impl Grants {
     }
 }
 
-/// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
+/// Whether `ak`'s writes reach perm instead of a state: grant writes and creation records.
 pub(crate) fn perm_ak(ak: &str) -> bool {
     edge_ak(ak) || ak == "created.0"
 }
@@ -309,7 +309,7 @@ pub(crate) fn unkey_holders(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Tid) ->
     Ok(())
 }
 
-/// The edge writes of one `roles.0` delta of a role commit, per holder: an entry the
+/// The grant writes of one `roles.0` delta of a role commit, per holder: an entry the
 /// delta creates sets the edge it reads; an entry reset removes the edge its entry's creation
 /// keyed, when the reset carries that key or none (a record acts only on the entry of its key,
 /// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether the
@@ -330,7 +330,7 @@ fn edge_ops(core: &Core, target: &Tid, g: Grants, es: &[Entry], own: Option<&Own
     let mut known = true;
     let mut removed: BTreeSet<Holder> = BTreeSet::new();
     for (d, k, v) in es {
-        // a nested write into another's entry is no edge write (bad input on receipt)
+        // a nested write into another's entry is no grant write (bad input on receipt)
         if v.is_some() {
             continue;
         }
@@ -390,9 +390,9 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
     Ok(())
 }
 
-/// Sets what perm's held set reads of a held role commit (its edge writes) from
+/// Sets what perm's held set reads of a held role commit (its grant writes) from
 /// `parts`, its held role-class parts, replacing whatever it read of the commit before: a late part, a drop or a forget calls it again with what stays
-/// held, so it is a function of the parts held. A commit's edge writes apply together or
+/// held, so it is a function of the parts held. A commit's grant writes apply together or
 /// not at all (spec/permissions.md §2): one whose removal resets an entry of unknown creation
 /// names a write this node lacks, so it applies none of them and stays in `unresolved` until keys
 /// arrive. Invariant: an applied commit is the whole departure its author applied, which a name of
@@ -415,7 +415,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
     }
     let mut ops = Vec::new();
     let mut known = true;
-    // nor do the edge writes of a commit listing a wrong delete key for the thing apply
+    // nor do the grant writes of a commit listing a wrong delete key for the thing apply
     // (spec/crypto.md §7 Checked keys; `Core::rekey` reads them again where that moves)
     for (_, v, k) in edge_writes_of(core, h, id, parts).into_iter().filter(|(t, _, _)| !core.miskeyed(id, t)) {
         ops.extend(v);
@@ -435,7 +435,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
     if ops.is_empty() {
         core.ix.held.remove(id);
     } else {
-        // a role commit states one path (spec/wire.md §4); a split one's edge writes rest on none
+        // a role commit states one path (spec/wire.md §4); a split one's grant writes rest on none
         let (listed, direct) = match path {
             osis_commit::Paths::One(p) => (p.things.clone(), p.direct),
             osis_commit::Paths::Split(_) => return core.ix.held.remove(id),
@@ -444,7 +444,7 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
     }
 }
 
-/// The edge writes the edge parts `parts` of commit `id` (view `h`) make, per thing they are on,
+/// The grant writes the edge parts `parts` of commit `id` (view `h`) make, per thing they are on,
 /// whatever the keys it lists, and whether every reset there names a held write (`edge_ops`).
 /// Nothing written on a thing too deep applies (spec/permissions.md §1): none there. Its record
 /// chain is held whole at apply (`apply::thing_wait`) and a record goes only with every part on
@@ -476,14 +476,14 @@ pub(crate) fn note_grant_fire(core: &mut Core, id: &CommitId, h: &Header, valid:
 /// Position).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Place {
-    /// Content: the start of its `ts`, before every edge write there.
+    /// Content: the start of its `ts`, before every grant write there.
     Start(osis_base::Ts),
-    /// An edge write: its commit's point, then its place among that commit's edge writes
+    /// A grant write: its commit's point, then its place among that commit's grant writes
     /// (`write_place`); `None`: after every one of them, the least a part of the commit can wait.
     Write(Point, Option<WritePlace>),
 }
 
-/// An edge write's place among its commit's (spec/permissions.md §5.1 step 1): on an edge of a
+/// A grant write's place among its commit's (spec/permissions.md §5.1 step 1): on an edge of a
 /// path the commit states or not, then thing, then holder.
 pub(crate) type WritePlace = (bool, Tid, Holder);
 
@@ -496,7 +496,7 @@ pub(crate) fn signing_key(core: &Core, h: &View) -> SignKey {
 }
 
 impl Place {
-    /// Whether an edge write of the commit at `at` is ordered before it, `place` its place in
+    /// Whether a grant write of the commit at `at` is ordered before it, `place` its place in
     /// that commit.
     fn after(&self, at: &Point, place: impl FnOnce() -> WritePlace) -> bool {
         match self {
@@ -506,12 +506,12 @@ impl Place {
     }
 }
 
-/// The place of the edge write on `holder`'s edge on `target` in a commit signed by `key` as
+/// The place of the grant write on `holder`'s edge on `target` in a commit signed by `key` as
 /// `signer` stating `along` (marks `direct`) for `target`, `mint` holding the record chains it
 /// reads. Interim
 /// (issues/stated-path-wait-order.md): an edge on another thing's path counts as stated only
-/// where it is on `target`'s, so a write on a record edge down to a thing the commit writes other
-/// than by edge writes may sit apart from the walk's place for it.
+/// where it is on `target`'s, so a write on a record grant down to a thing the commit writes other
+/// than by grant writes may sit apart from the walk's place for it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_place(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, target: Tid, holder: Holder) -> WritePlace {
     let stated = osis_perm::paths::hops(mint, key, signer, along, direct, target, None, true).contains(&(holder, target));
@@ -519,7 +519,7 @@ pub(crate) fn write_place(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Ti
 }
 
 /// Whether an edge of the path a part states has not arrived (spec/commits.md §4 Unjudgeable):
-/// one that is no record edge and that no held edge write (a grant or a removal, of any validity)
+/// one that is no record grant and that no held grant write (a grant or a removal, of any validity)
 /// not itself unjudgeable is ordered before the part, `at`. The part is by `signer` on `t` along
 /// `along`, its hops `direct` marked; `edge_class` for a `roles.0` part, `leaves` for one read as
 /// a self-removal, whose path ends at its holder, the last thing listed or the signer
@@ -534,7 +534,7 @@ pub(crate) fn unreached(core: &Core, signer: Tid, key: Option<SignKey>, along: &
     Reach::new(core, record).unreached(key, signer, along, direct, *t, edge_class, holder, at)
 }
 
-/// The path wait over the held edge writes. Each edge's writes are judged in order, each once, up
+/// The path wait over the held grant writes. Each edge's writes are judged in order, each once, up
 /// to the first not itself unjudgeable (`first`): a part's wait reads each held write at most once.
 /// A write's judgment reads only writes ordered strictly before it, so it ends, and never reads an
 /// edge past where that edge's judging stands.
@@ -547,7 +547,7 @@ struct Reach<'a> {
 }
 
 /// The record chains of `members` (`record` the records read), each record's holder: what a
-/// path's descents and record edges read, a record's key included.
+/// path's descents and record grants read, a record's key included.
 fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> BTreeMap<Tid, Holder> {
     let mut mint: BTreeMap<Tid, Holder> = BTreeMap::new();
     for start in members {
@@ -574,7 +574,7 @@ impl<'a> Reach<'a> {
     }
 
     /// Whether an edge of the path stated by `key`'s commit as `signer` has not arrived: one that
-    /// is no record edge with no held edge write before `at`, the key hop among them (a key
+    /// is no record grant with no held grant write before `at`, the key hop among them (a key
     /// granted on `signer` waits for its grant as any holder does).
     #[allow(clippy::too_many_arguments)]
     fn unreached(&mut self, key: SignKey, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Holder>, at: Place) -> bool {
@@ -583,7 +583,7 @@ impl<'a> Reach<'a> {
         hops.into_iter().any(|(p, q)| mint.get(&q) != Some(&p) && !self.arrived(p, q, at))
     }
 
-    /// Whether a held edge write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
+    /// Whether a held grant write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
     /// `at`: whether the first such is.
     fn arrived(&mut self, p: Holder, q: Tid, at: Place) -> bool {
         let core: &'a Core = self.core;
@@ -618,7 +618,7 @@ impl<'a> Reach<'a> {
         })
     }
 
-    /// Whether the held edge write of `c` on `holder`'s edge on `target` is itself unjudgeable.
+    /// Whether the held grant write of `c` on `holder`'s edge on `target` is itself unjudgeable.
     fn write_unreached(&mut self, c: &RoleCommit, holder: Holder, target: Tid) -> bool {
         let along = c.path_to(&target);
         let end = along.last().copied().unwrap_or(c.signer);
@@ -627,7 +627,7 @@ impl<'a> Reach<'a> {
         self.unreached(c.key, c.signer, along, c.direct, target, true, Self::leaving(c.key, c.signer, &end, along, &holder), at)
     }
 
-    /// The holder whose grant an edge write of `key`'s commit as `signer` on `holder`'s edge
+    /// The holder whose grant a grant write of `key`'s commit as `signer` on `holder`'s edge
     /// leaves (its path ending at it, spec/permissions.md §2 Self-removal): a thing at the path's
     /// end, or the signing key itself on the signer along the empty path (stating no hop).
     fn leaving(key: SignKey, signer: Tid, end: &Tid, along: &[Tid], holder: &Holder) -> Option<Holder> {
@@ -638,12 +638,12 @@ impl<'a> Reach<'a> {
     }
 }
 
-/// Whether every edge write the `roles.0` part of aspect `ai` of commit `id` makes is unjudgeable
+/// Whether every grant write the `roles.0` part of aspect `ai` of commit `id` makes is unjudgeable
 /// (spec/commits.md §4): an edge of its path (to its holder, for a self-removal: the last thing
-/// listed or the signer) has no held edge write ordered before it (`unreached`). `es` its
+/// listed or the signer) has no held grant write ordered before it (`unreached`). `es` its
 /// entries, `known`: every edge part held of the commit resolved (`resolved`). A part making no
 /// write yet (a reset whose creation is not held, or not all known) is read as one write after
-/// every edge write of its commit, along the whole path.
+/// every grant write of its commit, along the whole path.
 pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry], known: bool, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
     let (Some(a), osis_commit::Paths::One(p)) = (h.aspects.get(ai), &h.path) else { return false };
     let along = p.to(&a.tid);
@@ -929,7 +929,7 @@ pub(crate) fn setting_moved(core: &mut Core, t: &Tid, before: Option<BTreeSet<Ak
     core.stale_commits.extend(fires);
 }
 
-/// Re-derives the edge writes of commits whose removed keys were unknown, and of those whose
+/// Re-derives the grant writes of commits whose removed keys were unknown, and of those whose
 /// things with a wrong delete key moved (`Indexes::rekeyed`).
 pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<()> {
     let rekeyed: Vec<CommitId> = tx.core.ix.rekeyed.iter().copied().collect();
@@ -1013,7 +1013,7 @@ pub(crate) fn stated(h: &Header, view: &View, t: &Tid) -> Option<(Vec<Tid>, osis
 
 /// Held commit `id` as the walk reads it (`osis_perm::HeldSet::commit`), a function of the index:
 /// part `ai` is aspect `ai`'s delta along the path the commit states for its thing, needing the
-/// role its aspect does, or nothing where the walk reads none of it (an edge write's aspect,
+/// role its aspect does, or nothing where the walk reads none of it (a grant write's aspect,
 /// `created.0`, a listing, a part whose path is not known, a void commit's, one that does not
 /// pass the epoch rule); then one part per purge item (`retention::purge::item_names`); its edge
 /// writes are its `RoleCommit`'s where it counts.
@@ -1168,7 +1168,7 @@ impl<'a> Judge<'a> {
         if too_deep(core, &a.tid) {
             return false;
         }
-        // an edge write is judged by the timeline
+        // a grant write is judged by the timeline
         if edge_ak(ak) {
             return true;
         }
@@ -1505,7 +1505,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
-/// The edge writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
+/// The grant writes of a role commit's parts `(thing, ak, fragment)`, each `(target, holder, new
 /// edge)` once (`None`: removed): a change is a reset and a put of one entry, the put the
 /// holder's new edge.
 pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid, &'f Ak, &'f Fragment)>) -> Vec<(Tid, Holder, Option<Grant>)> {
@@ -1534,9 +1534,9 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
     net.into_iter().map(|((t, m), e)| (t, m, e)).collect()
 }
 
-/// Whether edge writes `writes` (holder, new edge) on `t` would leave it, holding a standing
+/// Whether grant writes `writes` (holder, new edge) on `t` would leave it, holding a standing
 /// admin now, with none (spec/permissions.md §1, The last admin): a standing admin is an admin
-/// edge on `t` with no `until`, its record edge included while it stands, as this node's walk
+/// edge on `t` with no `until`, its record grant included while it stands, as this node's walk
 /// has them. Reads `t`'s own edges alone: an audit a write makes drops none of the writes its
 /// writer holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other
 /// thing so at the writer.
@@ -1553,7 +1553,7 @@ pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Gr
     now.iter().any(|(_, e)| standing(e)) && !after.into_iter().any(|e| standing(&e))
 }
 
-/// The first thing edge writes `changed` leave with no standing admin (`leaves_no_admin`).
+/// The first thing grant writes `changed` leave with no standing admin (`leaves_no_admin`).
 fn left_adminless(core: &Core, changed: &[(Tid, Holder, Option<Grant>)]) -> Option<Tid> {
     let targets: BTreeSet<Tid> = changed.iter().map(|c| c.0).collect();
     targets.into_iter().find(|t| {
@@ -1591,7 +1591,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     holders.sort();
     holders.dedup();
     if holders.len() > 1 {
-        // the one exception for edge writes in a plain role commit: a single-use
+        // the one exception for grant writes in a plain role commit: a single-use
         // redemption (a grant plus the author key's own self-removal, both on K,
         // spec/permissions.md §7, spec/commits.md §2)
         let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == me && c.2.is_none()) && changed.iter().any(|c| c.1 != me && c.2.is_some());
@@ -1605,7 +1605,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         }
     }
     // a frontier rides on an explicit write that audits (spec/permissions.md §5.1 step 4): one
-    // below the edge as restored, a removal (of an absent edge too, §2) included
+    // below the grant as restored, a removal (of an absent edge too, §2) included
     let audits = changed.iter().any(|(target, m, new)| new.is_none() || core.timelines().get(target).is_some_and(|tl| tl.audits(m, target, *new, h.ts)));
     if h.frontier.is_some() && !audits && !changed.is_empty() {
         return Err(Error::BadInput("a frontier on a commit that audits nothing"));

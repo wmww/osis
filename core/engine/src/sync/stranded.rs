@@ -263,7 +263,7 @@ impl Engine {
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
     /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on chain things (the
     /// steps placing the keys those commits list), `roles.0` deltas on chain things; each
-    /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
+    /// commit, projected to those deltas, kept only if judged valid with every grant write it makes
     /// applied (`ingest_valid`), carried by `from` while it pends, one not kept judged again while
     /// others are taken (in whatever order they come). Everything else is ignored.
     /// Returns the commits taken.

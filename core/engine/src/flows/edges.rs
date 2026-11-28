@@ -16,7 +16,7 @@ use osis_perm::{At, Grant as PermGrant};
 use osis_schema::core_types::{self as ct, Grant};
 use std::collections::BTreeSet;
 
-/// A role-lowering edge write: `holder`'s new edge on the target (`None` removes it).
+/// A role-lowering grant write: `holder`'s new edge on the target (`None` removes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Demotion {
     pub holder: Tid,
@@ -221,7 +221,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     Ok(done)
 }
 
-/// `holder`'s current entry on `target`: the one the edge write in force there in this node's
+/// `holder`'s current entry on `target`: the one the grant write in force there in this node's
 /// walk created (spec/permissions.md §2), whatever the `roles.0` state says of it (a void
 /// finalize resets it in the state while the edge stands). At most one: a role commit creates
 /// one entry per holder.
@@ -235,7 +235,7 @@ fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Holder) -> Option<(osis_crd
 }
 
 /// Resets `holder`'s current entry on `target` in `m`, if it has one (spec/permissions.md §2):
-/// every edge write does, so a holder's k-th write carries one reset, not k.
+/// every grant write does, so a holder's k-th write carries one reset, not k.
 pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl Into<Holder>) -> Result<bool> {
     let holder = holder.into();
     let Some(e) = current_entry(tx, &target, &holder) else { return Ok(false) };
@@ -244,7 +244,7 @@ pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: 
 }
 
 /// The removal of `holder`'s edge on `target` in `m`: a reset of its current entry. A holder
-/// with none (a mint admin's record edge, stored nowhere, or an edge already removed) gets an
+/// with none (a mint admin's record grant, stored nowhere, or an edge already removed) gets an
 /// entry of this delta reset in it: a removal naming the holder whose creation every reader
 /// holds (spec/permissions.md §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl Into<Holder>) -> Result<()> {
@@ -442,7 +442,7 @@ impl Engine {
     }
 
     /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `edge`
-    /// grants or changes it, `None` removes it. An edge write as any other, by this node as itself:
+    /// grants or changes it, `None` removes it. A grant write as any other, by this node as itself:
     /// an admin's explicit write (a lowering of the grant as restored carrying its frontier: what
     /// this node received of the commits signed as `target`, those `key` signed among them), or a
     /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
@@ -493,7 +493,7 @@ impl Engine {
     }
 
     /// `grant_history` with the frontier of what this node received when the grant audits: an admin's
-    /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
+    /// grant below the grant as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
     /// away or a role below one the holder lost with no explicit write on the edge since. Invariant: an
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not. `then` runs in the same transaction.
@@ -525,7 +525,7 @@ impl Engine {
 
     /// Whether an explicit write of `edge` (`None`: a removal) on `holder`'s edge on `target`,
     /// stamped now, carries its author's frontier (spec/permissions.md §5.1 step 4): a removal
-    /// always (without one it is a finalize), another write when the edge as restored exceeds it
+    /// always (without one it is a finalize), another write when the grant as restored exceeds it
     /// (an `until` alive then takes nothing). The writer rule refuses either way of getting it
     /// wrong (`check_content_rules`).
     pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Grant>) -> bool {
@@ -553,7 +553,7 @@ impl Engine {
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
     }
 
-    /// The frontier edge writes `ops` on `target`, stamped now, carry (spec/permissions.md §5.1
+    /// The frontier grant writes `ops` on `target`, stamped now, carry (spec/permissions.md §5.1
     /// Frontier): what this node received of the commits resting on the edges they lower
     /// (`receipt::scope_of`), and its own cover of what it no longer holds the ID of
     /// (`own_cover`). Returns the frontier and the own covers, which the caller's `Done` carries
@@ -591,7 +591,7 @@ impl Engine {
         crate::apply::validity::leaves_no_admin(&self.core, target, &[(Holder::Thing(*holder), new.map(perm_edge))])
     }
 
-    /// `f` with the edge writes it signs allowed to leave a thing with no standing admin
+    /// `f` with the grant writes it signs allowed to leave a thing with no standing admin
     /// (spec/permissions.md §1, The last admin; otherwise `Error::LeavesNoAdmin`): each commit
     /// that does carries the adminless mark, and no other.
     pub fn leaving_adminless<R>(&mut self, f: impl FnOnce(&mut Engine) -> R) -> R {

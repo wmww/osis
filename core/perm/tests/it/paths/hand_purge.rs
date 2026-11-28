@@ -305,7 +305,7 @@ fn an_own_cover_stands_only_by_its_writers_lowering() {
 }
 
 // spec/commits.md §4: draft Could hold the right: a node that cannot judge acts on a request
-// whose path could give the right by any held edge write, whatever its validity: X's request made
+// whose path could give the right by any held grant write, whatever its validity: X's request made
 // after its removal holds no right but could hold admin; a stranger's could hold nothing; W's
 // (write) could hold the `writer` right and its own `author_or_admin` one, never `admin`.
 #[test]

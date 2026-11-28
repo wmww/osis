@@ -498,7 +498,7 @@ fn role_content_rules_spec_commits_2() {
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
     lp.peers[1].restart(470).unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
-    assert_eq!(lp.peers[1].engine.roster(&d).len(), 2, "the record edge and the one grant left");
+    assert_eq!(lp.peers[1].engine.roster(&d).len(), 2, "the record grant and the one grant left");
 }
 
 // spec/crdt.md §3.3 rule 2: a commit-form delta's own dots sort above node dots (and below
@@ -570,7 +570,7 @@ fn a_write_stated_through_an_ungranted_actor_pends_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
 }
 
-// spec/commits.md §4 (Unjudgeable): an edge write that is itself unjudgeable is no evidence, and
+// spec/commits.md §4 (Unjudgeable): a grant write that is itself unjudgeable is no evidence, and
 // hides none that is. 0 makes x (shared with 1), o, o2 and q, all its own. Stating its path
 // through o, which holds nothing on x, it writes one `roles.0` part on x giving o read (its path
 // ends at o: judgeable, so the part is held) and q admin (on o's edge on x, which no write set
@@ -1128,7 +1128,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (a path climbs role grants, record edges included), §4: n0 is mint
+// spec/permissions.md §1 (a path climbs role grants, record grants included), §4: n0 is mint
 // admin of A, A writes B, B admin of C (n1 mint admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.
@@ -1213,7 +1213,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
         lp.sync_all().unwrap();
         let r = write_reg(&mut lp, 0, c, "n0");
         if k == 1 {
-            // a descent runs within `MAX_CHAIN_DEPTH` record edges: past it the path gives nothing
+            // a descent runs within `MAX_CHAIN_DEPTH` record grants: past it the path gives nothing
             assert!(matches!(r, Err(osis_engine::Error::Permission { .. })), "past the cap: {r:?}");
             continue;
         }
@@ -1262,7 +1262,7 @@ fn index_of(e: &osis_engine::Engine) -> osis_engine::engine::IndexDigest {
 
 // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a write inside a holder's entry
 // is refused, so field changes cannot compose (was: a change adding `until`, then one raising
-// the role, left an admin edge with no `until`); written as remove + put, each change is the
+// the role, left an admin grant with no `until`); written as remove + put, each change is the
 // whole edge.
 #[test]
 fn edge_change_is_remove_and_put_spec_perm_2() {
@@ -1326,7 +1326,7 @@ fn churn_resets(k: usize) -> (usize, usize) {
     last
 }
 
-// spec/permissions.md §2: an edge write resets the holder's current entry alone, so a holder's
+// spec/permissions.md §2: a grant write resets the holder's current entry alone, so a holder's
 // k-th grant and removal carry as many resets at 2 and at 20 rounds of churn.
 #[test]
 fn holder_churn_resets_are_flat_spec_perm_2() {
@@ -3040,7 +3040,7 @@ fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
 
 // spec/permissions.md §6 (Destruction: judged as any request), spec/requirements.md Deletion (a
 // purge counts only if its author had the right, judged as an edit's validity is): Alice grants
-// Bob admin on d by a direct edge; Bob destroys d; Alice, not holding it, removes Bob from d
+// Bob admin on d by a direct grant; Bob destroys d; Alice, not holding it, removes Bob from d
 // later, listing nothing (as she would a thief's destruction backdated before her removal: one
 // held set). Carol, given both in either order, reads d live, and with its value once synced, as
 // Alice does: the removal is read for the destruction's right whatever its stamp.
@@ -4984,7 +4984,7 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
 }
 
 // spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
-// shortest on the edges alive at its `ts`: a direct grant ending with no edge write since, the
+// shortest on the edges alive at its `ts`: a direct grant ending with no grant write since, the
 // path goes through the holder; a shorter one granted, it is taken; removed, the holder again.
 #[test]
 fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
@@ -5078,7 +5078,7 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
 
 // spec/wire.md §4 field 2; notes/path-form.md One path: a creation states one path in the
 // clear: minted with the node thing along the empty path (18 B on `signer` and `path`); under a
-// parent the signer holds by a grant along `[D]` (34 B), the new thing one record edge past it.
+// parent the signer holds by a grant along `[D]` (34 B), the new thing one record grant past it.
 // spec/permissions.md §1 Path (nothing but the stated path judges a part): a write acting as D on
 // E, which D holds no role on, is refused: no path through D gives the role.
 #[test]

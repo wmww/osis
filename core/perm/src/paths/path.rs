@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// What a part's stated path gives it to rest on.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Shape {
-    /// Its members name no thing twice, its marks are valid, and an edge write's holder is not
+    /// Its members name no thing twice, its marks are valid, and a grant write's holder is not
     /// its target.
     pub well: bool,
-    /// A self-removal: an edge write whose path ends at the holder of the edge it sets, or a key
+    /// A self-removal: a grant write whose path ends at the holder of the edge it sets, or a key
     /// lowering its own grant on the thing it signs as, acting as that thing.
     pub leave: bool,
     /// What it rests on in order: its key hop (key, signer), then its path's edges; none where
@@ -19,8 +19,8 @@ pub(crate) struct Shape {
     pub hops: Vec<(Holder, Tid)>,
 }
 
-/// The edges joining consecutive members `p`, `q` (spec/permissions.md §1 Hops): the record edges
-/// from `p` down to `q` where `p` is on `q`'s record chain, else their direct edge. A record
+/// The edges joining consecutive members `p`, `q` (spec/permissions.md §1 Hops): the record grants
+/// from `p` down to `q` where `p` is on `q`'s record chain, else their direct grant. A record
 /// holding a key ends the chain.
 pub(crate) fn joins(mint: &BTreeMap<Tid, Holder>, p: Tid, q: Tid) -> Vec<(Holder, Tid)> {
     let mut down = vec![];
@@ -40,13 +40,13 @@ pub(crate) fn joins(mint: &BTreeMap<Tid, Holder>, p: Tid, q: Tid) -> Vec<(Holder
 }
 
 /// The shape of a part signed by `key` as `signer` on `on` along `path` marking the hops
-/// `direct`; `holder` for an edge write (spec/permissions.md §1 Path). Members are
+/// `direct`; `holder` for a grant write (spec/permissions.md §1 Path). Members are
 /// [S, A1..Ak, T]; [S] where S acts as itself (T is S, nothing listed); a self-removal's end at its
 /// holder. A key's grant on S written by that key acting as S is its self-removal: it states no
 /// hop. Every other part rests on its key hop (key, S) first, then each consecutive pair's
-/// joining edges. A hop marked direct is its pair's direct edge; a mark on a hop not otherwise
+/// joining edges. A hop marked direct is its pair's direct grant; a mark on a hop not otherwise
 /// read as a descent of two steps or more, or past the members, leaves the part not `well`
-/// (Direct mark), as does a member named twice or an edge write whose holder is its target.
+/// (Direct mark), as does a member named twice or a grant write whose holder is its target.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn shape(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, path: &[Tid], direct: PathMarks, on: Tid, holder: Option<Holder>, edge_class: bool) -> Shape {
     let itself = path.is_empty() && on == signer;

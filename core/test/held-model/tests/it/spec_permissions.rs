@@ -66,7 +66,7 @@ fn regrant_revives_writes_spec_permissions_5_2() {
     assert_eq!(o.valid[&(11, 0)], true);
 }
 
-// spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the edge writes resting on its edge that the frontier leaves out
+// spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the grant writes resting on its edge that the frontier leaves out
 #[test]
 fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     let cs = |f: Vec<CommitId>| {

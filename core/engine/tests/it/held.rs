@@ -10,7 +10,7 @@
 //! crdt-model fragments decoded from the engine's wire bytes (`frag`), with every header's dot
 //! form and counter ranges as `Held::dots`; reads are compared as values by their canonical
 //! bytes. Applied role commits are given as the node's role input holds them (`ix.held`), one
-//! model part per edge write; `addenda.0` as its entries; undo, stated paths (a split commit's as
+//! model part per grant write; `addenda.0` as its entries; undo, stated paths (a split commit's as
 //! the node opened them) and purge authors as headers
 //! name them.
 //!
@@ -55,7 +55,7 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// No actor: the holder of a waiting role part's placeholder edge write.
+/// No actor: the holder of a waiting role part's placeholder grant write.
 const NOBODY: hm::NodeId = u32::MAX;
 
 /// How many nodes and aspects were compared, and the aspects left out by reason.
@@ -337,7 +337,7 @@ impl Conv<'_> {
         }
         out
     }
-    /// A role edge write (`floor` dropped: it gives keys, never a role).
+    /// A role grant write (`floor` dropped: it gives keys, never a role).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Grant>) -> hm::EdgeWrite {
         hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), may_grant: e.is_some_and(|e| e.may_grant), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
@@ -500,7 +500,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         sync_ids.insert(sync_id, (*id, *applied));
         let meta = e.core.ix.commits.get(id).cloned();
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
-        // its edge writes whatever the keys it lists: a miskeyed commit's apply nowhere here, which
+        // its grant writes whatever the keys it lists: a miskeyed commit's apply nowhere here, which
         // the model judges from the steps it is given
         let edges = if *applied && h.kind == Kind::Role { Some(e.edge_writes(id).unwrap()) } else { None };
         let mut parts = Vec::new();
@@ -842,7 +842,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         }
         reach("may-grant grants", edges().filter(|(_, e)| e.may_grant).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
-        reach("own edge writes", edges().filter(|(c, e)| e.holder == c.signer).count());
+        reach("own grant writes", edges().filter(|(c, e)| e.holder == c.signer).count());
         reach("removals with no frontier", edges().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
     }
     // the model's input on the things `what` is about: now, things, their commits
@@ -889,7 +889,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             }
         }
     }
-    // the role input: which edge writes apply on each thing
+    // the role input: which grant writes apply on each thing
     if !by_part.is_empty() {
         for c in input.held.commits.iter().filter(|c| c.is_role() && input.commits[&c.id].1) {
             let id = input.commits[&c.id].0;
@@ -908,7 +908,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             }
         }
     }
-    // `roles.0` reads: each known thing's roster (its edges alive now, record edges included) as
+    // `roles.0` reads: each known thing's roster (its edges alive now, record grants included) as
     // the model's walk ends
     if !by_part.is_empty() {
         for th in input.held.records.iter().map(|t| t.id) {

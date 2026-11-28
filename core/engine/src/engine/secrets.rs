@@ -467,7 +467,7 @@ impl NamesHeld<'_> {
         crate::rotation::members::role_for_keys(self.core, who, &self.actor) >= Some(r)
     }
 
-    /// Commit `c` is applied here with what its edge writes end: no reset of it names an entry
+    /// Commit `c` is applied here with what its grant writes end: no reset of it names an entry
     /// whose creation is not held (spec/permissions.md §2; such a commit applies none of its edge
     /// writes, `apply::validity`). Invariant: a met name is a departure this node holds whole,
     /// so it never boxes a holder an epoch's rotator saw depart into that epoch: a finalize held
@@ -476,7 +476,7 @@ impl NamesHeld<'_> {
         !self.core.ix.unresolved.contains(c)
     }
 
-    /// Some edge write of commit `c` on `holder`'s edge into the actor applies here.
+    /// Some grant write of commit `c` on `holder`'s edge into the actor applies here.
     fn applies(&self, c: &CommitId, holder: &Tid) -> bool {
         let Some(tl) = self.core.timelines().get(&self.actor) else { return false };
         tl.role_commit(c).is_some_and(|mc| {
@@ -484,7 +484,7 @@ impl NamesHeld<'_> {
         })
     }
 
-    /// The held edge writes on the actor of the commit at `key` (on `holder`'s edge, or on any)
+    /// The held grant writes on the actor of the commit at `key` (on `holder`'s edge, or on any)
     /// all stand here (`GrantWrite::stands`: apply, or would over some edge before them; only
     /// their author's authority is judged), and there is one.
     fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
@@ -532,9 +532,9 @@ impl osis_keys::Held for NamesHeld<'_> {
         self.core.ix.keysets.get(&(self.actor, r, *e)).is_some_and(|k| k.names.iter().any(|(d, author)| d == digest && self.holder(author, r)))
     }
     /// The role commit by `own`'s `ts` and author among the held `roles.0` deltas of the actor,
-    /// resolved, its edge writes on the actor each standing here (`NamesHeld::stands`, as for
+    /// resolved, its grant writes on the actor each standing here (`NamesHeld::stands`, as for
     /// an applied name): an entry naming its own rotation commit is met only beside that commit's
-    /// edge writes, so a snapshot keying the epoch establishes it only once they are held. The mark
+    /// grant writes, so a snapshot keying the epoch establishes it only once they are held. The mark
     /// is predictable by its author, which forges nothing by it: coverage never reads it.
     fn departed(&self, own: &Own) -> bool {
         let Ok(roles) = osis_base::Ak::new("roles.0") else { return false };

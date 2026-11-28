@@ -24,7 +24,7 @@ pub struct Departure {
 }
 
 /// A holder's edge into an actor as a node holds it (spec/crypto.md §4, Grant writes): its grant
-/// for keys before the first held write (`start`: the record edge, else none) and the held
+/// for keys before the first held write (`start`: the record grant, else none) and the held
 /// writes on it, their commits resolved, in key order.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrantLog {

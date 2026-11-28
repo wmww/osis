@@ -902,7 +902,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
 
 /// Whether peer `d` held access to role `r` of `t` (`access_at`) at some point while epoch `e`
 /// was current in peer `o`'s settled order: just after `e`'s rotation commit, or just after an
-/// applied edge write ordered after it and before the first held rotation commit whose keyset
+/// applied grant write ordered after it and before the first held rotation commit whose keyset
 /// lists `e` (spec/crypto.md §4 Supersedes).
 fn held_while_current(run: &Run, o: usize, d: usize, t: Tid, r: Role, e: &Epoch) -> bool {
     let core = &run.lp.peers[o].engine.core;
@@ -1004,7 +1004,7 @@ fn departure(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<CommitId>
     departure_point(run, o, t, d, r).map(|p| p.commit)
 }
 
-/// The edge write (on any actor) at which peer `d` last lost role `r` of `t` by every path in
+/// The grant write (on any actor) at which peer `d` last lost role `r` of `t` by every path in
 /// peer `o`'s settled timelines (`access_at`): the newest applied write with `d` reading `t` just
 /// before it and not just after.
 fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId> {

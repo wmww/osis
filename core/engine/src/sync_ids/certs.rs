@@ -158,7 +158,7 @@ impl Engine {
         self.shared_certificates(ev, g, &mut out);
         // the public key records of `g`'s holders (spec/permissions.md §4): every admin can seal
         // to and list them; a link key's redeemer, holding its seed alone, learns its record and
-        // keysets from `g`'s sync ID; its mint admin among them by its record edge while that
+        // keysets from `g`'s sync ID; its mint admin among them by its record grant while that
         // stands: a removed holder's keys go nowhere
         let holders: BTreeSet<Tid> = self.core.roster_of(g).into_keys().collect();
         for h in &holders {
@@ -222,10 +222,10 @@ impl Engine {
     }
 
     /// Where `x`'s record names `g` or a thing of `g`'s unit M its mint admin, `g`'s keys not
-    /// opening `x` (spec/permissions.md §4 Stub, a record edge's writes): each held commit writing
+    /// opening `x` (spec/permissions.md §4 Stub, a record grant's writes): each held commit writing
     /// M's edge on `x`, cut to the stub for readers opening M and `g`, with its evidence, and
     /// `x`'s public key record. So a reader of `g` holding `x`'s record learns that `x` is
-    /// independent and what became of the record edge, and of `x`'s roster nothing else.
+    /// independent and what became of the record grant, and of `x`'s roster nothing else.
     fn record_edge_into(&mut self, ev: &Ev, g: &Tid, x: &Tid, out: &mut Certs) {
         let Some(m) = crate::sync::units::record_admin(&self.core, crate::sync::units::Ctx::Read(*g), g, x) else { return };
         let on_m = |rc: &osis_perm::RoleCommit| rc.ops.iter().any(|op| op.target == *x && op.holder.thing() == Some(m));
@@ -246,9 +246,9 @@ impl Engine {
     }
 
     /// The stub cut of commit `c` on `x` for readers opening `open`: its
-    /// edge-class and `sync.0` parts, its `secrets.0` pieces naming a holder of `open` or none
+    /// grant-class and `sync.0` parts, its `secrets.0` pieces naming a holder of `open` or none
     /// (the rest piece). Invariant (security): nothing outside `x`; a box part only beside its
-    /// edge-class parts.
+    /// grant-class parts.
     fn stub_parts(&mut self, c: &CommitId, x: &Tid, open: &BTreeSet<Tid>) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
         let named = self.holders_named(c);
@@ -304,11 +304,11 @@ impl Engine {
     }
 
     /// `cut`'s parts of commit `c` on thing `x` (spec/permissions.md §4 Copies: S's cut, each
-    /// part whole): evidence, its edge-class parts and, recording a step placing a listed key, its
-    /// `sync.0`; keys, its `keys.0`. Beside a `keys.0` part, the commit's edge-class parts on
-    /// `x`: they carry the edge writes its rotation makes (a removal: a locator's redeemer
+    /// part whole): evidence, its grant-class parts and, recording a step placing a listed key, its
+    /// `sync.0`; keys, its `keys.0`. Beside a `keys.0` part, the commit's grant-class parts on
+    /// `x`: they carry the grant writes its rotation makes (a removal: a locator's redeemer
     /// learns the public's removal so).
-    /// Invariant (security): nothing outside `x`; a box part only beside its edge-class parts.
+    /// Invariant (security): nothing outside `x`; a box part only beside its grant-class parts.
     /// A stub's cut: `stub_parts`.
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
@@ -660,7 +660,7 @@ mod tests {
         let rot = lp.peers[1].engine.rotate_leaving_out(&a, &Role::ALL, &[]).unwrap().unwrap();
         let k = lp.peers[1].engine.epochs(&a).unwrap().read.newest_held().unwrap().0;
         lp.sync(1, 0).unwrap();
-        // T under A: its record edge makes A its mint admin
+        // T under A: its record grant makes A its mint admin
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
@@ -714,15 +714,15 @@ mod tests {
     }
 
     // spec/permissions.md §4 (the public key record of a current holder; the mint admin holds by
-    // its record edge while it stands, §1): T, minted with admin A, carries A's keys while A
-    // holds, by its record edge alone and beside a grant; once peer 1 removes A's record edge,
+    // its record grant while it stands, §1): T, minted with admin A, carries A's keys while A
+    // holds, by its record grant alone and beside a grant; once peer 1 removes A's record grant,
     // T's certificates carry none of A's keys. Fails with the mint admin's record carried
     // whatever its edge.
     #[test]
     fn a_removed_mint_admins_keys_leave_the_certificates_spec_permissions_4() {
         use crate::rotation::tests::edge;
         let (mut lp, a, t, _, rot) = under_a_rotated_by_another();
-        assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T, no edge write on T");
+        assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T, no grant write on T");
         let p1 = lp.peers[1].engine.tid();
         lp.peers[0].engine.grant(&t, &p1, &edge(Role::Admin)).unwrap();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T beside a grant");

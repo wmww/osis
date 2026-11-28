@@ -1,12 +1,12 @@
 //! Connection proofs by claimed path (spec/sync-opens.md §2; spec/wire.md §11.2 Prove):
 //! a peer proves its node thing P and claims the path [P, A] to its account A, carrying
-//! certificate copies of edge writes it picks; a verifier V judges the claim on what it holds
+//! certificate copies of grant writes it picks; a verifier V judges the claim on what it holds
 //! with the copies as received evidence, kept with the connection alone (no side recorded, nothing
 //! stored), and the proven role reads the proven things' roles on S's thing. Findings: notes/accounts-switch-brief.md,
 //! Models.
 //!
-//! The world: A minted with N1 (its record edge), N1 granting N2 admin and N3 a role, then a few
-//! edge writes on A by any of the three (removals, demotions, re-grants, self-removals, any `ts`,
+//! The world: A minted with N1 (its record grant), N1 granting N2 admin and N3 a role, then a few
+//! grant writes on A by any of the three (removals, demotions, re-grants, self-removals, any `ts`,
 //! each writer's frontier honest over a random part of what came before). V holds an
 //! evidence-closed part of them, taken in batches in a random order, its sides recorded as it
 //! takes them (Sides, held first). The prover holds every commit and picks any copies V lacks.
@@ -23,8 +23,8 @@
 //! - `receipt`: a proof proves nothing taking its copies in would not (the reading after receiving
 //!   them, sides recorded as on any receipt).
 //! - `own` (liveness): with no copies the proof is the verifier's own reading.
-//! - `fresh` (liveness): a verifier holding no edge write on the claimed edge proves a member by
-//!   honest copies (every edge write on that edge, evidence closed) wherever its reading of
+//! - `fresh` (liveness): a verifier holding no grant write on the claimed edge proves a member by
+//!   honest copies (every grant write on that edge, evidence closed) wherever its reading of
 //!   everything would, unless they undo a lowering its own reading applies; `waits`: then it does
 //!   once it holds what its own evidence brings.
 //! - `j-path`: the proven role never trusts a peer above the role its claimed path gives it on S.
@@ -86,7 +86,7 @@ impl ProofWorld {
     }
 }
 
-/// One edge write on A by `signer` at `ts`: `holder` set to `role` (a self-removal where the
+/// One grant write on A by `signer` at `ts`: `holder` set to `role` (a self-removal where the
 /// holder is the signer), its frontier honest over `received` where it lowers.
 fn write(w: &mut World, signer: Thing, ts: u32, holder: Thing, role: Role, received: &dyn Fn(Id) -> bool) -> Id {
     let lowers = role < Role::Admin && holder != signer;
@@ -247,7 +247,7 @@ pub fn proof_reading(w: &World, rules: &Rules, pr: ProofRules, held: &Set, trust
     judge(w, rules, &View { held: all, leaves: None, trust })
 }
 
-/// The lowerings (edge writes giving below admin at their `ts`, spec/permissions.md §5.1) V's own
+/// The lowerings (grant writes giving below admin at their `ts`, spec/permissions.md §5.1) V's own
 /// reading applies that a reading `rd` undoes: does not apply, with the edge above what the
 /// lowering set (not one an earlier lowering made idle).
 pub fn undone(w: &World, own: &Reading, rd: &Reading) -> Vec<Id> {

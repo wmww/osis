@@ -355,7 +355,7 @@ impl Reader<'_> {
     }
 
     /// Whether `thing`'s roster is shown here: to a reader of it, or of the target of a link's thing
-    /// (its joiners are the target's). A node holds edge writes of things it does not
+    /// (its joiners are the target's). A node holds grant writes of things it does not
     /// read (its holders' chains, the demotions their keysets carry, spec/crypto.md §4), which are
     /// not its to show.
     pub(crate) fn shows_roster(&self, thing: Tid) -> bool {

@@ -49,9 +49,9 @@ impl World {
         v
     }
     /// The edges the path `signer` states for a part on `thing` uses (spec/permissions.md §1
-    /// Path, Hops, the key hop left out), and which of them are record edges; `None` where its
+    /// Path, Hops, the key hop left out), and which of them are record grants; `None` where its
     /// members name a thing twice or its marks are invalid. `holder`: the part's holder, for an
-    /// edge write (a path ending at it is a self-removal's).
+    /// grant write (a path ending at it is a self-removal's).
     pub fn hops(&self, signer: NodeId, path: &Path, thing: ThingId, holder: Option<NodeId>) -> Option<Vec<(Hop, bool)>> {
         let names = Interned::new(self.links.keys().copied().chain(self.links.values().filter_map(|l| l.mint_admin())).chain([signer, thing]).chain(path.things.iter().copied()).chain(holder));
         let mut w = paths::World::new(&self.record_edges(&names));
@@ -61,7 +61,7 @@ impl World {
         w.well(i).then(|| w.hops(i).iter().map(|&e| ((names.id(e.0), names.id(e.1)), w.is_record(e))).collect())
     }
     /// The edges of the path `c` states for each thing it writes, that thing its last member: its
-    /// edge writes on one come after its others (spec/permissions.md §5.1 step 1).
+    /// grant writes on one come after its others (spec/permissions.md §5.1 step 1).
     pub fn stated(&self, c: &Commit) -> BTreeSet<Hop> {
         let empty = Path::default();
         let things: BTreeSet<ThingId> = c.parts.iter().map(|p| p.thing).collect();
@@ -176,7 +176,7 @@ impl Timeline {
         let mut sorted: Vec<&Commit> = commits().map(|c| viewed.get(&c.id).copied().unwrap_or(c)).collect();
         sorted.sort_by_key(|c| c.id);
         let by_id: BTreeMap<CommitId, &Commit> = sorted.iter().map(|c| (c.id, *c)).collect();
-        // the edge writes a commit holds, by part
+        // the grant writes a commit holds, by part
         let cuts = |c: CommitId| -> Vec<usize> { by_id.get(&c).filter(|x| x.is_role()).into_iter().flat_map(|x| x.parts.iter().enumerate()).filter(|(_, p)| matches!(p.body, Body::Held(Delta::Edge(_)))).map(|x| x.0).collect() };
         // each commit's world parts, in the walk's order within the commit, and the thing each is on
         let mut plan: Vec<(&Commit, Vec<Of>)> = Vec::new();
@@ -294,7 +294,7 @@ impl Timeline {
     }
 
     /// The world parts of commit `c` (as joined), in the walk's order within the commit
-    /// (spec/permissions.md §5.1 step 1: its edge writes on no hop of a path it states first, then
+    /// (spec/permissions.md §5.1 step 1: its grant writes on no hop of a path it states first, then
     /// those on one; in each group by thing, then holder), then its deltas and its purge requests:
     /// each with its thing and how many parts it is in the world (an addendum is one per cut its
     /// entries are against, `cuts` giving a commit's).
@@ -319,7 +319,7 @@ impl Timeline {
     }
 
     /// Every path `me` could state for `t` whose edges each give write or above in the reading's
-    /// final state at `end`: the simple paths over standing edges, every hop its direct edge (a
+    /// final state at `end`: the simple paths over standing edges, every hop its direct grant (a
     /// hop the world would read as a descent is marked). A writer's choice, no judging rule: each
     /// is judged as stated (`judge`'s probes).
     fn my_paths(&self, rd: &paths::Reading, me: NodeId, t: ThingId, end: u32) -> Vec<Path> {
@@ -338,7 +338,7 @@ impl Timeline {
                     stack.push(more);
                     continue;
                 }
-                // a hop from a thing two or more record edges above the next is a descent unless marked
+                // a hop from a thing two or more record grants above the next is a descent unless marked
                 let direct = more.windows(2).enumerate().filter(|(_, p)| self.world.chain_above(p[1]).iter().position(|&o| o == p[0]).is_some_and(|d| d >= 1)).map(|(k, _)| k).collect();
                 out.push(Path { things: more[1..more.len() - 1].to_vec(), direct });
             }
@@ -354,7 +354,7 @@ impl Timeline {
         self.ids.get(&of).and_then(|v| v.first()).copied()
     }
 
-    /// Whether the settled walk applies the edge write that is part `part` of role commit `c`.
+    /// Whether the settled walk applies the grant write that is part `part` of role commit `c`.
     pub fn applied_part(&self, c: CommitId, part: usize) -> bool {
         self.id(Of::Part(c, part)).is_some_and(|i| self.rd.applied.contains(&i))
     }

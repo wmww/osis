@@ -228,7 +228,7 @@ impl Core {
     ///
     /// Invariant: a key so taken is one `t`'s admin from the start listed. Only the record's key
     /// signs as `t` in the first form, and before any step is recorded nothing ordered before the
-    /// commit can have lowered it (every edge write on `t` is its admin's, after its minting).
+    /// commit can have lowered it (every grant write on `t` is its admin's, after its minting).
     /// A later commit of that key, once lowered, carrying `created.0` again is checked as any:
     /// the steps recorded before it place its keys or it is unjudgeable.
     fn first_steps(&self, h: &Header, t: &Tid) -> bool {
@@ -267,7 +267,7 @@ impl Core {
     }
 
     /// Judges held commit `id`'s listed keys again. Where the verdict moved the commit is judged
-    /// again whole, and a role commit's edge writes are read again (`Indexes::rekeyed`).
+    /// again whole, and a role commit's grant writes are read again (`Indexes::rekeyed`).
     pub(crate) fn rekey(&mut self, id: &CommitId) {
         let Some(m) = self.ix.commits.get(id) else { return };
         let h = m.header.clone();
@@ -466,7 +466,7 @@ mod tests {
         assert!(lp.peers[1].engine.core.epochs(&g).unwrap().admin.newest_held().is_none(), "bob holds no admin secret");
         let own = [s.write, osis_crypto::DeleteSecret::admin(&write).verifying_key().to_bytes()];
         let on_g = h.aspects.iter().find(|a| a.tid == g).expect("the grant writes g");
-        let at = on_g.keys.iter().copied().find(|k| h.keys[*k].level == DELETE_ADMIN).expect("its edge write lists the admin level");
+        let at = on_g.keys.iter().copied().find(|k| h.keys[*k].level == DELETE_ADMIN).expect("its grant write lists the admin level");
         for key in own {
             let mut forged = h.clone();
             forged.keys[at].key = key;

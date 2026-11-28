@@ -160,7 +160,7 @@ fn a_key_grant_holding_a_floor_grants_nothing_spec_data_model_9() {
 }
 
 // spec/permissions.md §4 Evidence of a commit: a commit signed by a granted key states its key
-// hop first; the edge writes on it (the `signers.0` write granting the key) are evidence of the
+// hop first; the grant writes on it (the `signers.0` write granting the key) are evidence of the
 // commit wherever it is held, here a sync ID whose unit is D alone (D minted with T as admin, written
 // as T by the key, so T's grant to the key is outside the unit)
 #[test]

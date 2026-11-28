@@ -104,7 +104,7 @@ fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
 
 /// Finding 11, pinned as the draft has it: a writer of A without admin writes `n` grants of
 /// admin on Q's edge, none of which applies; Q writes D through [A], so every one is in D's
-/// evidence (an edge write on an edge of the stated path, whatever its validity) and Q's node
+/// evidence (a grant write on an edge of the stated path, whatever its validity) and Q's node
 /// copies each under D. D's copies grow with what a non-admin of A writes, unbounded.
 #[test]
 fn f11_a_non_admin_of_a_path_thing_grows_the_evidence_with_writes_that_never_apply() {
@@ -268,7 +268,7 @@ fn f5_partial_evidence_judges_before_a_complete_pass() {
     let v = w.reader(&Rule::fixed(), &st, D, &Set::from([r]));
     assert_eq!(w.verdicts(&v, &Set::from([thief]))[&thief], Verdict::Valid);
     assert_eq!(w.verdicts(&w.reader(&Rule::fixed(), &st, D, &Set::new()), &Set::from([thief]))[&thief], Verdict::Invalid);
-    // with no edge write on K's edge at all, it pends
+    // with no grant write on K's edge at all, it pends
     let g = 0;
     let v = w.reader(&Rule::fixed(), &st, D, &Set::from([g, r]));
     assert_eq!(w.verdicts(&v, &Set::from([thief]))[&thief], Verdict::Pending);
@@ -316,7 +316,7 @@ fn p4_evidence_leaves_with_the_last_commit_that_needed_it() {
 }
 
 /// P6: copies under D after n writes along a path of k holder things, m of them outside D's
-/// unit: one per edge write on an outside thing, shared by every write (none per commit).
+/// unit: one per grant write on an outside thing, shared by every write (none per commit).
 #[test]
 fn p6_copies_are_shared_by_the_writes_along_a_path() {
     for (k, m) in [(1, 1), (2, 1), (2, 2), (3, 2), (3, 3)] {

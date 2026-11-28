@@ -141,7 +141,7 @@ pub(crate) fn forget_actor(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// Role commit `c`, applied in this transaction with edge writes on `rosters`, waits for sync
+/// Role commit `c`, applied in this transaction with grant writes on `rosters`, waits for sync
 /// (held elsewhere, or no peer to take it) when it is an own self-removal
 /// (`rotation::own_self_removal`): at every node of the account alike, the one that made it and
 /// the siblings that apply it (spec/permissions.md §3 Lost access: whichever node of the account

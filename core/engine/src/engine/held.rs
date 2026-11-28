@@ -26,7 +26,7 @@ enum Undo {
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     created: BTreeMap<Tid, CreationRecord>,
-    /// Holder -> things it is named on (edge writes, a creation record naming its mint admin), with counts.
+    /// Holder -> things it is named on (grant writes, a creation record naming its mint admin), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -95,7 +95,7 @@ impl Held {
         self.rest.read(&Row::MintAdminOf(t));
         self.mint_admin_of.get(t).into_iter().flatten()
     }
-    /// The actors named as a holder on some thing (edge writes, a creation record naming its
+    /// The actors named as a holder on some thing (grant writes, a creation record naming its
     /// mint admin).
     pub fn holders(&self) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holders);
@@ -106,7 +106,7 @@ impl Held {
         self.rest.read(&Row::Commits(t));
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
-    /// Things `holder` is named on as a holder (edge writes, a creation record naming its mint admin).
+    /// Things `holder` is named on as a holder (grant writes, a creation record naming its mint admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holder(holder));
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
@@ -124,13 +124,13 @@ impl Held {
         self.pairs.feed()
     }
 
-    /// Holders named on `thing` (edge writes, a creation record naming its mint admin).
+    /// Holders named on `thing` (grant writes, a creation record naming its mint admin).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Named(thing));
         self.named.get(thing).into_iter().flatten()
     }
 
-    /// The points of the commits with an edge write (a grant or a removal, of any validity) on
+    /// The points of the commits with a grant write (a grant or a removal, of any validity) on
     /// `holder`'s edge on `thing`, ascending, those after `after` alone where given.
     pub fn writes_on(&self, holder: Holder, thing: &Tid, after: Option<&Point>) -> impl Iterator<Item = &Point> {
         use std::ops::Bound::{Excluded, Unbounded};
@@ -160,13 +160,13 @@ impl Held {
     }
 
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
-    /// followed, by edge writes.
+    /// followed, by grant writes.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
         self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).filter_map(|o| Some((r.signer, o.holder.thing()?))))
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
-    /// mint admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
+    /// mint admin and any holder named with admin on it by a grant write a member signed; of any validity and whatever followed. So a forger is in it only if a
     /// member named it, and held inputs only grow, so it does, whatever the order: use it where
     /// "could this signer ever have been admin" must not depend on arrival (a timeline read does).
     /// A member need not hold admin on the thing it signs for: it could as well have named the holder
@@ -401,7 +401,7 @@ impl Held {
         self.ids.get(id).map(|c| &**c)
     }
 
-    /// Drops the edge writes of the commit with this ID: a commit applying none
+    /// Drops the grant writes of the commit with this ID: a commit applying none
     /// (`validity::add_role_commit`), or one no longer held. Invariant: perm reads only held
     /// commits (`apply::unindex`), so its held set is a function of the held commits, as an open
     /// finds it.
@@ -495,7 +495,7 @@ impl Journaled for Held {
 }
 
 impl Held {
-    /// Things with a held edge write or record.
+    /// Things with a held grant write or record.
     pub fn all_things(&self) -> Vec<Tid> {
         self.rest.read_all();
         self.records_read.read_all();
@@ -623,15 +623,15 @@ impl TlStamps {
 enum Read {
     /// The whole timeline: moved by every update that changed the walk.
     Whole,
-    /// The history of the edges into a thing (its record edge included): moved by a change of
+    /// The history of the edges into a thing (its record grant included): moved by a change of
     /// one (`osis_perm::Changed::edges`) or of its record.
     Into(Tid),
-    /// The edge writes held on a thing and whether each applies: moved by one coming or going
+    /// The grant writes held on a thing and whether each applies: moved by one coming or going
     /// (`osis_perm::Changed::held`) or changing its standing (`ops`).
     Held(Tid),
     /// The set of things known to the timeline.
     Things,
-    /// Whether the timeline knows a thing (its record or an edge write on it held).
+    /// Whether the timeline knows a thing (its record or a grant write on it held).
     Known(Tid),
     /// `Timelines::keyless`: moved when it changes.
     Keyless,
@@ -647,7 +647,7 @@ impl std::ops::Deref for Timelines {
 
 /// A thing's edges in the timeline (`Timelines::on`): what is read of them depends on the
 /// history of the edges into it alone (spec/permissions.md §5.1: its roster, each holder's
-/// standing, the writes applied on them), and on the edge writes held on it (`held`).
+/// standing, the writes applied on them), and on the grant writes held on it (`held`).
 pub struct On<'a> {
     tl: &'a osis_perm::Timeline,
     thing: Tid,
@@ -661,7 +661,7 @@ impl<'a> On<'a> {
         self.stamps.read(&Read::Whole);
         self.tl
     }
-    /// The edge writes held on it, applied or not (`Timeline::held_on`).
+    /// The grant writes held on it, applied or not (`Timeline::held_on`).
     pub fn held(&self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::GrantOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
         let (tl, thing) = (self.tl, self.thing);
@@ -676,7 +676,7 @@ impl<'a> On<'a> {
     pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Grant> {
         self.tl.edges_at(point).get(holder, &self.thing).copied()
     }
-    /// Its holders by their current edges, its record edge included while it stands.
+    /// Its holders by their current edges, its record grant included while it stands.
     pub fn holders(&self) -> Vec<(Tid, osis_perm::Grant)> {
         self.tl.edges_at(None).holders(&self.thing).map(|(m, e)| (*m, *e)).collect()
     }
@@ -684,11 +684,11 @@ impl<'a> On<'a> {
     pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Grant> {
         self.tl.roster(&self.thing, at)
     }
-    /// The edge write on it in force for `holder` (`Timeline::in_force`).
+    /// The grant write on it in force for `holder` (`Timeline::in_force`).
     pub fn in_force(&self, holder: &Tid) -> Option<osis_base::CommitId> {
         self.tl.in_force(&osis_base::Holder::Thing(*holder), &self.thing)
     }
-    /// The applied edge writes on it (`Timeline::applied_on`).
+    /// The applied grant writes on it (`Timeline::applied_on`).
     pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::GrantOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
         let (tl, thing) = (self.tl, self.thing);
@@ -721,7 +721,7 @@ impl Timelines {
         ids.find(|c| !self.of.reads_now(held, c)).copied()
     }
 
-    /// The timeline where it knows `thing` (a record or an edge write on it held), read whole.
+    /// The timeline where it knows `thing` (a record or a grant write on it held), read whole.
     pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
         self.stamps.read(&Read::Known(*thing));
         if !self.of.knows(thing) {
@@ -772,7 +772,7 @@ impl Timelines {
 
     /// The path from `node` into `thing` giving `need` on the current edges at `ts`
     /// (`osis_perm::Timeline::ways_now`): the things listed, the hops marked direct, and whether
-    /// its last hop is a record edge.
+    /// its last hop is a record grant.
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         // the search reads the edges into everything that reaches `thing`
         self.stamps.read(&Read::Whole);
@@ -812,7 +812,7 @@ impl Timelines {
 
     /// Stamps what an update changed (`c`).
     fn moved(&mut self, c: &osis_perm::Changed) {
-        // the whole of it as role state: a delta coming or going moves no edge write's
+        // the whole of it as role state: a delta coming or going moves no grant write's
         // standing and no edge (what reads a delta's verdict is judged again by `Changed::reached`)
         let w = &c.walk;
         if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.edges.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() {
@@ -822,7 +822,7 @@ impl Timelines {
             self.ways.clear();
             self.roles.clear();
         }
-        // the edge writes held on a thing, and which of them apply: a write that came or went
+        // the grant writes held on a thing, and which of them apply: a write that came or went
         // (`held`), one whose standing moved (`ops`). A commit moves nothing of its signer's.
         let stood: BTreeSet<Tid> = c.ops.iter().filter_map(|w| self.of.edge_op(w)).map(|(_, _, target)| target).collect();
         for t in c.held.iter().chain(&stood) {
@@ -831,7 +831,7 @@ impl Timelines {
         for t in c.created.iter().copied().chain(c.edges().map(|(_, t)| t)) {
             self.stamps.wrote(&Read::Into(t), true);
         }
-        // a thing is known by its record or an edge write on it: both are its held inputs
+        // a thing is known by its record or a grant write on it: both are its held inputs
         for t in &c.known {
             self.stamps.wrote(&Read::Known(*t), true);
         }
@@ -840,7 +840,7 @@ impl Timelines {
         }
         // a keyless grant closes a cycle of actor grants (spec/crypto.md §4 Key access): judged
         // anew where an actor's grant moved or a record came or went other than a new leaf's
-        // (its record edge is in no cycle: it holds nothing)
+        // (its record grant is in no cycle: it holds nothing)
         let records = self.of.records();
         let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_edge(t);
         if c.edges().next().is_some() || c.created.iter().any(|t| !leaf(t)) {
@@ -1108,14 +1108,14 @@ mod tests {
         update(&mut h, &mut tl);
         check(&tl);
         assert!(tl.keyless().is_empty());
-        // a thing new to the timelines: the set of them moves, and its record edge
+        // a thing new to the timelines: the set of them moves, and its record grant
         h.create(late);
         update(&mut h, &mut tl);
         check(&tl);
     }
 
     // spec: none (internal: notes/engine.md, Derived values). The same, differential: random
-    // edge writes (grants, removals, retains, `until`s; authors with and without authority) over
+    // grant writes (grants, removals, retains, `until`s; authors with and without authority) over
     // things minted with keys and things minted with them or each other as admin, records created and forgotten,
     // commits removed, and undos; after each update a memo of every read through
     // the timelines answers as a fresh read, and the keyless grants kept per component are those

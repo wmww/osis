@@ -1,7 +1,7 @@
 //! Authority over one edge state (spec/permissions.md §1, §2, §5.1 step 3): effective role as
-//! the widest path over role edges, may-grant, the path search. Record edges
+//! the widest path over role edges, may-grant, the path search. Record grants
 //! (spec/permissions.md §1) are virtual: a mint admin's edge on its thing is read from the
-//! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
+//! creation record (`Records`) unless a grant write set it (`Edges` holds the value written, or
 //! that it was removed), so dependent things cost the edge state nothing.
 
 use crate::types::{earliest, mark, Grant};
@@ -10,7 +10,7 @@ use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The value of a record edge in force (spec/permissions.md §1): admin, no `until`.
+/// The value of a record grant in force (spec/permissions.md §1): admin, no `until`.
 pub const RECORD_EDGE: Grant = Grant { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
 
 /// Record links of every thing with a verified `created.0`: each thing's mint admin (or that
@@ -53,18 +53,18 @@ impl Records {
     pub fn link(&self, t: &Tid) -> Option<RecordLink> {
         self.link.get(t).copied()
     }
-    /// The holder of `t`'s record edge from the start: its mint admin or the key its record holds.
+    /// The holder of `t`'s record grant from the start: its mint admin or the key its record holds.
     pub fn holder(&self, t: &Tid) -> Option<Holder> {
         match self.link.get(t)? {
             RecordLink::Admin(a) => Some(Holder::Thing(*a)),
             RecordLink::Key => self.keys.get(t).map(|k| Holder::Key(*k)),
         }
     }
-    /// The things `a` is mint admin of (its record edges' targets).
+    /// The things `a` is mint admin of (its record grants' targets).
     pub fn mint_admin_of(&self, a: &Tid) -> &[Tid] {
         self.mint_admin_of.get(a).map_or(&[], |v| v.as_slice())
     }
-    /// The mint admin of `t` (its record edge's holder) when its record is held and names one.
+    /// The mint admin of `t` (its record grant's holder) when its record is held and names one.
     pub fn mint_admin(&self, t: &Tid) -> Option<Tid> {
         self.mint_admin_ref(t).copied()
     }
@@ -74,13 +74,13 @@ impl Records {
             _ => None,
         }
     }
-    /// Whether (`holder`, `target`) is `target`'s record edge.
+    /// Whether (`holder`, `target`) is `target`'s record grant.
     pub fn is_record_edge(&self, holder: &Tid, target: &Tid) -> bool {
         self.mint_admin(target) == Some(*holder)
     }
 }
 
-/// An edge state: every current `roles.0` edge set by a write (a record edge in force is read
+/// An edge state: every current `roles.0` edge set by a write (a record grant in force is read
 /// from the records, `Records`; one written over is here, one removed in `cut`). The per-target
 /// and per-holder maps are shared between clones until written (a kept state costs O(targets +
 /// holders), not O(edges)).
@@ -88,25 +88,25 @@ impl Records {
 pub struct Edges {
     by_target: BTreeMap<Tid, Arc<BTreeMap<Tid, Grant>>>,
     by_holder: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
-    /// Record edges (holder, target) a write removed, with no value written since.
+    /// Record grants (holder, target) a write removed, with no value written since.
     cut: BTreeSet<(Tid, Tid)>,
 }
 
 impl Edges {
-    /// The value an edge write set (holder, target) to, if one is in force (a record edge in
+    /// The value a grant write set (holder, target) to, if one is in force (a record grant in
     /// force by the record alone is not here: `get`).
     pub fn explicit(&self, holder: &Tid, target: &Tid) -> Option<&Grant> {
         self.by_target.get(target).and_then(|m| m.get(holder))
     }
-    /// Whether a write removed the record edge (holder, target).
+    /// Whether a write removed the record grant (holder, target).
     pub fn is_cut(&self, holder: &Tid, target: &Tid) -> bool {
         self.cut.contains(&(*holder, *target))
     }
-    /// The edge (holder, target) in force: the value written, else the record edge unless cut.
+    /// The edge (holder, target) in force: the value written, else the record grant unless cut.
     pub fn get(&self, records: &Records, holder: &Tid, target: &Tid) -> Option<&Grant> {
         self.explicit(holder, target).or_else(|| (records.is_record_edge(holder, target) && !self.is_cut(holder, target)).then_some(&RECORD_EDGE))
     }
-    /// Sets (holder, target) to `edge`; a record edge set to its record value is in force by
+    /// Sets (holder, target) to `edge`; a record grant set to its record value is in force by
     /// the record again.
     pub fn set(&mut self, records: &Records, holder: Tid, target: Tid, edge: Option<Grant>) {
         if records.is_record_edge(&holder, &target) {
@@ -221,7 +221,7 @@ impl Overlay {
 }
 
 /// An edge state as a base state (a kept one) with an overlay of the changes since: a past
-/// state without copying the base. Record edges in force are read from `records`.
+/// state without copying the base. Record grants in force are read from `records`.
 #[derive(Clone, Debug)]
 pub struct EdgesAt<'a> {
     records: &'a Records,
@@ -242,7 +242,7 @@ impl<'a> EdgesAt<'a> {
             None => self.base.get(self.records, holder, target),
         }
     }
-    /// Whether the overlay or a write in the base sets (holder, target), so its record edge is
+    /// Whether the overlay or a write in the base sets (holder, target), so its record grant is
     /// not in force by the record.
     fn written(&self, holder: &Tid, target: &Tid) -> bool {
         self.over.get(holder, target).is_some() || self.base.explicit(holder, target).is_some() || self.base.is_cut(holder, target)
@@ -291,7 +291,7 @@ impl<'a> View<'a> {
         View { patch: Some((holder, target, edge)), ..self }
     }
 
-    /// Whether the patch, the overlay or a write sets (holder, target): its record edge is then
+    /// Whether the patch, the overlay or a write sets (holder, target): its record grant is then
     /// not in force by the record.
     fn written(&self, holder: &Tid, target: &Tid) -> bool {
         self.patch.is_some_and(|p| p.0 == *holder && p.1 == *target)
@@ -422,10 +422,10 @@ impl<'a> View<'a> {
     /// edges alive at the view's `ts` each giving `need` or more (for `Need::MayGrant`, the edges
     /// into `y` giving admin or carrying the flag: spec/permissions.md §2 Path's may-grant), holders
     /// taken in the order the edge state lists them; with the earliest `until` it followed. A
-    /// mint ancestor two or more record edges up reaches a thing by its direct edge only as a hop
+    /// mint ancestor two or more record grants up reaches a thing by its direct grant only as a hop
     /// marked direct (spec/permissions.md §1 Path, Direct mark): ways are the fewest
-    /// edges (a descent counts each record edge), then the fewest marked hops, so a far mint
-    /// ancestor's direct edge is stated wherever it gives the need: a write rests on the one
+    /// edges (a descent counts each record grant), then the fewest marked hops, so a far mint
+    /// ancestor's direct grant is stated wherever it gives the need: a write rests on the one
     /// edge rather than the record chain. The breadth-first search, ties to fewer marks. O(things reaching `y` × their edges into it × log).
     pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<Time>) {
         let mut expires: Option<Time> = None;
@@ -508,9 +508,9 @@ pub struct Ways {
 
 impl Ways {
     /// The path from `from` into the thing (spec/permissions.md §1 Path): the things listed
-    /// between them, each hop a direct edge or a descent (a run of record edges, whose things in
-    /// between are not listed), the hops marked direct (a mint ancestor two or more record edges
-    /// up reaching by its direct edge), and whether its last hop is a record edge (so the thing's
+    /// between them, each hop a direct grant or a descent (a run of record grants, whose things in
+    /// between are not listed), the hops marked direct (a mint ancestor two or more record grants
+    /// up reaching by its direct grant), and whether its last hop is a record grant (so the thing's
     /// own dependents are reached from the same listed things); the empty path for `from` itself.
     /// `None` where no path reaches it from `from`. O(its length × the record chains' depth).
     pub fn path(&self, records: &Records, from: &Tid) -> Option<(Vec<Tid>, PathMarks, bool)> {
@@ -527,7 +527,7 @@ impl Ways {
             [p, q, r] if !(records.is_record_edge(p, q) && records.is_record_edge(q, r)) => Some(*q),
             _ => None,
         }).collect();
-        // a step that is no record edge from a mint ancestor of its target is a marked hop: its
+        // a step that is no record grant from a mint ancestor of its target is a marked hop: its
         // first thing is a member (listed, or `from`), the hop's index its place among them
         let mut marks: PathMarks = 0;
         let mut members = 1u32;

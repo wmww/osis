@@ -8,7 +8,7 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 - **Acting only after a complete pass.**
 - **Storage under a fork under F6** (issues/disputes-storage-under-f6.md).
 - **A reproducer of the wanted-blob handover** (issues/fixture-seed-luck.md).
-- **Untested**: whether a node keeping the target unread needs its own grant's edge write for the lost-access rule; what osis-sync's promotion does with a sealed fire that opens pending for drift (`Opened::Commit(_, Pending(_, Reason::Drift))`: the spec says it waits as any commit; whether it is stamped before it applies is open).
+- **Untested**: whether a node keeping the target unread needs its own grant's grant write for the lost-access rule; what osis-sync's promotion does with a sealed fire that opens pending for drift (`Opened::Commit(_, Pending(_, Reason::Drift))`: the spec says it waits as any commit; whether it is stamped before it applies is open).
 
 ## For review
 Rulings the rewrite made that the review should check:

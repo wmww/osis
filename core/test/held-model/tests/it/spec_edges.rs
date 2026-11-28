@@ -1,6 +1,6 @@
-//! Which edge writes are evidence (spec/permissions.md §4 Evidence of a commit; E1,
-//! notes/a2-spec/README.md Open 2): every held edge write on a commit's key hop, on each edge of
-//! its stated path and on each edge its own edge writes set, whatever its validity; the entry a
+//! Which grant writes are evidence (spec/permissions.md §4 Evidence of a commit; E1,
+//! notes/a2-spec/README.md Open 2): every held grant write on a commit's key hop, on each edge of
+//! its stated path and on each edge its own grant writes set, whatever its validity; the entry a
 //! reset names (spec/permissions.md §2); pending on missing evidence (spec/commits.md §4
 //! Unjudgeable). Hand worlds and the cost a party can force.
 use crate::spec_evidence::fails;
@@ -20,7 +20,7 @@ fn base() -> (World, [usize; 4]) {
     (w, n)
 }
 
-/// Cost (finding 15): every edge write on an edge D's bodies use is a copy under D, whoever made
+/// Cost (finding 15): every grant write on an edge D's bodies use is a copy under D, whoever made
 /// it and whether or not it applies: an admin's grants, a writer's finalizes (ending nothing: Q's
 /// grant has no `until`), a may-grant holder's grants onto a holder that has one (applying
 /// nowhere). 27 more of each are 27 more copies; every property holds. A non-admin's junk alike
@@ -53,7 +53,7 @@ fn every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4() {
     }
 }
 
-/// Cost, counted: copies under D are the edge writes on the outside edges its bodies' paths use,
+/// Cost, counted: copies under D are the grant writes on the outside edges its bodies' paths use,
 /// one more per re-grant on a used outside edge (role churn; churn inside the unit is bodies), and
 /// repeated under every sync ID whose unit carries D (each counts the path things outside its own
 /// unit). Flat in writes: `spec_evidence::p6_*`.
@@ -70,7 +70,7 @@ fn cost_copies_follow_role_churn_on_used_edges_never_writes() {
 
 /// Finding 9: X removes K and Q (a reader of A) from A in one commit C; K writes D through [A]
 /// after it. C's part on Q's edge resets the entry X's grant to Q created, so C applies none of its
-/// edge writes until that grant is held (spec/permissions.md §2). Evidence brings every edge write
+/// grant writes until that grant is held (spec/permissions.md §2). Evidence brings every grant write
 /// on each edge C sets (`Rule::commit_edges`): D's reader holds the grant, applies C and judges K's
 /// write invalid, as the node holding everything. The control (C's own parts alone) leaves D's
 /// reader with C waiting, and K's write valid there (P1).
@@ -91,7 +91,7 @@ fn f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2() {
 /// edge put in its writer's walk. X grants Q read (g1) and changes it to write (g2); K, a writer of
 /// A without admin, grants Q admin (junk, applied nowhere); X's removal of Q names g2's entry. A
 /// second removal finds no grant in force: it resets an entry of its own (none named), as does a
-/// removal of a holder never granted and of a record edge.
+/// removal of a holder never granted and of a record grant.
 #[test]
 fn a_reset_names_the_entry_its_writers_walk_has_in_force_spec_permissions_2() {
     let (mut w, [x, _, k, _]) = base();
@@ -145,7 +145,7 @@ fn f43_a_key_hop_no_write_puts_pends_until_one_is_held_spec_commits_4() {
     assert_eq!(all, [Valid, Valid]);
 }
 
-/// spec/commits.md §4 Unjudgeable: an edge write that itself pends is no evidence, and hides none
+/// spec/commits.md §4 Unjudgeable: a grant write that itself pends is no evidence, and hides none
 /// that is: Q's grant to K on A (Q holds nothing there) pends, and K's write on A after it does
 /// not, X's grant to K, ordered before both, being evidence. A grant ordered after a part is none:
 /// K's write before X's grant to Q pends.

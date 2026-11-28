@@ -77,7 +77,7 @@ fn first_read(w: &mut World) -> (u64, u64) {
 
 // Today a removal of a writer from O is carried by every later keyset of O and of each thing O
 // reaches (spec/crypto.md §4, Carried demotions: the walk records it on everything the lowered
-// edge's target reaches), and a held keyset needs the edge writes of what it carries: a first
+// edge's target reaches), and a held keyset needs the grant writes of what it carries: a first
 // reader of D holds every removal on O, beside D's own rotation for each (the removed member
 // could read D through O). Where D requires a removal (evidence of a write it judges)
 // it requires it and the grant its reset names as copies, each a role commit's header and its `roles.0` delta on O

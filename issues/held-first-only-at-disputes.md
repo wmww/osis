@@ -9,4 +9,4 @@
 
 **World**: admins H, X, Y of g. Y removes X; X's backdated removal S of H (seed of H's held removal R of X) arrives at node N after R, void through Y's removal. Later Y's removal goes void (a fight Y loses at N). N: spec trusts R (H stands); code records nothing (S applies, H removed).
 
-**Fix shape**: judge held first per fresh remote edge-class part over every held frontier-carrying lowering it seeds (the walk's `seeds_alone` inverted), not over the update's disputes; or restate the spec rule at dispute detection if the simpler rule is accepted (disputes take the simplest rule to build).
+**Fix shape**: judge held first per fresh remote grant-class part over every held frontier-carrying lowering it seeds (the walk's `seeds_alone` inverted), not over the update's disputes; or restate the spec rule at dispute detection if the simpler rule is accepted (disputes take the simplest rule to build).

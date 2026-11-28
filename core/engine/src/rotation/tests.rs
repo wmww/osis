@@ -1355,7 +1355,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     assert!(lp.peers[2].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[1]), "D finalized at X");
 }
 
-// spec/permissions.md §2 (a commit's edge writes apply together), spec/crypto.md §4 (Names): a name
+// spec/permissions.md §2 (a commit's grant writes apply together), spec/crypto.md §4 (Names): a name
 // covers its commit's departures: mint admin A (0) sets an `until` on writers D1 (3) and D2 (4); past
 // it, admin B (1) finalizes both in one commit F. Admin X (2) holds F and D2's `until` but not
 // D1's. Were F's write on D2 to apply alone there, X's rotation would name F while boxing D1, and
@@ -1392,7 +1392,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     }
 }
 
-// spec/crypto.md §4 (Met): a name is met when its commit is applied: its edge write on the name's
+// spec/crypto.md §4 (Met): a name is met when its commit is applied: its grant write on the name's
 // thing held: mint admin A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
 // (3, an admin) holds R_s without its `roles.0` delta on G (a copy of some parts: a certificate copy or
 // another sync ID's parts), so it still sees M as a reader: e must not be established there.
@@ -1421,11 +1421,11 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
     withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
-// spec/crypto.md §4 (names: every commit whose demotion's audit dropped an edge write on the
+// spec/crypto.md §4 (names: every commit whose demotion's audit dropped a grant write on the
 // actor, named by the thing the demotion is on): G's mint admin is actor O (peer 0's); W (1) an
 // admin of O grants D (2) read on G through the record chain (C). Mint admin A demotes W to write on
 // O, not having received C (its frontier misses it), so C is audited away; A then gets C and
-// rotates G's read to e (and its write): no edge write on G departs anyone, and O's read keyset is unchanged, so
+// rotates G's read to e (and its write): no grant write on G departs anyone, and O's read keyset is unchanged, so
 // only the audit names W's demotion. X (3, G's admin) holds C but not the demotion: e must not
 // be established there (X sees D a reader and would re-seal e to it). Once it arrives, e is.
 #[test]

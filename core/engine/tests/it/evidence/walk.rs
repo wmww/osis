@@ -50,7 +50,7 @@ impl World {
         self.commits.push(Commit { id, ts: ts(t), signer: tid(signer), key: own(tid(signer)), parts });
         id
     }
-    /// An edge write along the empty path (the signer the target's mint admin, or holding admin
+    /// A grant write along the empty path (the signer the target's mint admin, or holding admin
     /// on it directly).
     fn set(&mut self, t: u64, signer: u8, on: u8, holder: u8, role: Option<Role>, frontier: &[CommitId]) -> CommitId {
         let value = role.map(Grant::new);
@@ -87,7 +87,7 @@ fn content_part(path: &[u8], on: u8) -> PPart {
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Delta(delta) }
 }
 
-/// The edges joining path members (draft §1 Hops): record edges down a mint chain, else direct.
+/// The edges joining path members (draft §1 Hops): record grants down a mint chain, else direct.
 fn joins(records: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)> {
     let mut down = vec![];
     let mut t = q;
@@ -175,7 +175,7 @@ fn reader_set(w: &World, unit: &[u8], copies: &BTreeSet<CopyId<CommitId, Tid>>) 
     (out, ids)
 }
 
-/// Verdicts on the unit's parts: content and edge-class statuses, keyed by full `WriteId`.
+/// Verdicts on the unit's parts: content and grant-class statuses, keyed by full `WriteId`.
 fn verdicts(w: &World, p: &Paths, unit: &[u8], ids: Option<&BTreeMap<WriteId, WriteId>>) -> BTreeMap<WriteId, String> {
     let mut out = BTreeMap::new();
     for c in &w.commits {
@@ -321,7 +321,7 @@ fn a_split_commits_part_on_another_thing_is_neither_held_nor_required_spec_permi
 }
 
 /// A node trusting a write no chain gives authority (Z, a writer, removing K on A): the walk leaves
-/// it void, so it moves no verdict. Under E1 it is a copy (an edge write on K's path edge, whatever
+/// it void, so it moves no verdict. Under E1 it is a copy (a grant write on K's path edge, whatever
 /// its validity), with its own evidence (X's grant to Z), and the reader holding them, trusting it
 /// too, judges as the writer: trust never reaches evidence.
 #[test]

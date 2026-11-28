@@ -7,9 +7,9 @@
 //! judged along it; a lowering lists a frontier; addenda, re-grants as there. On top:
 //! - **Pending** (`pend`, spec/commits.md §4 Unjudgeable): a commit pends at a node while a hop it
 //!   rests on (`paths::World::rests`: its key hop, then its path's edges) that is no record hop has
-//!   no held edge write ordered before it that does not itself pend, or while a part of its commit
+//!   no held grant write ordered before it that does not itself pend, or while a part of its commit
 //!   removing a holder resets an entry whose creation (`creation`, named by the reset: the entry in
-//!   force in its writer's walk) is not held (spec/permissions.md §2). A pending edge write applies
+//!   force in its writer's walk) is not held (spec/permissions.md §2). A pending grant write applies
 //!   nothing.
 //! - **Sync IDs and units.** Signers have no sync ID; every other thing in `sids` has its own, and
 //!   a unit per sync ID: the thing and the members `Ev::Join`/`Ev::Leave` give it. Which things a
@@ -18,11 +18,11 @@
 //! - **Bodies.** A commit's body is under every sync ID whose unit holds the thing it writes
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
-//!   (`paths::evidence`: every held edge write on a seed's key hop, on an edge of its path and on
-//!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
+//!   (`paths::evidence`: every held grant write on a seed's key hop, on an edge of its path and on
+//!   each edge its commit's grant writes on its thing set, closed under the same for what it adds:
 //!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies, and the chain stubs'
 //!   role entries (spec/sync-set.md §2 Stubs: every holder on a chain by which S's keys open
-//!   a thing of S's unit is a stub in it): each edge write on an edge of such a chain, a path of
+//!   a thing of S's unit is a stub in it): each grant write on an edge of such a chain, a path of
 //!   read edges from S's thing to a thing of the unit (a held write giving read that the node
 //!   judges valid over what it holds, at any time, or a record: `World::read_edges`; an edge
 //!   giving no more than sync brings the sync-only cut, which this model has no role for;
@@ -37,7 +37,7 @@
 //!   requires it logs again: the union). The thief logs its own bodies and the grants they rest on,
 //!   never a lowering.
 //! - **The reference** (`World::reference`): a reader of S is judged against a node holding
-//!   everything written but the edge writes S lacks that no honest node syncing S holds
+//!   everything written but the grant writes S lacks that no honest node syncing S holds
 //!   (`World::undelivered`): lazy delivery brings evidence only where a node holding it holds S.
 //!   Where that node's verdict differs from the node holding everything is **the gap**
 //!   (`World::gap`, notes/write-path-design.md §2 The gap; issues/removed-key-writes-show-far.md),
@@ -105,18 +105,18 @@ pub enum Lists {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
-    /// Chain stubs: an edge write on an edge of a chain by which S's keys open a thing of S's
+    /// Chain stubs: a grant write on an edge of a chain by which S's keys open a thing of S's
     /// unit is a seed of S (read edges and records at any time: `ROLE_KEEP` read as for good).
     /// False: the control (bodies alone).
     pub chain_stubs: bool,
-    /// An edge write in the closure brings every held edge write on each edge its commit's edge
+    /// A grant write in the closure brings every held grant write on each edge its commit's edge
     /// writes on its thing set (spec/permissions.md §4 Evidence of a commit; finding 9: a commit's
-    /// edge writes apply together, and a removal waits for the creations its resets name). False:
+    /// grant writes apply together, and a removal waits for the creations its resets name). False:
     /// the control (its commit's other parts on the thing alone).
     pub commit_edges: bool,
-    /// Record edges are edges of the read graph (each a mint admin's admin edge on the thing it
+    /// Record grants are edges of the read graph (each a mint admin's admin grant on the thing it
     /// minted, at any time: `World::chain_edges`): keys open through them (spec/sync-set.md §2).
-    /// False: the control (grants only), which under-reads (record edges open keys as grants do: spec/sync-set.md §2).
+    /// False: the control (grants only), which under-reads (record grants open keys as grants do: spec/sync-set.md §2).
     pub records: bool,
     pub lists: Lists,
     /// The carried-demotion seed (notes/a3-spec/README.md Open 8): a held keyset's carried
@@ -129,7 +129,7 @@ pub struct Rule {
 
 impl Rule {
     /// The spec's rule (spec/permissions.md §4; notes/a2-spec/README.md Open 2: E1): every held
-    /// edge write on a stated path's edges and on the edges its commit sets, lazy delivery, chain
+    /// grant write on a stated path's edges and on the edges its commit sets, lazy delivery, chain
     /// stubs, lists whole.
     pub fn fixed() -> Rule {
         Rule { placement: Placement::Function, chain_stubs: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false }
@@ -286,7 +286,7 @@ impl World {
             _ => None,
         }
     }
-    /// A removal: an edge write giving below write at its own `ts` (none, read, or an `until`
+    /// A removal: a grant write giving below write at its own `ts` (none, read, or an `until`
     /// passed), but a finalize. (`paths::World::lowers` counts every write below admin, a fresh
     /// grant of write included.) A demotion from admin to write is not one here.
     pub fn removes(&self, i: Id) -> Option<Edge> {
@@ -295,7 +295,7 @@ impl World {
             _ => None,
         }
     }
-    /// A lowering that takes something away: an edge write below admin at its own `ts`
+    /// A lowering that takes something away: a grant write below admin at its own `ts`
     /// (`paths::World::lowers`: no finalize), on a record hop or ordered (by key) after a write on
     /// its edge giving more at its own `ts`. What lazy delivery may leave behind (`undelivered`).
     pub fn takes_away(&self, i: Id) -> bool {
@@ -306,7 +306,7 @@ impl World {
         };
         self.w.is_record(e) || (0..self.w.commits.len()).any(|j| self.w.sets(j) == Some(e) && self.w.key(j) < self.w.key(i) && at(j) > at(i))
     }
-    /// A held edge write giving write or above (any `until`).
+    /// A held grant write giving write or above (any `until`).
     pub fn gives_write(&self, i: Id) -> Option<Edge> {
         match &self.w.commits[i].kind {
             Kind::Edge { holder, role, .. } if *role >= Role::Write => Some((*holder, self.on(i))),
@@ -317,7 +317,7 @@ impl World {
     // ---- What a sync ID requires ----
 
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and under
-    /// `chain_stubs` the edge writes on the edges of a chain from S's thing to a thing of the unit.
+    /// `chain_stubs` the grant writes on the edges of a chain from S's thing to a thing of the unit.
     fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Edge>) -> Set {
         let chain = if rule.chain_stubs { self.chain_edges(rule, s, unit, reads) } else { BTreeSet::new() };
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| chain.contains(&(hd, self.on(i))))).collect();
@@ -338,12 +338,12 @@ impl World {
         self.closure(rule, &self.seeds(rule, s, &units[&s], h, reads), h)
     }
     /// The edges of the chains by which S's keys open a thing of `unit`: read graph edges `reads`
-    /// and record edges (`Rule::records`) on a path from S's thing to a thing of the unit, at any
-    /// time. A record edge opens as a grant of admin from the mint admin to the thing it minted
-    /// (spec/sync-set.md §2 T's keys open: effective role over paths that climb record edges; a
+    /// and record grants (`Rule::records`) on a path from S's thing to a thing of the unit, at any
+    /// time. A record grant opens as a grant of admin from the mint admin to the thing it minted
+    /// (spec/sync-set.md §2 T's keys open: effective role over paths that climb record grants; a
     /// dependent's secrets derive from its mint admin's), standing since the thing's creation,
     /// ordered before every write (spec/crypto.md §4 Key access), and read at any time as grants
-    /// are: a record edge removed later still opens (as a grant removed later does).
+    /// are: a record grant removed later still opens (as a grant removed later does).
     fn chain_edges(&self, rule: &Rule, s: Sid, unit: &Things, reads: &BTreeSet<Edge>) -> BTreeSet<Edge> {
         let edges: BTreeSet<Edge> = self.w.records.iter().copied().filter(|_| rule.records).chain(reads.iter().copied()).collect();
         let reach = |from: Things, fwd: bool| {
@@ -359,7 +359,7 @@ impl World {
         let (from, to) = (reach(Things::from([s]), true), reach(unit.clone(), false));
         edges.into_iter().filter(|(x, y)| from.contains(x) && to.contains(y)).collect()
     }
-    /// An edge write giving read or above (any `until`): a link by which keys open, once valid.
+    /// A grant write giving read or above (any `until`): a link by which keys open, once valid.
     fn gives_read(&self, i: Id) -> Option<Edge> {
         match &self.w.commits[i].kind {
             Kind::Edge { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
@@ -390,22 +390,22 @@ impl World {
 
     // ---- The closure ----
 
-    /// A grant: an edge write setting its edge (no self-removal, no finalize) to a role, `until`
+    /// A grant: a grant write setting its edge (no self-removal, no finalize) to a role, `until`
     /// disregarded.
     pub fn grant(&self, i: Id) -> bool {
         matches!(&self.w.commits[i].kind, Kind::Edge { role, finalize: false, .. } if *role > Role::None) && !self.w.leave(i)
     }
     /// Grant write `i` leaves its holder no grant (no role, or `until` 0: a removal, a self-removal,
-    /// a finalize): a commit with one applies none of its edge writes on its thing until the
+    /// a finalize): a commit with one applies none of its grant writes on its thing until the
     /// creation of the entry it resets is held; a reset beside a put of a live grant is not waited
     /// for (spec/permissions.md §2 Grant writes; finding 25).
     pub fn ends_grant(&self, i: Id) -> bool {
         matches!(&self.w.commits[i].kind, Kind::Edge { role, until, .. } if *role == Role::None || *until == Some(0))
     }
-    /// The creation of the entry edge write `i` resets, as its writer names it (spec/permissions.md
+    /// The creation of the entry grant write `i` resets, as its writer names it (spec/permissions.md
     /// §2 Grant writes): the entry of the write in force on its edge in its writer's walk, the last
     /// applied write on it there, where that write put an entry (a grant); None where none did (a
-    /// record edge, a grant already removed: `i` resets an entry of its own, never waited for). The
+    /// record grant, a grant already removed: `i` resets an entry of its own, never waited for). The
     /// writer's walk is over everything written before `i`'s commit (it can know no later write).
     pub fn creation(&self, i: Id) -> Option<Id> {
         let at = (self.w.commits.len(), self.events.len());
@@ -436,7 +436,7 @@ impl World {
             })
             .collect()
     }
-    /// `j` is ordered before `i` as `i`'s verdict reads it: by key for an edge-class `i`, by `ts`
+    /// `j` is ordered before `i` as `i`'s verdict reads it: by key for a grant-class `i`, by `ts`
     /// (the start of its `ts`) for content.
     fn before(&self, j: Id, i: Id) -> bool {
         if self.w.edge_class(i) {
@@ -446,7 +446,7 @@ impl World {
         }
     }
     /// The evidence closure of `seeds` over `avail`: the seeds, the other parts of a member's
-    /// commit on its thing, every edge write on a member's key hop and on an edge of its stated
+    /// commit on its thing, every grant write on a member's key hop and on an edge of its stated
     /// path (E1), and under `commit_edges` on each edge its commit's parts on its thing set:
     /// `paths::evidence`, but for path entries opening late (`hidden`) and the control.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
@@ -512,7 +512,7 @@ impl World {
         st.written.iter().copied().filter(|&i| self.by[i] == n && !st.forgotten.contains(&i)).collect()
     }
     /// What the thief logs under S: its own bodies there and the grants they rest on, read as if
-    /// what it withholds were never written: every edge write but its own that gives below write
+    /// what it withholds were never written: every grant write but its own that gives below write
     /// (`removes`) or takes something away (`takes_away`). Nothing only a withheld write brings is
     /// logged, such as the creation of an entry it resets, or what a withheld read grant rests on.
     fn thief_logs(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, held: &Set, own: &Set) -> Set {
@@ -677,7 +677,7 @@ impl World {
     /// `i` pends over `h` (spec/commits.md §4 Unjudgeable): its path entry has not opened, a keyset
     /// lacks a demotion it carries, a held part of its commit on its thing removing a holder resets
     /// an entry whose creation `h` lacks (the model writes a commit's parts as events of their own) (spec/permissions.md §2 Grant writes), or a hop it rests on
-    /// (`paths::World::rests`, its key hop first), no record hop, has no held edge write ordered
+    /// (`paths::World::rests`, its key hop first), no record hop, has no held grant write ordered
     /// before it that does not itself pend.
     pub fn pend(&self, h: &Set, i: Id) -> bool {
         self.pend_with(h, i, &mut BTreeMap::new())
@@ -705,9 +705,9 @@ impl World {
         })
     }
     /// The verdict on each of `ids` at a node judging from `s`.
-    /// The walk runs over what does not pend: a pending edge write applies nothing (spec/commits.md
+    /// The walk runs over what does not pend: a pending grant write applies nothing (spec/commits.md
     /// §4 Unjudgeable; spec/permissions.md §2: a removal waiting for a creation applies none of its
-    /// commit's edge writes).
+    /// commit's grant writes).
     pub fn verdicts(&self, s: &Seen, ids: &Set) -> BTreeMap<Id, Verdict> {
         let mut memo = BTreeMap::new();
         let waiting: Set = s.v.held.iter().copied().filter(|&i| self.w.edge_class(i) && self.pend_with(&s.v.held, i, &mut memo)).collect();
@@ -741,7 +741,7 @@ impl World {
         let trust = self.trust.intersection(&held).copied().collect();
         Seen { v: View { held, leaves: None, trust } }
     }
-    /// The edge writes, written and not forgotten, that S's entries lack and no source of S holds:
+    /// The grant writes, written and not forgotten, that S's entries lack and no source of S holds:
     /// what lazy delivery has not brought S (notes/write-path-design.md §2, D1 to D3: evidence
     /// reaches S where a node holding it can log under S; a removal, and alike a grant a thief
     /// withholds that only nodes not syncing S hold, finding 23). A source is an honest node
@@ -1016,9 +1016,9 @@ impl World {
         f.intersection(&b).copied().filter(|&x| x != a).collect()
     }
     /// Holder `h`'s stub at `st`, cut to the edges into it from `from` (the signer and the
-    /// holders on its paths): its edge writes on those edges as its own sync ID carries them, with
+    /// holders on its paths): its grant writes on those edges as its own sync ID carries them, with
     /// their evidence there; the signer's (no sync ID in the model: its node's own) every written
-    /// edge write on it, with their evidence.
+    /// grant write on it, with their evidence.
     pub fn stub(&self, rule: &Rule, st: &State, h: Thing, from: &Things) -> Set {
         let (seeds, avail): (Set, Set) = match st.entries.get(&h) {
             Some(e) => (e.iter().copied().filter(|&i| self.on(i) == h && self.holder(i).is_some_and(|g| from.contains(&g))).collect(), e.clone()),
@@ -1183,11 +1183,11 @@ pub struct Shape {
     /// K holds admin on A and grants Z write on A after its first write; Z writes D; the removal
     /// does not list the grant, so it falls with Z's write.
     pub grant: bool,
-    /// Record edges on K's path: 0 grants only; 1 the hop after A a record edge
+    /// Record grants on K's path: 0 grants only; 1 the hop after A a record grant
     /// (A mints O, or, with K writing through [A], A mints D); 2 a mint chain two deep (A mints O,
     /// O mints D: K's path [A, O] or [A] (by descent) climbs records past A). Where the last hop
-    /// into D is a record edge, `raised` is X (D's admin by descent) lowering it to read before
-    /// K's first write and raising it after the removal: a record edge changed later.
+    /// into D is a record grant, `raised` is X (D's admin by descent) lowering it to read before
+    /// K's first write and raising it after the removal: a record grant changed later.
     pub mint: u8,
 }
 
@@ -1319,10 +1319,10 @@ pub fn family(sh: Shape) -> World {
 /// removing or re-granting a member (a random frontier of what it could have received) or two in
 /// one commit, K
 /// granting Z, Q writing an addendum against a held removal, Y or W raising or
-/// lowering A's or O's edge, retags among the four things, a member's edge write on A or O to any
+/// lowering A's or O's edge, retags among the four things, a member's grant write on A or O to any
 /// holder (junk where it holds no admin), content along [A, R] (A writing R half the time, R
 /// holding nothing on D) or [O, A]; random node sync sets beside each mint admin syncing its
-/// things. A third of the worlds have A mint O, and half of those O mint D (record edges on routes):
+/// things. A third of the worlds have A mint O, and half of those O mint D (record grants on routes):
 /// records on the members' paths in place of the starting grants, changed later by the moves
 /// that change A's or O's edge (by X, their admin by descent).
 pub fn random(seed: u64, len: usize) -> World {
@@ -1416,7 +1416,7 @@ pub fn random(seed: u64, len: usize) -> World {
                 w.rotate(n, &carried, |p| p.content(a, bts, &[], D));
             }
             10 => {
-                // a member's edge write on A or O, any holder and role: junk where it holds no
+                // a member's grant write on A or O, any holder and role: junk where it holds no
                 // admin there (finding 11)
                 let (sg, n) = [(K, k), (Q, q), (Z, z)][rng.below(3)];
                 let on = [A, O][rng.below(2)];
@@ -1454,9 +1454,9 @@ pub struct Wide {
     /// A content part whose path entry opens late (`World::opens`): its opener (a content commit
     /// on its thing by the thing's mint admin) written some moves later, or never.
     pub late: bool,
-    /// Each of O, H, D, R minted by an earlier one of the five one time in three (record edges:
-    /// record edges anywhere on a route, mint chains up to four deep, a minted thing in a unit, a
-    /// record edge changed by churn), its admin the node thing at the top of its record chain,
+    /// Each of O, H, D, R minted by an earlier one of the five one time in three (record grants:
+    /// record grants anywhere on a route, mint chains up to four deep, a minted thing in a unit, a
+    /// record grant changed by churn), its admin the node thing at the top of its record chain,
     /// writing by descent. False: every thing minted by a node thing, the worlds as without it.
     pub mint: bool,
 }
@@ -1468,7 +1468,7 @@ pub struct Wide {
 /// along a route (`wide_route`: mostly along edges written, else any increasing path; sometimes
 /// backdated), K removed or re-granted on any thing it has a route on, X removing
 /// or re-granting a member (a random frontier) or two in one commit, an admin's churn on any edge
-/// between the things (a removal with a random frontier), junk edge writes by members on any thing
+/// between the things (a removal with a random frontier), junk grant writes by members on any thing
 /// to any holder, K granting Z, Q's addenda, direct routes granted and removed, retags
 /// among the five, A granted read alone on a thing with the thief writing through that hop
 /// (finding 23's read hop); with `opt` split commits and late path entries. Random node sync sets beside
@@ -1571,7 +1571,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 w.write(n, |p| p.edge(a, bts, &[], on, hd, role, if role == Role::None { &front } else { &[] }));
             }
             7 => {
-                // a member's edge write on any thing to any holder: junk where it holds no admin
+                // a member's grant write on any thing to any holder: junk where it holds no admin
                 let (sg, n) = members[rng.below(3)];
                 let (path, on) = wide_route(&w, &mut rng, sg);
                 let hd = [K, Q, Z, A, O, H, D, R][rng.below(8)];
@@ -1679,7 +1679,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
 }
 
 /// A path for `signer` in a `wide` world and the thing written at its end: three times in four a
-/// walk from `signer` along edges some edge write set (granted, removed or junk; one to five
+/// walk from `signer` along edges some grant write set (granted, removed or junk; one to five
 /// things), else a random increasing subset of the things before a random target.
 fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thing>, Thing) {
     use names::*;
@@ -1777,7 +1777,7 @@ pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usiz
 pub const STORY_UNITS: usize = 6;
 
 /// roles-model's stolen-node story (`paths::Sim`: may-grant grants, finalizes, `until`, covers, purges,
-/// addenda by the state-based rule, commits of several edge writes and of several
+/// addenda by the state-based rule, commits of several grant writes and of several
 /// things, self-removals, paths of two hops, a dependent written by descent)
 /// as an evidence world: its commits written in the order made, by the node of their signer (the
 /// thief's moves and every commit signed by X, whose device the thief holds, by one dishonest

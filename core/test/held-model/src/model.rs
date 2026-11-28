@@ -83,7 +83,7 @@ pub enum Fate {
 pub struct Outcome {
     pub parked: BTreeSet<CommitId>,
     pub applied: BTreeSet<CommitId>,
-    /// Validity of each part of an applied commit (role parts: whether the edge write applied).
+    /// Validity of each part of an applied commit (role parts: whether the grant write applied).
     pub valid: BTreeMap<PartRef, bool>,
     /// Parts a purge request drops, with the request (lowest commit ID among those that do).
     pub purged: BTreeMap<PartRef, CommitId>,
@@ -548,13 +548,13 @@ fn judgeable(world: &World, c: &Commit) -> bool {
     world.minted_with_key(c.signer)
 }
 
-/// An edge write's place in the order a wait reads (spec/permissions.md §5.1 step 1): its key,
-/// then its place among its commit's edge writes (on an edge its commit states or not, thing,
+/// A grant write's place in the order a wait reads (spec/permissions.md §5.1 step 1): its key,
+/// then its place among its commit's grant writes (on an edge its commit states or not, thing,
 /// holder, index).
 type Placed = (Key, (bool, ThingId, NodeId, usize));
 
-/// Where a part sits in that order: an edge write at its place, any other part at the start of
-/// its `ts`, before every edge write there (spec/permissions.md §5.2 Position).
+/// Where a part sits in that order: a grant write at its place, any other part at the start of
+/// its `ts`, before every grant write there (spec/permissions.md §5.2 Position).
 enum At {
     Start(u64),
     Write(Placed),
@@ -567,7 +567,7 @@ impl At {
             _ => At::Start(c.ts),
         }
     }
-    /// Whether an edge write at `w` is ordered before it.
+    /// Whether a grant write at `w` is ordered before it.
     fn after(&self, w: &Placed) -> bool {
         match self {
             At::Start(ts) => w.0.0 < *ts,
@@ -581,7 +581,7 @@ fn placed(c: &Commit, i: usize, holder: NodeId, stated: &BTreeSet<Hop>) -> Place
     (c.key(), (stated.contains(&(holder, thing)), thing, holder, i))
 }
 
-/// The edge writes of the held applied parts, grants and removals, of any validity, by the edge
+/// The grant writes of the held applied parts, grants and removals, of any validity, by the edge
 /// each sets: a joined part is judgeable, so none is itself unjudgeable.
 fn edge_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
     let mut out: BTreeMap<Hop, Vec<Placed>> = BTreeMap::new();
@@ -597,7 +597,7 @@ fn edge_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
 }
 
 /// spec/commits.md §4 Unjudgeable: an edge of the stated path of part `i` of `c` is neither a
-/// record edge nor set by a held edge write ordered before the part. A fire of an external
+/// record grant nor set by a held grant write ordered before the part. A fire of an external
 /// signal reads none; a path that states no edges (a thing named twice, a bad mark) is judged as
 /// it is.
 fn unreached(edges: &BTreeMap<Hop, Vec<Placed>>, c: &Commit, i: usize, world: &World) -> bool {
@@ -647,7 +647,7 @@ pub fn timeline(h: &Held) -> Timeline {
 
 /// Whether a destroyed thing keeps this part: its gone creations (headers) and `roles.0`, however
 /// it was destroyed: the destruction is judged from them, and authority that passed through the
-/// thing stands as its edge writes say (spec/commits.md §5 Destruction).
+/// thing stands as its grant writes say (spec/commits.md §5 Destruction).
 fn kept_when_destroyed(p: &Part) -> bool {
     p.aspect == Aspect::ROLES || p.aspect == Aspect::CREATED
 }
@@ -727,7 +727,7 @@ pub fn judged_with(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
 }
 
 /// Validity of part `i` of applied commit `c` by its authority, before any overlap: a record
-/// needs none (spec/permissions.md §1); an edge write, whether it applied; any other part (a role
+/// needs none (spec/permissions.md §1); a grant write, whether it applied; any other part (a role
 /// commit's `sync.0` among them), whether its delta is valid; no validity depends on a setting
 /// but an external fire's (`judge`).
 fn part_valid(tl: &Timeline, c: &Commit, i: usize) -> bool {

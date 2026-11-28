@@ -1,6 +1,6 @@
 //! A by-hand comparison of two builds of the walk: every reading and every update's `Changed`
 //! over the differential worlds and soups (arrival in a shuffled order, half forgotten one at a
-//! time, an edge write trusted and put aside, disputes), written one line per world to
+//! time, a grant write trusted and put aside, disputes), written one line per world to
 //! `OSIS_DUMP`, so a build before a rewrite of the walk and the build after it can be diffed; the
 //! purged deltas, and the other purge readings, hash in columns of their own.
 //! spec: none (test infrastructure: a comparison of two builds).

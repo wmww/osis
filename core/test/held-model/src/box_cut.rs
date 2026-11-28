@@ -19,10 +19,10 @@
 //! an epoch no step bears, or a re-seal at the current one while T holds a role); XA records
 //! steps, H junk ones; an admin removes holders. Sync and read
 //! share one epoch counter. R reads T's unit, which references X: X's stub there, T the holder on
-//! the unit's chain to X, as the rule cuts it, closed over evidence (the edge writes on each copied
+//! the unit's chain to X, as the rule cuts it, closed over evidence (the grant writes on each copied
 //! commit's hop (signer, X)), but for a holder of sync only (the sync-only cut: no evidence). Which T holds is the
-//! sender's judgement of what it holds (it holds every commit): T reads X where a valid edge write
-//! gives it read, so a forged edge write naming T read (by a holder neither admin nor may-grant,
+//! sender's judgement of what it holds (it holds every commit): T reads X where a valid grant write
+//! gives it read, so a forged grant write naming T read (by a holder neither admin nor may-grant,
 //! or by one holding no role: invalid or pending) changes nothing R receives.
 use crate::gen::Rng;
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,7 +136,7 @@ pub enum Rule {
     RemovalHeader,
     /// Control: a holder of sync only holds sync while any box to it opens, the steps aside.
     HolderKept,
-    /// Control: T reads X where any held edge write gives it read, whatever its validity.
+    /// Control: T reads X where any held grant write gives it read, whatever its validity.
     AnyValidity,
 }
 
@@ -145,7 +145,7 @@ impl World {
         self.commits.iter().find(|x| x.id == c).expect("commit")
     }
 
-    /// Whether T reads X as the logger judges it holding every commit: a valid edge write gives T
+    /// Whether T reads X as the logger judges it holding every commit: a valid grant write gives T
     /// read (`Rule::AnyValidity`: any held one does). Else T
     /// holds sync only: its pieces go in a sync-only cut.
     pub fn reads(&self, rule: Rule) -> bool {
@@ -157,7 +157,7 @@ impl World {
         })
     }
 
-    /// The edge writes setting the hop (s, X): evidence of a commit signed by s.
+    /// The grant writes setting the hop (s, X): evidence of a commit signed by s.
     fn evidence_of(&self, c: &Commit) -> Vec<Cid> {
         if c.signer == XA {
             return Vec::new();
@@ -165,7 +165,7 @@ impl World {
         self.commits.iter().filter(|d| d.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == c.signer))).map(|d| d.id).collect()
     }
 
-    /// The commits X's stub in T's unit names: edge writes naming T, commits boxing T, steps.
+    /// The commits X's stub in T's unit names: grant writes naming T, commits boxing T, steps.
     fn named(&self) -> Vec<&Commit> {
         self.commits
             .iter()
@@ -197,7 +197,7 @@ impl World {
                 held.insert((c.id, P::Sync));
             }
             if sync_only {
-                // no edge write, no evidence; the header only where the rule keeps it
+                // no grant write, no evidence; the header only where the rule keeps it
                 let removal = c.roles.as_ref().is_some_and(|es| es.iter().any(|e| e.holder == T && e.role.is_none()));
                 if matches!(rule, Rule::WholePart | Rule::SyncHeader) || (rule == Rule::RemovalHeader && removal) {
                     held.insert((c.id, P::Header));
@@ -277,7 +277,7 @@ pub enum V {
 pub struct Seen {
     /// X's (role, epoch) secrets R takes from boxes to T
     pub taken: BTreeSet<(Role, u32)>,
-    /// X's holders R learns of (box keys, edge writes, headers' signers), T and XA aside
+    /// X's holders R learns of (box keys, grant writes, headers' signers), T and XA aside
     pub learned: BTreeSet<Id>,
     /// other holders' pieces R carries
     pub others_pieces: usize,
@@ -377,7 +377,7 @@ fn open_history(w: &World, held: &Held, out: &mut Seen, valid: impl Fn(&Commit) 
 struct Judge<'a> {
     w: &'a World,
     held: &'a Held,
-    /// edge writes in key order: (ts, edges applied)
+    /// grant writes in key order: (ts, edges applied)
     walk: Vec<(u32, Vec<(Edge, bool)>)>,
     roles: BTreeMap<Cid, V>,
 }
@@ -577,7 +577,7 @@ pub fn world(seed: u64) -> World {
                 push(&mut w, H, None, Vec::new(), Some((e, false)), None);
             }
             8 => {
-                // a forged edge write naming T read, by one that may not grant it: a holder neither
+                // a forged grant write naming T read, by one that may not grant it: a holder neither
                 // admin nor may-grant (invalid), or one holding no role (pending)
                 let forgers: Vec<Id> = [H, O1, O2].into_iter().filter(|n| x.get(n).is_none_or(|(ro, mg)| *ro != Role::Admin && !*mg)).collect();
                 if forgers.is_empty() {

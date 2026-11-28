@@ -45,7 +45,7 @@ Spec: spec/sync-inbox.md, spec/sync-judgement.md §1, §3, spec/sync-ids.md §6 
 - **External fires keep only by name** (`RetentionSetting::entry`: the default entry never governs one), so a writer's fire on a signal no entry names is out of history at arrival and anyone else's invalid. A fire out of history or expired counts as gone for forgetting (`Engine::forgettable`): its commit, blob row and the signal's cursor (`leaving::unplaced`) go once node-sync knows no entry of it; no forgotten-`ts` row is kept for a signal.
 - **A stranger's chain goes at the pass end that brought its fire**, the fire staying (notes/certificates.md Kept while needed; engine `strangers::*`).
 - **An independent thing's sync ID is in its `keys.0`** (field 9): a sender knows where a fire goes from the public key record alone.
-- **A removed node holds no deposit seed**: D has its own, fresh in every account rotation. The inbox is held by P's record edge, so a node removal makes its boxes to P stale and the inbox rotates all four roles, its sync role writing a fresh seed (`rotation::refreshes_deposit`, no exception for D).
+- **A removed node holds no deposit seed**: D has its own, fresh in every account rotation. The inbox is held by P's record grant, so a node removal makes its boxes to P stale and the inbox rotates all four roles, its sync role writing a fresh seed (`rotation::refreshes_deposit`, no exception for D).
 
 ## The module's parts: beyond their docs
 - `offers`: an offer counts the recipient proven now (`opens::counted` through `offers::Judge`); `Moved::Until` readies S's offers again after a member's end.

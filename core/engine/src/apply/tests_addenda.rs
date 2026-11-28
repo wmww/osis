@@ -1585,7 +1585,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
 }
 
 // spec/permissions.md §5.1 Frontier: a lowering's scope holds every thing a commit resting on the
-// lowered edge writes. Bob writes `t` and `u` (both granted him directly) in one commit; read in
+// lowered grant writes. Bob writes `t` and `u` (both granted him directly) in one commit; read in
 // the transaction that applies it at Alice, the scope of lowering Bob on `t` holds `u`, which
 // no other route reaches (the walk is read only once it holds what the transaction applied).
 #[test]

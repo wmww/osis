@@ -18,10 +18,10 @@
 ## 2. Connection proofs
 - Each side proves the things it acts for over the connection's challenges (bytes: spec/wire.md §11.2 Prove, Proved), as its policy allows (§1): each by a signature of a signing key holding a grant on it (the record's key, or a key whose grant the proof's copies carry), with the path it claims through other things (spec/permissions.md §1 Path: its node thing and [A] for its account A).
 - A verifier judges each proof on what it holds now with the proof's copies and records taken as received evidence, judged with the sides taking them in would record (spec/permissions.md §5.1 Held first), for that judgement alone, all of one message judged together and kept with the connection alone: the signed thing is proven while the key hop gives a role, each claimed thing while the path to it gives a role, at its own clock (spec/permissions.md §5.1). What a proof claims is re-judged as the verifier comes to hold more (a removal on the path ends it).
-- A proof proves nothing where the reading it is judged on undoes a lowering the verifier's reading of what it holds applies: that lowering no longer applies there and its edge gives more than it set.
+- A proof proves nothing where the reading it is judged on undoes a lowering the verifier's reading of what it holds applies: that lowering no longer applies there and its grant gives more than it set.
 - A proven thing's **proven role** on a thing S is the least of what its proof's path gives (the key hop included) and the claimed thing's role on S, the public's grant aside (it proves nothing of the peer): the role who it may be (§3), waiting (spec/sync-set.md §3 To be waited for) and Stranded (spec/permissions.md §4) read it at. It opens nothing (§4).
 - **Order**: the dialer proves first, after the listener's Hello; the listener answers with its own proofs. Each side proves once a connection, at its start.
-- Nothing a connection proves comes from data a peer could write but signed edge writes; a dial list is for dialing only, never proof.
+- Nothing a connection proves comes from data a peer could write but signed grant writes; a dial list is for dialing only, never proof.
 
 ## 3. Records and agreement
 - **Pair key**: two nodes that each proved a thing to the other keep one record of each other, found by a 32-byte pair key `r` known only to the two. No node key finds a record.

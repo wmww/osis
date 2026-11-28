@@ -3,7 +3,7 @@
 //! later, and the bodies each node erased on the way. The properties (`check`) are computed from
 //! the generated history, never from a reading.
 //!
-//! Account A (mint H) administers T1 (record edge); X and B are admins of A (H's grants), W a
+//! Account A (mint H) administers T1 (record grant); X and B are admins of A (H's grants), W a
 //! writer of T1 by its own grant, A2 (K's) holds write or admin on T1 (B's share) and X write or
 //! admin on A2 or nothing (K's grant): [A2] is a path X keeps. Content on T1 at 2 to 4 by H, B, W,
 //! K and X, each delta's purge-by and purge author drawn. X may purge at 4 (H and the witnesses
@@ -435,8 +435,8 @@ fn reaches(w: &World, q: Id, d: Id, admin: bool, write: bool) -> bool {
 }
 
 /// A store that cannot judge acts on a request that could hold the right (spec/commits.md §4
-/// Could hold the right): each edge of its path a record edge or set at `r` or above by some held
-/// edge write, whatever its validity.
+/// Could hold the right): each edge of its path a record grant or set at `r` or above by some held
+/// grant write, whatever its validity.
 pub fn could_hold(w: &World, held: &Set, q: Id, r: Role) -> bool {
     w.well(q) && w.hops(q).iter().all(|e| w.records.contains(e) || held.iter().any(|&j| w.sets(j) == Some(*e) && matches!(w.commits[j].kind, Kind::Edge { role, .. } if role >= r)))
 }

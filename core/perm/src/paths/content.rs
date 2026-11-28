@@ -315,9 +315,9 @@ impl Store for MemStore {
 #[derive(Clone)]
 pub(super) struct CommitFacts {
     signer: Tid,
-    /// Its edge writes' frontiers.
+    /// Its grant writes' frontiers.
     lists: Vec<(WriteId, Arc<List>)>,
-    /// The edges its edge writes set, each with the role it sets (spec/commits.md §4
+    /// The edges its grant writes set, each with the role it sets (spec/commits.md §4
     /// Could hold the right).
     sets: Vec<(Pair, Role)>,
 }
@@ -327,10 +327,10 @@ pub(super) struct Facts<S> {
     mint: BTreeMap<Tid, Holder>,
     /// The held role commits (a commit with a role-class part).
     commits: BTreeMap<CommitId, CommitFacts>,
-    /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it; under
+    /// Per (commit, thing), the frontiers (grant writes) whose leaf of the thing lists it; under
     /// no thing, those naming the commit whole (`List::whole`).
     named: BTreeMap<(CommitId, Option<Tid>), BTreeSet<WriteId>>,
-    /// Per edge, how many held edge writes set it at each role (`Role::ALL`'s order), whatever
+    /// Per edge, how many held grant writes set it at each role (`Role::ALL`'s order), whatever
     /// their validity: what a node that cannot judge reads (Could hold the right).
     ever: BTreeMap<Pair, [u32; 4]>,
     pub store: S,
@@ -342,7 +342,7 @@ impl<S: Store> Facts<S> {
         Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
     }
 
-    /// The edge writes whose list names commit `c`'s parts on `on`.
+    /// The grant writes whose list names commit `c`'s parts on `on`.
     fn named_on(&self, c: &CommitId, on: &Tid) -> impl Iterator<Item = WriteId> + '_ {
         let c = *c;
         [Some(*on), None].into_iter().flat_map(move |t| self.named.get(&(c, t))).flatten().copied()
@@ -411,7 +411,7 @@ impl<S: Store> Facts<S> {
         })
     }
 
-    /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
+    /// Takes in new commits (the walks took their grant-class parts). Returns the new deltas, the
     /// snapshots with what each carries, and the addenda that arrived.
     pub(super) fn take(&mut self, commits: &[&Commit]) -> Taken {
         let mut out = Taken::default();
@@ -552,8 +552,8 @@ impl<S: Store> Facts<S> {
         moved.into_iter().map(|(s, on)| (s.0, on)).collect()
     }
 
-    /// Whether `c`, a commit with no edge write, is held exactly as given: its deltas' facts, and
-    /// what its snapshots carry (with no edge write, what is kept of a role commit is a function
+    /// Whether `c`, a commit with no grant write, is held exactly as given: its deltas' facts, and
+    /// what its snapshots carry (with no grant write, what is kept of a role commit is a function
     /// of those).
     pub(super) fn reads(&self, c: &Commit) -> bool {
         let mut deltas = 0;
@@ -622,7 +622,7 @@ impl<S: Store> Facts<S> {
         })
     }
 
-    /// The edge writes answering `d` (draft §5.2 Content): those whose frontier names its commit,
+    /// The grant writes answering `d` (draft §5.2 Content): those whose frontier names its commit,
     /// and with `addenda` the removal parts a valid addendum naming it vouches against. Each answers its own cut alone (`stands`).
     fn answered(&self, tl: &Walk, d: &Fact, addenda: bool, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
@@ -693,7 +693,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// (d): its path is re-granted for `r` and it is positioned after the latest of each edge's
-    /// first write giving `r` made by right (a record edge: from the start).
+    /// first write giving `r` made by right (a record grant: from the start).
     fn regranted(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         let mut bound: Option<Key> = None;
         for &(h, t) in &d.hops {
@@ -961,8 +961,8 @@ impl<S: Store> Facts<S> {
         out
     }
 
-    /// Whether held request `id` could hold role `r`: each edge of its path a record edge or
-    /// set at `r` or above by some held edge write (spec/commits.md §4 Could hold the right).
+    /// Whether held request `id` could hold role `r`: each edge of its path a record grant or
+    /// set at `r` or above by some held grant write (spec/commits.md §4 Could hold the right).
     pub(super) fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
         let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
         let from = level(r);

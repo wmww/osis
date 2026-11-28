@@ -133,7 +133,7 @@ impl Rule {
 /// entries are held; spec/permissions.md §4 Stub): every grant on a thing of `full` (its roster
 /// read), each grant of `edges` (an entry of its holder taken, or a sync-only cut naming its holder
 /// on the judge's chain), and on a thing of `ids` (its sync ID held) the public's (its entry is at
-/// the head) and the record edge (in the thing's record, held with anything of it).
+/// the head) and the record grant (in the thing's record, held with anything of it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Know {
     pub full: Set,

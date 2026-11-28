@@ -38,7 +38,7 @@ fn records() -> BTreeMap<Tid, Holder> {
     r
 }
 
-/// A commit of one edge write by `signer` at `ts` (whole ms) on `on` along `path`, setting
+/// A commit of one grant write by `signer` at `ts` (whole ms) on `on` along `path`, setting
 /// `holder`'s edge to `role` (none: a removal listing nothing).
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(List::default()));
@@ -60,7 +60,7 @@ fn delta(a: Counts, b: Counts) -> Counts {
     }
 }
 
-/// H rewrites its own record edge on `on` unchanged at ts 0 (a self-removal that lowers nothing):
+/// H rewrites its own record grant on `on` unchanged at ts 0 (a self-removal that lowers nothing):
 /// that edge is then set, so every later part by H on `on`, resting on it, joins one component.
 /// Parts resting on no edge a held part sets are components of their own.
 fn anchor(on: u32) -> Commit {
@@ -628,7 +628,7 @@ impl Store for Counting {
     }
 }
 
-// The walk keeps in memory only edge-class state; delta facts live in the store
+// The walk keeps in memory only grant-class state; delta facts live in the store
 // (notes/perm-paths.md, The delta-facts seam): 10 role commits and n content deltas along them
 // keep the same in-memory entries at n = 1000 and 10,000, and adding and judging a delta
 // appended at the end costs the same store lookups at both (a few per delta, its path's edges

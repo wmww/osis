@@ -1,5 +1,5 @@
 # A held role commit's path joins the walk's components for good
-> Summary: osis-perm's `paths` walk joins the components of every edge a held edge-class part names that a held part sets, whether or not the part can ever apply, so any signer whose role commits a node holds can merge unrelated things into one component by a path through their set edges, and every later out-of-order role change on one replays the others' later history.
+> Summary: osis-perm's `paths` walk joins the components of every edge a held grant-class part names that a held part sets, whether or not the part can ever apply, so any signer whose role commits a node holds can merge unrelated things into one component by a path through their set edges, and every later out-of-order role change on one replays the others' later history.
 > Priority: low
 > Tags: perm, security
 

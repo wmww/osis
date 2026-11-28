@@ -36,7 +36,7 @@ fn base() -> (World, [usize; 4]) {
 
 /// Finding 9 (`f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2`): X removes K and Q from A in
 /// one commit C; K writes D after it. C is on K's edge; the creation of Q's entry (X's grant to Q),
-/// on no stated path, is in D's evidence: a copy brings every edge write on the edges it writes.
+/// on no stated path, is in D's evidence: a copy brings every grant write on the edges it writes.
 #[test]
 fn f9_the_creation_a_reset_names_is_evidence_spec_permissions_2() {
     let (mut w, [x, _, _, _]) = base();

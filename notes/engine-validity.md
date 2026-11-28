@@ -10,7 +10,7 @@ Validity is a function of the held set, never of arrival order: an invalid delta
 ### What is re-judged
 `Core::timelines_changed` turns the walk's `Changed` into what to judge again:
 - The held deltas the update reaches (`Changed.reached`: `Paths::reached`, those whose verdict or purge may have moved), into `stale_commits`. The walk reports only what moved, so a lowering costs nothing per delta it does not reach (notes/perm-paths.md, One definition).
-- Every commit with an edge write new or whose status moved (`Changed.ops`), all its parts: a removal's addenda are gathered again (`flows::addenda::note_changed`), and a may-grant grant's boxes rest on how it applies (`validity::Judge::by_path`).
+- Every commit with a grant write new or whose status moved (`Changed.ops`), all its parts: a removal's addenda are gathered again (`flows::addenda::note_changed`), and a may-grant grant's boxes rest on how it applies (`validity::Judge::by_path`).
 - Every delta on the things below a new record (`Core::stale_things`).
 - Commits whose void, required-role or overreach inputs changed (`stale_commits`).
 - Everything after a rebuild at open (`stale_all`).

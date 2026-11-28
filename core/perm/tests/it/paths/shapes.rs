@@ -1,4 +1,4 @@
-//! The walk on input no model generator makes: the order of a commit's edge writes, hostile
+//! The walk on input no model generator makes: the order of a commit's grant writes, hostile
 //! shapes (long and made-up paths, cycles, a repeated holder, extreme times; addenda and
 //! snapshots naming what they should not), and random soups of parts and
 //! deltas. Each must judge without panicking and read the same however its commits
@@ -146,7 +146,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
     let into = commit(3, ms(2), Y, vec![edge(T1, &[A, T1], Z, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), twice, into], &mut rng);
     assert_eq!((p.status(&WriteId(cid(2), 0)), p.status(&WriteId(cid(3), 0))), (Some(Status::Unapplied), Some(Status::Unapplied)));
-    // a part setting an edge of its own path (the record edge its descent ends with), alone and
+    // a part setting an edge of its own path (the record grant its descent ends with), alone and
     // beside another part
     let own = commit(2, ms(2), H, vec![edge(T1, &[A], A, None, Some(&[]))]);
     let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Grant::new(Role::Write)), Some(&[])), edge(T1, &[A], Z, admin, Some(&[]))]);

@@ -176,7 +176,7 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 **Models and generators**
 - roles-model `family_run(stride)`: a stride sharing a factor with a dimension's size fixes that dimension; strides of mixed-radix families are coprime with every radix.
 - roles-model: probe a failing world by printing it and its reference, never by shrinking it first. Two readings of one world go in one process with a thread-local switch (an env var cannot switch per call across `on_every_core` threads).
-- roles-model `paths::World::lowers` counts every edge write below admin, a fresh grant of write included: it is not "a removal".
+- roles-model `paths::World::lowers` counts every grant write below admin, a fresh grant of write included: it is not "a removal".
 - held-model `gen::shuffle` does not reorder `Held::dots`, and `Dots::commit` takes the first range holding a dot: an order test over overlapping ranges shuffles `dots` itself.
 - A generator may build states no encoder writes: before fixing a rule for one, check it decodes from bytes; a decoder test of such bytes hand-patches an encoding. `DeltaBuilder` `Add v` of a live value writes nothing.
 - A loop over consecutive seeds with `rng(seed | 1)` makes seeds 2k and 2k+1 the same history.

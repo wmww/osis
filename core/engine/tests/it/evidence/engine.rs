@@ -13,7 +13,7 @@ fn every_node_of_the_role_paths_world_passes_the_evidence_check_spec_permissions
     let mut w = crate::role_paths::world();
     for (i, p) in w.lp.peers.iter_mut().enumerate() {
         let copies = p.engine.evidence_copies().unwrap();
-        assert!(copies.values().flatten().any(|x| matches!(x.kind, osis_engine::evidence::Kind::Write(_))), "node {i} holds edge writes");
+        assert!(copies.values().flatten().any(|x| matches!(x.kind, osis_engine::evidence::Kind::Write(_))), "node {i} holds grant writes");
         assert_eq!(p.engine.check_evidence().unwrap(), None, "node {i}");
         let things: std::collections::BTreeSet<_> = copies.keys().map(|c| c.1).collect();
         let sids: Vec<_> = things.iter().map(|t| (*t, vec![*t])).collect();
@@ -102,7 +102,7 @@ fn hand(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
 
 // Finding 9 (spec/permissions.md §2 Grant writes: a removal applies only once the creations of
 // the entries it resets are held; §4 Evidence of a commit: a commit's evidence takes the writes on
-// each edge its edge writes set): X removes K and Q from A in one commit; K wrote D through [A]
+// each edge its grant writes set): X removes K and Q from A in one commit; K wrote D through [A]
 // before it (listed) and after it. Under D (its unit D alone) the evidence holds the removal and
 // both creations, X's grant to Q among them, on no path K's writes state. A reader given D's
 // writes and exactly those copies judges both of K's writes as X; one given them less X's grant to

@@ -252,7 +252,7 @@ fn a_grant_standing_again_by_an_invalid_removal_gives_its_role_again_spec_sync_s
 // him on X's roster and give no role and no secret of X, and a strong to X from his node root
 // changes nothing (being handed role commits is no entry). The grant's signal then reaches him:
 // he follows X, and the same commits give him read, X's secrets and X. Fails with a role read
-// from every held edge write (or the local part judged from them).
+// from every held grant write (or the local part judged from them).
 #[test]
 fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     let (mut lp, ps) = people(2);

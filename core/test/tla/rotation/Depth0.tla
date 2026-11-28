@@ -83,7 +83,7 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* (as "out", and the rotation records the keyset it left
                       \* the actor out at; Seal then takes only a keyset listing
                       \* it, by any node)
-          MintAdm,   \* {<<thing, actor>>}: mint-admin record edges (in Mem
+          MintAdm,   \* {<<thing, actor>>}: mint-admin record grants (in Mem
                       \* and Grants, ordered before every other grant)
           Dependent,      \* {<<thing, actor>>}: the thing was dependent, deriving its
                       \* secrets from its mint admin; its initial epoch is

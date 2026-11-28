@@ -684,7 +684,7 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
         }
     }
-    // spec/permissions.md §1: an edge write on a thing too deep is invalid like any of its
+    // spec/permissions.md §1: a grant write on a thing too deep is invalid like any of its
     // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
     // shallow thing it is a holder of), at the writer and at receivers.
     #[test]

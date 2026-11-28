@@ -94,7 +94,7 @@ OldVoid(X) == {i \in Void(X) : ws[i].val > EdgeTo(X, i - 1).val}
 VoidOf(X) == IF Rule = "old" THEN OldVoid(X) ELSE Void(X)
 \* the rotation commit's own write: X made it, so it applied at X, lowering M below the role
 Marks(X) == {0} \cup {i \in Held(X) : Applied(X, i) /\ ws[i].val < R}
-\* (the mark's commit is held: its rotation may stay valid where its edge write is void, its
+\* (the mark's commit is held: its rotation may stay valid where its grant write is void, its
 \* author demoted to write)
 \* each named write judged as X judged it: an applied one (and the mark's) standing at V, a void
 \* one applying nothing there

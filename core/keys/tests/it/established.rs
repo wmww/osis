@@ -234,7 +234,7 @@ fn snapshot_established_needs_departure() {
     assert_eq!(v.read.current(), vec![w.e0]);
     let out = box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &roles(&[Role::Read]), &mut w.rng).unwrap().unwrap();
     assert!(out.boxes.keys().all(|k| k.epoch == to_schema(&w.e0)));
-    // the removal held (its edge write: its secrets.0 body may be compacted away)
+    // the removal held (its grant write: its secrets.0 body may be compacted away)
     v.establish(&holding(&[cid(4)].into()));
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e1]);

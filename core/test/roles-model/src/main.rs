@@ -82,7 +82,7 @@ fn only(mode: &str, k: u64) -> i32 {
     i32::from(st.failures() > 0)
 }
 
-/// A world's commits whole, one a line (`tiny_trace` shows only edge writes).
+/// A world's commits whole, one a line (`tiny_trace` shows only grant writes).
 fn whole(w: &roles_model::paths::World) -> String {
     w.commits.iter().enumerate().map(|(i, c)| format!("  {i}: {c:?}\n")).collect()
 }

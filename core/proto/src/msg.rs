@@ -259,7 +259,7 @@ pub enum Msg {
     /// A sync ID the sender is stranded on, the holder it reads the sync ID's actor through and
     /// that holder's holder keys (spec/wire.md §9).
     Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: Certificates },
-    /// Proofs, and certificate copies of edge writes on their key hops and claimed paths with
+    /// Proofs, and certificate copies of grant writes on their key hops and claimed paths with
     /// their evidence and records (spec/wire.md §11.2 Prove).
     Prove { id: Id, proofs: Vec<Proof>, copies: Certificates },
     Proved { id: Id, proofs: Vec<Proof>, copies: Certificates },

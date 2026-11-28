@@ -2,7 +2,7 @@
 //! thing x outside S's sync unit holds c's header and S's cut of it, the parts of c on x that S's
 //! readers read there (each whole), closed over the evidence of each; never a part they neither
 //! open nor judge by. Greenfield, apart from `evaluate`: the question is only which parts a reader
-//! of S holds, so the walk is cut down to what tells the parts apart (an edge write applies by
+//! of S holds, so the walk is cut down to what tells the parts apart (a grant write applies by
 //! admin or as a may-grant grant; no lowering is judged; one key role, read, as Depth0.tla).
 //!
 //! The world: an account A (mint admin node 1) whose nodes 1..=k are granted on A, rotate their
@@ -109,7 +109,7 @@ impl Commit {
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub commits: Vec<Commit>,
-    /// thing -> mint admin (record edges: admin, may grant)
+    /// thing -> mint admin (record grants: admin, may grant)
     pub records: BTreeMap<Id, Id>,
     /// the nodes' keyset commits R holds by another route
     pub known: Vec<Cid>,
@@ -120,7 +120,7 @@ pub struct World {
 pub enum Rule {
     /// spec/permissions.md §4 Copies.
     Spec,
-    /// Control: evidence closed over edge-class and `sync.0` parts only (a `keys.0` or `secrets.0`
+    /// Control: evidence closed over grant-class and `sync.0` parts only (a `keys.0` or `secrets.0`
     /// part brings none).
     NoPartEvidence,
 }
@@ -136,8 +136,8 @@ impl World {
         self.records.get(&y) == Some(&h)
     }
 
-    /// The copies (part refs) evidence of `c` names: every edge write on each hop of its path that
-    /// is no record edge (spec/permissions.md §4 Evidence of a commit).
+    /// The copies (part refs) evidence of `c` names: every grant write on each hop of its path that
+    /// is no record grant (spec/permissions.md §4 Evidence of a commit).
     fn evidence_of(&self, c: &Commit) -> Vec<(Cid, Ak)> {
         let mut out = Vec::new();
         for &(h, y) in &c.hops {
@@ -163,7 +163,7 @@ impl World {
         for c in self.commits.iter().filter(|c| c.thing == T) {
             need.extend(self.evidence_of(c));
         }
-        // X's stub in T's unit: the edge writes naming T, the boxes to T, X's steps
+        // X's stub in T's unit: the grant writes naming T, the boxes to T, X's steps
         for c in self.commits.iter().filter(|c| c.thing == X) {
             for d in &c.parts {
                 let named = match d {
@@ -196,7 +196,7 @@ impl World {
                 }
             }
         }
-        // a box travels with its commit's edge writes on the thing (the stub holds them already:
+        // a box travels with its commit's grant writes on the thing (the stub holds them already:
         // the `roles.0` part naming its holder)
         let deps: Vec<(Cid, Ak)> = need.iter().filter(|(c, ak)| *ak == Ak::Secrets && self.commit(*c).part(Ak::Roles).is_some()).map(|(c, _)| (*c, Ak::Roles)).collect();
         need.extend(deps);
@@ -259,7 +259,7 @@ pub struct Seen {
 struct Judge<'a> {
     w: &'a World,
     held: &'a Held,
-    /// held edge writes in key order: (key, thing, signer, edges applied)
+    /// held grant writes in key order: (key, thing, signer, edges applied)
     walk: Vec<((u32, Cid), Id, Vec<(Edge, bool)>)>,
     roles: BTreeMap<Cid, V>,
 }
@@ -271,7 +271,7 @@ impl<'a> Judge<'a> {
         cs.sort_by_key(|c| (c.ts, c.id));
         for c in cs {
             let Some(Delta::Roles(es)) = c.part(Ak::Roles) else { continue };
-            let &(s, x) = c.hops.last().expect("an edge write states its hop");
+            let &(s, x) = c.hops.last().expect("a grant write states its hop");
             if j.pending(s, x) {
                 j.roles.insert(c.id, V::Pending);
                 continue;
@@ -294,7 +294,7 @@ impl<'a> Judge<'a> {
         j
     }
 
-    /// A hop is unjudgeable while no held edge write sets it and it is no record edge.
+    /// A hop is unjudgeable while no held grant write sets it and it is no record grant.
     fn pending(&self, h: Id, y: Id) -> bool {
         if self.w.record_edge(h, y) {
             return false;

@@ -40,7 +40,7 @@ pub struct Aspect {
 }
 
 impl Aspect {
-    /// `roles.0`: carries edge writes only (role commits).
+    /// `roles.0`: carries grant writes only (role commits).
     pub const ROLES: Aspect = Aspect { name: 0, admin_only: true, signal: false, external: false };
     pub const fn plain(name: u32) -> Aspect {
         Aspect { name, admin_only: false, signal: false, external: false }
@@ -105,7 +105,7 @@ pub enum Role {
     Admin,
 }
 
-/// One edge write in `roles.0` (spec/permissions.md §2): `role` None is a removal (erase); a
+/// One grant write in `roles.0` (spec/permissions.md §2): `role` None is a removal (erase); a
 /// value with `until` 0 is a removal saying retain. `until` is wall ms; `may_grant` is the
 /// may-grant flag (its holder may add holders up to the grant's role).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -344,7 +344,7 @@ pub struct Commit {
     /// `expires: T`, wall ms.
     pub expires: Option<u64>,
     pub kind: CommitKind,
-    /// Header aspect-list order; one part per aspect, but a role commit has one per edge write.
+    /// Header aspect-list order; one part per aspect, but a role commit has one per grant write.
     pub parts: Vec<Part>,
     pub purge: Vec<PurgeItem>,
     /// Demotions only: commit IDs the author had received (spec/permissions.md §5.1).
@@ -394,7 +394,7 @@ impl Commit {
 pub enum RecordLink {
     /// Minted with a key (a node thing, a link key): the key holds admin on it.
     Key,
-    /// Its mint admin: holds its record edge.
+    /// Its mint admin: holds its record grant.
     Admin(NodeId),
 }
 

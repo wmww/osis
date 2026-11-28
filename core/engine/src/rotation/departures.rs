@@ -40,7 +40,7 @@ pub(crate) fn key_role(e: Option<&osis_perm::Grant>) -> Option<Role> {
     e.filter(|e| !e.says_retain()).map(|e| e.role)
 }
 
-/// The departure edge write `op` of `mc` on `t` makes, if it lowers the holder's edge for keys
+/// The departure grant write `op` of `mc` on `t` makes, if it lowers the holder's edge for keys
 /// (`key_role`): none for a key's grant, which holds nothing sealed (spec/permissions.md §1).
 fn departure_of(tl: &Timeline, t: &Tid, mc: &RoleCommit, op: &GrantOp) -> Option<Departure> {
     let holder = op.holder.thing()?;
@@ -60,7 +60,7 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 /// second finalize of a removed grant), whether it would over the start or the edge any
 /// applied write before it set (it stands), and whether its author held write on `a` just before
 /// its point (`At::before`, as its authority is judged there: an author removed since still
-/// counts); its start is the edge before the first of them (the record edge). Only commits this
+/// counts); its start is the edge before the first of them (the record grant). Only commits this
 /// node holds: names are met by holding them. The timeline is read whole only for a write
 /// applying nothing (its verdicts over other edges and its author's role are judged there).
 pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, GrantLog> {
@@ -152,7 +152,7 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
 /// epoch covers them until a rotation supersedes the epoch), each holder with a box of the
 /// `secrets.0` state at a current epoch of a role it holds less than now, and each rotator of a
 /// current epoch holding less than its role now (`members::role_for_keys`: through holder
-/// actors with key access). An edge departure concerns the roles above its current one up to the highest
+/// actors with key access). A grant departure concerns the roles above its current one up to the highest
 /// it had; a box or rotator departure that role alone (an epoch of another role it neither made
 /// nor holds a box at is no concern of it: counted, a link's sharer that left kept the link's
 /// admin epoch, which nobody may rotate, uncovered, and so every role of the link and of what it
@@ -203,13 +203,13 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 }
 
 /// The causes (spec/crypto.md §4, Left out) of departure `d` from `x` that an epoch of role `r`
-/// does not cover, `deps` the departures from `x` known: its newest edge write a covering epoch
+/// does not cover, `deps` the departures from `x` known: its newest grant write a covering epoch
 /// must name (`Departure::newest_needed`), or, for a box or rotator departure no edge shows (no
-/// epoch covers it), that of its holder's edge departure concerning `r` where there is one, else
+/// epoch covers it), that of its holder's grant departure concerning `r` where there is one, else
 /// the rotation commit of each current epoch of `r` its holder holds a box at or made.
 ///
 /// Invariant: every departure has a cause, so every keyset it blocks is recorded. Who writes the
-/// inputs: an edge write, by an admin of `x` (its departure ends with a regrant or its
+/// inputs: a grant write, by an admin of `x` (its departure ends with a regrant or its
 /// invalidity, and the record with it); a rotation commit, by a writer of `x` (standing while
 /// held: the box or made epoch shows the departed party holds the secret, which only a rotation
 /// of `x` ends).

@@ -252,7 +252,7 @@ fn small_commit(lp: &mut LocalPeer, i: usize, t: Tid, as_: Option<Tid>, v: &str)
 }
 
 // What a small commit costs in the accounts shape (notes/thing-cost.md): no epoch, no inner
-// signature; the account's first node writes its dependents along record edges (the empty
+// signature; the account's first node writes its dependents along record grants (the empty
 // path, `[0]`, 2 B), a paired node states A (`[0, A]`, 2 B + 16 B), and a key granted on a thing
 // signs in the signer's second form, `[tid, signing_key]` (40 B more, spec/wire.md §4 field 1).
 #[test]

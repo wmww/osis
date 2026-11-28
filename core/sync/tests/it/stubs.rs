@@ -246,7 +246,7 @@ fn an_unsignalled_grant_holds_nothing_spec_sync_set_2() {
 // spec/permissions.md §4 Stub (a sync-only cut names the holders on its unit's chains): node 0
 // makes H0 (public, granting node 1's account A sync), H2 and X minted with H0, X granting A sync
 // and H2 sync. A holds sync on X directly and through H0 and H2, the hop from H0 to H2 being H2's
-// record edge; node 1, told of X and H0 by their signals, holds both as stubs but nothing of H2: it
+// record grant; node 1, told of X and H0 by their signals, holds both as stubs but nothing of H2: it
 // knows of that hop only from evidence (H2 named holder on X), which no logger of A's unit holds
 // as H2's role entries (fails with a sync chain judged from every grant held: H2 a chain stub).
 #[test]

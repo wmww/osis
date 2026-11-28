@@ -411,7 +411,7 @@ fn a_thing_writes_on_itself_as_its_only_member() {
 }
 
 // spec/permissions.md §1: a record coming late gives its edge from the start: KX's grants on KA
-// and KB (minted by KX) rest on KX's key hop and record edges, which no held part sets, so each is
+// and KB (minted by KX) rest on KX's key hop and record grants, which no held part sets, so each is
 // a component of its own; KX's record (its key) and the mint records arriving reads them as from
 // scratch. Undone (the late record touching only its own edge's component), they stay unapplied.
 #[test]
@@ -473,12 +473,12 @@ fn a_key_hop_is_an_edge_like_any() {
     assert_eq!(p.finals().get(&(Holder::Key(rk), t(KX))).map(|f| f.0), Some(None));
     assert_eq!(p.content(&WriteId(cid(6), 0)), Some(Content::Invalid));
     assert_eq!(p.content(&WriteId(cid(7), 0)), Some(Content::Invalid));
-    // a thing's own grant on itself is still an edge write whose holder is its target
+    // a thing's own grant on itself is still a grant write whose holder is its target
     let own = [commit(8, ms(2), KX, vec![edge(KX, &[], KX, None, Some(&[]))])];
     assert_eq!(Paths::evaluate(&recs(), BTreeSet::new(), &own).status(&WriteId(cid(8), 0)), Some(Status::Unapplied));
 }
 
-// spec/permissions.md §1: an edge write whose holder is its target is not applied, whoever
+// spec/permissions.md §1: a grant write whose holder is its target is not applied, whoever
 // writes it: KA's mint admin granting KA admin on KA sets no edge.
 #[test]
 fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
@@ -489,7 +489,7 @@ fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
 }
 
 // spec/permissions.md §5.1: a removal saying retain (`until` 0, role read) restores read in the
-// edge as restored, as the draft's words read it (notes/a1-spec/README.md Open 15, not decided):
+// grant as restored, as the draft's words read it (notes/a1-spec/README.md Open 15, not decided):
 // a second explicit removal of the same holder then falls from read to none and is judged.
 #[test]
 fn a_retain_removal_restores_read_as_the_draft_reads_it() {
@@ -734,7 +734,7 @@ fn a_commit_arriving_after_its_snapshot_is_carried_by_it() {
     assert!(p.copies().is_empty() && p.reads(&commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", &[])]), &[]));
 }
 
-// spec/permissions.md §5.2 Position: a commit with no edge-class part is ordered at the start of
+// spec/permissions.md §5.2 Position: a commit with no grant-class part is ordered at the start of
 // its `ts`, so X's key rotation stamped in the millisecond of H's removal is ordered before it and
 // cut by it, whatever the signers' tids; listed, it stands.
 #[test]
@@ -934,7 +934,7 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     assert_eq!(verdict(&w2, &all(&w2, &[]), on_a), Some(Content::Valid(By::Listed)));
 }
 
-// spec/permissions.md §5.1 (the list): the same for edge-class parts a lowering's audit drops: X's
+// spec/permissions.md §5.1 (the list): the same for grant-class parts a lowering's audit drops: X's
 // commit granting on T1 through [A] and on A, listed in T1's leaf alone, keeps the grant on T1 and
 // drops the one on A. Mutation: `List::names` reading every leaf fails it.
 #[test]

@@ -485,7 +485,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 }
 
 /// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a
-/// role commit's (the role timeline and the possible holders read every held edge write, of any
+/// role commit's (the role timeline and the possible holders read every held grant write, of any
 /// validity, spec/permissions.md §5.1, spec/commits.md §4; a sync ID holds and promotes the commit
 /// whole, spec/sync-inbox.md §4) and a part of this node's own commit (its user is told the write was
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part

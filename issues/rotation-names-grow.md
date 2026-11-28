@@ -1,5 +1,5 @@
 # Every rotation re-writes every departure name the thing ever had
-> Summary: A rotation's history boxes name every edge write on the thing that lowered a holder or applied nothing giving one a role (spec/crypto.md §4 Names), with no reset point, so each rotation and each grant's or re-seal's copy carries O(lowerings ever): about 80 B each, 80 KB per history box per role at 1000 departures, O(departures²) over a chat's life.
+> Summary: A rotation's history boxes name every grant write on the thing that lowered a holder or applied nothing giving one a role (spec/crypto.md §4 Names), with no reset point, so each rotation and each grant's or re-seal's copy carries O(lowerings ever): about 80 B each, 80 KB per history box per role at 1000 departures, O(departures²) over a chat's life.
 > Priority: low
 > Tags: keys, performance
 

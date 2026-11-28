@@ -6,7 +6,7 @@
 //! touches, keeping the events given before any pass reached that key (`Walk::run`).
 //!
 //! The key hop (key, signer) (spec/permissions.md §1) is an edge like any, first on every path; a
-//! record holding a key gives it admin from the start as a mint admin's record edge does.
+//! record holding a key gives it admin from the start as a mint admin's record grant does.
 //! Components join through the edges a held part sets: an edge none sets stands at its record
 //! value or none, so every commit resting on one signer's key hop shares no component for it.
 
@@ -32,7 +32,7 @@ const ADMIN: Lvl = Some(Role::Admin);
 const LEVELS: [Role; 2] = [Role::Write, Role::Admin];
 
 /// One applied write on an edge in the settled walk, with what it found there (content reads the
-/// value and the edge as restored before it).
+/// value and the grant as restored before it).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Applied {
     pub key: Key,
@@ -41,7 +41,7 @@ pub struct Applied {
     pub before: Option<Grant>,
     /// An explicit write (§2): not a self-removal, a finalize or a may-grant grant.
     pub explicit: bool,
-    /// What the edge as restored just before it gave (§5.1).
+    /// What the grant as restored just before it gave (§5.1).
     pub restored: Option<Role>,
 }
 
@@ -53,7 +53,7 @@ impl Applied {
     }
 }
 
-/// An applied write in the pass: what it found, its part, and the edge as restored just after it.
+/// An applied write in the pass: what it found, its part, and the grant as restored just after it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Entry {
     a: Applied,
@@ -144,7 +144,7 @@ enum How {
     Finalize,
 }
 
-/// How the settled walk applies an edge write (§2, §5.1 step 2).
+/// How the settled walk applies a grant write (§2, §5.1 step 2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Way {
     /// By admin along its path: an explicit write.
@@ -189,7 +189,7 @@ fn grantable(role: Lvl, flag: bool) -> Lvl {
     if role == ADMIN || flag { role } else { None }
 }
 
-/// An edge-class part, with what the walk holds of it.
+/// A grant-class part, with what the walk holds of it.
 #[derive(Clone)]
 struct Item {
     key: Key,
@@ -232,7 +232,7 @@ impl Item {
     fn after_grant(&self) -> Lvl {
         grantable(self.after(), flag(self.value.as_ref()))
     }
-    /// An edge write giving below admin at its `ts`, no finalize (a self-removal included).
+    /// A grant write giving below admin at its `ts`, no finalize (a self-removal included).
     fn lowering_shape(&self) -> bool {
         !self.finalize && self.after() < ADMIN
     }
@@ -240,7 +240,7 @@ impl Item {
     fn lowering(&self) -> bool {
         self.lowering_shape() && !self.leave
     }
-    /// The role of an edge write that may apply as a may-grant grant (§2): one adding a grant.
+    /// The role of a grant write that may apply as a may-grant grant (§2): one adding a grant.
     fn flag_grant(&self) -> Lvl {
         (!self.leave && !self.finalize).then(|| self.after()).flatten().and(self.value.map(|v| v.role))
     }
@@ -379,7 +379,7 @@ impl Walk {
         }
     }
 
-    /// A record that went: its record edge with it, from the start.
+    /// A record that went: its record grant with it, from the start.
     pub(super) fn remove_record(&mut self, t: &Tid) {
         let Some(admin) = self.mint.remove(t) else { return };
         if let Some(e) = self.edge_ids.get(&(admin, *t)).copied().filter(|&e| self.ed(e).record) {
@@ -392,13 +392,13 @@ impl Walk {
         }
     }
 
-    /// The held commits with an edge-class part resting on (holder, target) (§5.1 Rests on).
+    /// The held commits with a grant-class part resting on (holder, target) (§5.1 Rests on).
     pub(super) fn resting(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
         ed.resting.iter().map(|&(_, s)| self.it(s).id.0).collect()
     }
 
-    /// The held commits with an edge-class part setting or resting on (holder, target).
+    /// The held commits with a grant-class part setting or resting on (holder, target).
     pub(super) fn through(&self, holder: &Holder, target: &Tid) -> BTreeSet<CommitId> {
         let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
         ed.setters.iter().chain(&ed.resting).map(|&(_, s)| self.it(s).id.0).collect()
@@ -462,7 +462,7 @@ impl Walk {
         *d = Some(d.map_or(k, |x| x.min(k)));
     }
 
-    /// A commit's edge-class parts as items, in the commit's order (§5.1 step 1): the parts on no
+    /// A commit's grant-class parts as items, in the commit's order (§5.1 step 1): the parts on no
     /// hop of a path the commit states, then those on one; in each by thing, then holder.
     fn compile(&mut self, c: &Commit) -> Vec<Item> {
         let mut own: BTreeSet<(Holder, Tid)> = BTreeSet::new();
@@ -811,7 +811,7 @@ impl Walk {
 
     // ---- the pass ----
 
-    /// The grant `e` just before `k`: its value (`None`: never set), and the edge as restored, in
+    /// The grant `e` just before `k`: its value (`None`: never set), and the grant as restored, in
     /// what it gives and lets grant.
     fn state(&self, e: E, k: Key) -> (Option<Option<Grant>>, Lvl, Lvl) {
         let ed = self.ed(e);
@@ -939,7 +939,7 @@ impl Walk {
         let verdict = it.verdict.filter(|_| it.lowering());
         let how = match verdict {
             Some(Verdict::Void) => return,
-            // applied for good where it lowers; where it would raise the edge as restored it
+            // applied for good where it lowers; where it would raise the grant as restored it
             // applies only as any write does
             Some(Verdict::Applied) => {
                 if (after > restored || after_grant > rgrant) && !self.admin(&it) {
@@ -986,7 +986,7 @@ impl Walk {
                 return;
             }
         }
-        // the edge as restored reads each value with its `until` disregarded
+        // the grant as restored reads each value with its `until` disregarded
         let raw = it.value.map(|v| v.role);
         let raw_grant = grantable(raw, flag(it.value.as_ref()));
         let (new, new_grant) = match how {
@@ -1005,7 +1005,7 @@ impl Walk {
 
     /// The drops of lowering `l`, taking its edge down from `restored` and `rgrant` (§5.1 step
     /// 3): the held parts of other commits ordered before it, resting on its edge, not in D, not
-    /// void, not named, whose need there the edge as restored met and its value does not; and
+    /// void, not named, whose need there the grant as restored met and its value does not; and
     /// with each the other parts of its commit on its thing.
     fn audit(&mut self, l: Slot, restored: Lvl, rgrant: Lvl) -> Vec<Slot> {
         let lt = self.it(l).clone();
@@ -1131,7 +1131,7 @@ impl Walk {
         self.entries(holder, target).map(|en| en.a).collect()
     }
 
-    /// Every edge with an applied write, and every record edge, with its history.
+    /// Every edge with an applied write, and every record grant, with its history.
     pub(super) fn histories(&self) -> BTreeMap<(Holder, Tid), History> {
         self.edges.iter().filter(|e| e.record || !e.hist.is_empty()).map(|e| (e.name, e.hist.values().map(|en| (en.a.key, en.a.value)).collect())).collect()
     }
@@ -1197,7 +1197,7 @@ impl Walk {
         })
     }
 
-    /// The edge as restored after every applied write (§5.1): what it gives and lets grant.
+    /// The grant as restored after every applied write (§5.1): what it gives and lets grant.
     pub(super) fn restored(&self, holder: &Holder, target: &Tid) -> (Lvl, Lvl) {
         let Some(ed) = self.edge(holder, target) else { return (None, None) };
         match ed.hist.values().next_back() {
@@ -1219,7 +1219,7 @@ impl Walk {
         ed.hist.get(&it.key).map(|en| (ed.name, en.a))
     }
 
-    /// The held edge-class parts of `commit`.
+    /// The held grant-class parts of `commit`.
     pub(super) fn parts_of(&self, commit: &CommitId) -> Vec<WriteId> {
         self.commits.get(commit).into_iter().flatten().map(|&s| self.it(s).id).collect()
     }
@@ -1232,7 +1232,7 @@ impl Walk {
         (v.map(|v| v.role), grantable(v.map(|v| v.role), flag(v.as_ref())))
     }
 
-    /// The final role of each edge the settled walk set (and each record edge), and what it lets
+    /// The final role of each edge the settled walk set (and each record grant), and what it lets
     /// grant.
     pub(super) fn finals(&self) -> BTreeMap<(Holder, Tid), (Lvl, Lvl)> {
         (0..self.edges.len()).filter(|&e| self.ed(e).record || !self.ed(e).hist.is_empty()).map(|e| (self.ed(e).name, self.final_pair(e))).collect()
@@ -1243,7 +1243,7 @@ impl Walk {
     }
 
     /// The grant `e`'s first points for write and admin (§5.2 Re-grant): the key of the first held part
-    /// setting it at the role or above (`until` disregarded) made by right; a record edge's is
+    /// setting it at the role or above (`until` disregarded) made by right; a record grant's is
     /// the start.
     fn firsts(&self, e: E) -> [Option<Key>; 2] {
         let ed = self.ed(e);

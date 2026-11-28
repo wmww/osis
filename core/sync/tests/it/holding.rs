@@ -105,7 +105,7 @@ fn strong(w: &mut World, i: usize, from: Option<Tid>, t: Tid, on: bool) {
     });
 }
 
-/// Node `i` lowers `holder`'s record edge on `t` to `to` (removes it at `None`), leaving `t`
+/// Node `i` lowers `holder`'s record grant on `t` to `to` (removes it at `None`), leaving `t`
 /// adminless if so.
 fn lower_record_edge(w: &mut World, i: usize, t: Tid, holder: Tid, to: Option<Role>) {
     w.write(i, |e| e.leaving_adminless(|e| e.demote(&t, &osis_engine::flows::Demotion { holder, new: to.map(edge), retain: None }))).unwrap();
@@ -307,7 +307,7 @@ fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
 }
 
 // spec/permissions.md §3 (Lost access), spec/sync-set.md §3 (Lowering from read to sync): Alice
-// mints T1 with admin T0 and grants Bob write on T1 (T1 made independent); she then lowers T0's record edge
+// mints T1 with admin T0 and grants Bob write on T1 (T1 made independent); she then lowers T0's record grant
 // on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
 // it and keeps it unread by the sync secret T0's sync role gives; Bob still reads it.
 #[test]
@@ -327,7 +327,7 @@ fn lowering_the_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
 }
 
 // spec/sync-judgement.md §6 (Read and unread move), spec/sync.md §3 (Held sync secrets): Alice,
-// T1's only reader, grants Bob read on it and lowers T0's record edge on T1 to sync. She keeps
+// T1's only reader, grants Bob read on it and lowers T0's record grant on T1 to sync. She keeps
 // T1 unread by the sync secret held from her own reading, its store kept: Bob, holding it only
 // then, reads T1 from it.
 #[test]
@@ -346,7 +346,7 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
 }
 
 // spec/permissions.md §3 (Lost access): Alice mints T1 with admin T0, grants Bob sync on it, writes,
-// then removes T0's record edge on T1, her only path to T1. The removal's own entries under T0's
+// then removes T0's record grant on T1, her only path to T1. The removal's own entries under T0's
 // and D's sync IDs, read still, name a commit she forgets with T1: each is parked again
 // (store::Follow::lost_parks), so the access returning opens it.
 #[test]
@@ -372,7 +372,7 @@ fn removing_the_only_path_parks_its_entries_spec_permissions_3() {
 
 // spec/permissions.md §3 (Lost access: a node that lost read through its own self-removal drops
 // once the commit is held elsewhere): Alice mints T1 with admin T0 and grants Bob read; Bob holds it.
-// She removes T0's record edge on T1, her only path to T1, a self-removal: she keeps T1's
+// She removes T0's record grant on T1, her only path to T1, a self-removal: she keeps T1's
 // secrets and store until Bob holds the removal, so Bob's roster loses T0 as the reference's.
 #[test]
 fn a_self_removal_of_the_only_path_reaches_the_reader_spec_permissions_3() {
@@ -381,7 +381,7 @@ fn a_self_removal_of_the_only_path_reaches_the_reader_spec_permissions_3() {
     w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();
     strong(&mut w, 1, None, t1, true);
     w.run();
-    assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob reads T0's record edge");
+    assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob reads T0's record grant");
     lower_record_edge(&mut w, 0, t1, t0, None);
     w.run();
     assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
@@ -390,7 +390,7 @@ fn a_self_removal_of_the_only_path_reaches_the_reader_spec_permissions_3() {
 }
 
 // spec/sync-set.md §3 (Release; Stopping), spec/permissions.md §3 (Lost access): as above, but
-// Alice removes the record edge while cut off from Bob, so T1's sync ID has no source: she still
+// Alice removes the record grant while cut off from Bob, so T1's sync ID has no source: she still
 // keeps syncing it until Bob, back, holds the removal.
 #[test]
 fn a_self_removal_made_cut_off_reaches_the_reader_once_back_spec_permissions_3() {
@@ -435,7 +435,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
 }
 
 /// Bob's node 2 mints T2 with admin T0 (`make_in`, "t2"), grants `alice` sync on it (T2 made
-/// independent) and removes T0's record edge on it.
+/// independent) and removes T0's record grant on it.
 fn unlinked_t2(w: &mut World, t0: Tid, alice: Tid) -> Tid {
     let t2 = make_in(w, 2, t0, "t2");
     w.write(2, |e| told(e, &t2, &alice, &edge(Role::Sync))).unwrap();
@@ -673,7 +673,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
 
 // spec/sync-set.md §2 (T's keys open), spec/commits.md §4 (Outside the node closure): Bob's node 1
 // makes T0 and grants Alice read on it; his node 2 mints T2 with admin T0 (its value sealed under T0's
-// epochs), grants Alice sync on T2 (T2 made independent) and removes T0's record edge. T0 holds no role on T2:
+// epochs), grants Alice sync on T2 (T2 made independent) and removes T0's record grant. T0 holds no role on T2:
 // no reader of T0 reads T2, its mint admin account's nodes included, and every entry under T0's sync ID filed
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
@@ -702,11 +702,11 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
 }
 
 // spec/sync-set.md §2 (Stubs: a record naming the unit's thing its mint admin brings the stub),
-// spec/permissions.md §4 (Stub: the record edge's writes): Bob's node 1 makes T0 and grants Alice
+// spec/permissions.md §4 (Stub: the record grant's writes): Bob's node 1 makes T0 and grants Alice
 // read on it; his node 2 mints T2 with admin T0, grants Alice sync on T2, untold (T2 made
-// independent), and removes T0's record edge or lowers it to sync. Only once that settled does
+// independent), and removes T0's record grant or lowers it to sync. Only once that settled does
 // Alice hold T0: T0's sync ID carries T2's minting, so she reads T2 no more only by T0's carrying
-// T2's stub with the record edge's writes. She reads T0, and none of T2.
+// T2's stub with the record grant's writes. She reads T0, and none of T2.
 #[test]
 fn a_mint_admins_later_reader_reads_nothing_its_record_edge_no_longer_gives_spec_sync_set_2() {
     for to in [None, Some(Role::Sync)] {
@@ -732,7 +732,7 @@ fn a_mint_admins_later_reader_reads_nothing_its_record_edge_no_longer_gives_spec
 }
 
 // spec/permissions.md §3 (Lost access), spec/sync-set.md §2 (T's keys open): Bob makes T0 and grants Alice read on it; his node 2 mints T2 with admin T0, grants his account
-// admin on T2 and removes T0's record edge. Alice, reading T2 only through T0, reads it no more,
+// admin on T2 and removes T0's record grant. Alice, reading T2 only through T0, reads it no more,
 // whatever T0's sync ID still carries (Bob's node 2 files its entries again). Bob grants T0 read on
 // T2 again: she reads T2 again, and only then.
 #[test]
@@ -780,7 +780,7 @@ fn repro_a_paired_nodes_grant_to_its_account_stands() {
 }
 
 /// Bob's node 1 makes T0 and grants Alice read on it; Alice holds T0. Node 1 mints T1 with admin T0
-/// (made independent by a grant of Bob's admin when `key1`), then T2 with admin T1, made independent so. Each record edge
+/// (made independent by a grant of Bob's admin when `key1`), then T2 with admin T1, made independent so. Each record grant
 /// stands: (world, T0, T1, T2). Built once per process per `key1` (`fixture_with`).
 fn record_chain_of_three(key1: bool) -> (World, Tid, Tid, Tid) {
     let (w, (t0, t1, t2)) = fixture_with(&format!("holding record chain {key1}"), || record_chain_built(key1));
@@ -804,7 +804,7 @@ fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
 
 // spec/sync-set.md §2 (T's keys open: read counts through chains of role grants, the lowest role
 // along a chain), spec/permissions.md §1: T0 admin on T1 and T1
-// admin on T2 by their record edges, each independent (or T1 left dependent): Alice, a reader of T0,
+// admin on T2 by their record grants, each independent (or T1 left dependent): Alice, a reader of T0,
 // reads T1 and T2, and what is written on T2 after it was made independent.
 #[test]
 fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
@@ -823,7 +823,7 @@ fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §2 (T's keys open), spec/permissions.md §3 (Lost access): as above, T1 independent; Bob
-// lowers T1's record edge on T2 to sync. T0 reads T2 by no chain: Alice reads T2 no more and holds
+// lowers T1's record grant on T2 to sync. T0 reads T2 by no chain: Alice reads T2 no more and holds
 // none of its content, whatever T0's and T1's sync IDs carry (node 2 files them again), while
 // she reads T1 still.
 #[test]
@@ -874,7 +874,7 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
 
 // spec/sync-set.md §2 (T's keys open), spec/permissions.md §3 (Lost access): Alice reads T0;
 // Bob's T2, minted with admin T0, is independent and Alice granted sync on T2 directly, holding it from her root too.
-// She reads T2 through T0. Bob removes T0's record edge: she keeps T2 unread by her own sync
+// She reads T2 through T0. Bob removes T0's record grant: she keeps T2 unread by her own sync
 // grant and holds none of its content.
 #[test]
 fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {

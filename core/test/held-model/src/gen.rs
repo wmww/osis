@@ -216,7 +216,7 @@ fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Pa
 /// covering snapshots writers owe): content under every purge option, signal writes, compaction
 /// snapshots, purges, undos, `retention^.0` settings (things minted with one, late ones stamped up to
 /// an hour back, invalid ones by a non-admin), writers following the setting they hold half the
-/// time, stated paths and purge authors (`stated`), edge writes (grants, `until`, may-grant, self-removals, finalizes, link
+/// time, stated paths and purge authors (`stated`), grant writes (grants, `until`, may-grant, self-removals, finalizes, link
 /// redemptions); creations kept for good or `admin` with no history, a few expiring, some
 /// purged; every body held but about one in ten missing and a few parked (creations whole);
 /// sometimes a creation or a node thing's record unknown; `now` up to six hours after the last
@@ -465,7 +465,7 @@ pub fn history(seed: u64, n: usize) -> Held {
 
 /// `c` stating a path for the things it writes (spec/permissions.md §1 Path), where it states
 /// none: half the time, where some thing X holds a grant on each thing it writes and its signer one
-/// on X (by the edge writes of `commits`, applied or not), or X is on the record chain between
+/// on X (by the grant writes of `commits`, applied or not), or X is on the record chain between
 /// them, the path [X]; now and then a path through a thing that gives it nothing. A commit
 /// listing a thing names it as its purge author half the time (node 2 so acts for its account).
 fn stated(r: &mut Rng, c: Commit, commits: &[Commit]) -> Commit {

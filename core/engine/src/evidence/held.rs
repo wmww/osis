@@ -51,7 +51,7 @@ pub(crate) fn copies(tx: &mut Tx<'_>) -> Result<Copies> {
 }
 
 /// Held commit `id`'s copies, per thing its parts there: per aspect on the thing a part (a
-/// `roles.0` aspect: one per edge write it makes there, else one with no edge write), per purge
+/// `roles.0` aspect: one per grant write it makes there, else one with no grant write), per purge
 /// item on it a content part. Hops from the path the commit states for the thing (`None` while a
 /// split entry has not opened here); delete keys at levels 1 and 3 for each thing up the part's
 /// thing's record chain (the one whose steps bear a key places it, spec/crypto.md §7 Checked
@@ -101,7 +101,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
                 .flat_map(|(level, key)| bases.iter().map(move |base| Del { base: *base, level, key }))
                 .collect();
             let on = parts.entry(t).or_default();
-            // an edge aspect's parts: one per edge write there, things' on `roles.0`, keys' on
+            // an edge aspect's parts: one per grant write there, things' on `roles.0`, keys' on
             // `signers.0`
             let writes: Vec<(usize, &osis_perm::GrantOp)> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
                 (Some(rc), Some(g)) => rc.ops.iter().enumerate().filter(|(_, o)| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),
@@ -213,7 +213,7 @@ impl crate::Engine {
     /// The engine side of the joint property (tests): per thing `t` with a held part, as the
     /// sync ID of a unit holding `t` alone, the derivation built with the copies taken in two
     /// orders agrees with itself and from scratch; and a reader holding `t`'s bodies plus exactly
-    /// the copies it requires judges each body on `t` (content validity, edge write status) under
+    /// the copies it requires judges each body on `t` (content validity, grant write status) under
     /// osis-perm `paths` as the node holding everything does; and the derivation the engine keeps
     /// fed per commit (`evidence::kept`) is the one derived from nothing. `Some`: the first
     /// difference.
