@@ -1913,8 +1913,8 @@ fn a_waiting_claimant_asks_head_again_once_the_peers_path_passes_it_spec_sync_op
     assert_eq!(after, 2, "asked again once the peer's path passed its step");
 }
 
-// spec/sync-opens.md §5 (Testing at a filter arrival): the move is found by the arrival's new
-// entries alone: the claimant tests the one sync ID they name and asks one Head, at n and 10n
+// spec/sync-opens.md §5 (Testing: at a filter arrival, by its new entries): the move is found by
+// the arrival's new entries alone: the claimant tests the one sync ID they name and asks one Head, at n and 10n
 // sync IDs shared.
 #[test]
 fn a_path_mark_asks_head_for_what_moved_alone_at_n_and_10n_spec_sync_opens_5() {
