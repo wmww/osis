@@ -827,6 +827,13 @@ impl ActorEpochs {
         (de, ds)
     }
 
+    /// `derived` down `chain` (nearest first) from the epochs of the thing above its last: the
+    /// epochs of `chain[0]`; `base` itself for an empty chain.
+    pub fn derived_along(base: &ActorEpochs, chain: &[Tid]) -> ActorEpochs {
+        let Some((far, rest)) = chain.split_last() else { return base.clone() };
+        rest.iter().rev().fold(ActorEpochs::derived(base, far), |e, t| ActorEpochs::derived(&e, t))
+    }
+
     /// A dependent thing's derived role secrets `kdf("thing <role>", mint admin's secret, tid)`, one per
     /// epoch of the mint admin, forks included, each at the epoch with n `derived_n` of the mint admin's
     /// that the nonce rule gives it (spec/crypto.md §3). Established (`Derived`) where the

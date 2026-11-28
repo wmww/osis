@@ -325,11 +325,9 @@ impl Engine {
         }
         let mut out = Vec::new();
         for (i, o) in chain.iter().enumerate() {
-            let Some(mut e) = self.epochs(o) else { continue };
-            for x in chain.get(..i).into_iter().flatten().rev() {
-                e = Arc::new(ActorEpochs::derived(&e, x));
-            }
-            out.push(e);
+            let Some(e) = self.epochs(o) else { continue };
+            let nearer = chain.get(..i).unwrap_or_default();
+            out.push(if nearer.is_empty() { e } else { Arc::new(ActorEpochs::derived_along(&e, nearer)) });
         }
         *last = Some((chain.to_vec(), out.clone()));
         out

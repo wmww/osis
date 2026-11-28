@@ -52,11 +52,7 @@ impl Core {
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let (e, chain) = self.derivation(tid)?;
-        let mut e = Arc::unwrap_or_clone(e);
-        for t in chain.iter().rev() {
-            e = ActorEpochs::derived(&e, t);
-        }
-        Some(e)
+        Some(ActorEpochs::derived_along(&e, &chain))
     }
 
     /// The epochs `tid`'s derive from (spec/crypto.md §3): those of the first actor up its record
