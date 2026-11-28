@@ -4,6 +4,7 @@
 
 use crate::step::{Step, StepId};
 use crate::Error;
+use osis_base::SyncId;
 use osis_crypto::{Signature, VerifyingKey};
 pub use osis_schema::core_types::{SYNC, StepRecord, SyncEntry, SyncIds};
 use std::collections::BTreeMap;
@@ -18,17 +19,11 @@ pub fn parse_record(r: &StepRecord) -> Result<Step, Error> {
     Step::parse(&r.step)
 }
 
-/// The steps of a sync ID by ID, each keyed by its own ID.
-pub fn sync_steps(sync_id: &SyncEntry) -> Result<BTreeMap<StepId, Step>, Error> {
-    let mut out = BTreeMap::new();
-    for (id, r) in &sync_id.steps {
-        let s = parse_record(r)?;
-        if s.id().0 != *id {
-            return Err(Error::Verify("step record key is not its step ID"));
-        }
-        out.insert(StepId(*id), s);
-    }
-    Ok(out)
+/// The steps sync ID `sync_id`'s entry records, by ID: each record whose bytes parse as a step
+/// of `sync_id` under its own ID. Any other record is no step of it and is ignored
+/// (spec/sync-ids.md §4: whatever else `sync.0` holds names nothing).
+pub fn sync_steps(sync_id: &SyncId, entry: &SyncEntry) -> BTreeMap<StepId, Step> {
+    entry.steps.iter().filter_map(|(id, r)| parse_record(r).ok().filter(|s| s.id().0 == *id && s.sync_id == *sync_id).map(|s| (StepId(*id), s))).collect()
 }
 
 /// The endorsements a sync ID's records carry that verify (spec/sync-ids.md §4, §6 Register): by
@@ -71,10 +66,14 @@ mod tests {
         }
         let back = SyncEntry::from_value(&sync_id.to_value()).unwrap();
         assert_eq!(back, sync_id);
-        assert_eq!(sync_steps(&sync_id).unwrap().len(), 3);
-        // A record under the wrong key is rejected.
+        assert_eq!(sync_steps(&s0.sync_id, &sync_id).len(), 3);
+        // a record under another key than its step's ID, of another sync ID, or not a step is
+        // ignored; the others still read
+        let other = genesis(&Secrets::new(11).admin);
         let mut bad = sync_id;
         bad.steps.insert([0; 32], step_record(&s1));
-        assert!(sync_steps(&bad).is_err());
+        bad.steps.insert(other.id().0, step_record(&other));
+        bad.steps.insert([9; 32], StepRecord { step: vec![1, 2, 3], endorsements: BTreeMap::new() });
+        assert_eq!(sync_steps(&s0.sync_id, &bad).into_keys().collect::<std::collections::BTreeSet<_>>(), [s0.id(), s1.id(), s2.id()].into());
     }
 }

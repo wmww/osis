@@ -101,41 +101,21 @@ impl Recorded {
         let ids = f.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
         let mut out: BTreeMap<StepId, Placed> = BTreeMap::new();
         for (sync_id, entry) in &ids {
-            // the steps that parse under their own ID, with the stamp of the write recording each
-            let mut steps: BTreeMap<StepId, (Step, Ts)> = BTreeMap::new();
-            for (id, r) in &entry.steps {
-                let Ok(s) = Step::parse(&r.step) else { continue };
-                if s.id().0 != *id || s.sync_id != *sync_id {
-                    continue;
-                }
-                let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.to_vec())), PathSeg::Field(0)];
+            let steps = osis_blob::sync_steps(sync_id, entry);
+            let known = |id: &StepId| before.is_some_and(|b| b.steps.get(id).is_some_and(|x| x.sync_id == *sync_id));
+            let mut depths: Vec<(u32, StepId)> = placed_depths(&steps, known).into_iter().map(|(k, d)| (d, k)).collect();
+            // parents first, each `since` its own write's stamp or its parent's, the later
+            depths.sort();
+            for (depth, id) in depths {
+                let Some(s) = steps.get(&id) else { continue };
+                let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
                 let Some(ts) = earliest_stamp(f, &path) else { continue };
-                steps.insert(StepId(*id), (s, ts));
-            }
-            // from the genesis steps down, each child placed once its parent is
-            let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
-            let mut todo: Vec<StepId> = Vec::new();
-            for (id, (s, _)) in &steps {
-                match s.prev {
-                    Some(p) => children.entry(p).or_default().push(*id),
-                    None => todo.push(*id),
-                }
-            }
-            while let Some(id) = todo.pop() {
-                let Some((s, ts)) = steps.get(&id) else { continue };
-                let parent = s.prev.and_then(|p| Some((steps.get(&p)?, out.get(&p)?)));
-                let known = before.is_some_and(|b| b.steps.get(&id).is_some_and(|x| x.sync_id == *sync_id));
-                let verified = |r: std::result::Result<(), osis_blob::Error>| {
-                    osis_base::costs::count("step signatures verified", 1);
-                    r.is_ok()
-                };
-                let (depth, since) = match (s.prev, parent) {
-                    (None, _) if known || verified(s.verify_genesis()) => (0, *ts),
-                    (Some(_), Some(((p, _), at))) if known || verified(s.verify_child(p)) => (at.depth.saturating_add(1), (*ts).max(at.since)),
-                    _ => continue,
+                let since = match s.prev.map(|p| out.get(&p)) {
+                    None => ts,
+                    Some(Some(at)) => ts.max(at.since),
+                    Some(None) => continue,
                 };
                 out.insert(id, Placed { sync_id: *sync_id, prev: s.prev, sync: s.keys.sync.to_bytes(), write: s.keys.write.to_bytes(), delete: s.keys.delete.to_bytes(), depth, since });
-                todo.extend(children.remove(&id).unwrap_or_default());
             }
         }
         Recorded::placed(out)
@@ -174,11 +154,49 @@ impl Recorded {
         self.keys.contains_key(&(level, *key))
     }
 
-    /// The newest step of sync ID `id`: the deepest, ties by lowest step ID (spec/sync-ids.md §3
-    /// head, as `sync_ids::actors::head_of` reads a forked tree).
-    fn head(&self, id: &SyncId) -> Option<(&StepId, &Placed)> {
-        self.steps.iter().filter(|(_, s)| s.sync_id == *id).min_by_key(|(k, s)| (std::cmp::Reverse(s.depth), **k))
+    /// The head of sync ID `id` among the placed steps (`head`).
+    fn head(&self, id: &SyncId) -> Option<&Placed> {
+        self.steps.get(&head(self.steps.iter().filter(|(_, s)| s.sync_id == *id).map(|(k, s)| (*k, s.depth)))?)
     }
+}
+
+/// The depth of each of `steps`, one sync ID's, whose path from the genesis step verifies
+/// (spec/sync-ids.md §4 Owner: each step signed by its parent's delete key, the genesis by its
+/// own, whose delete key hashes to the sync ID), from the genesis down, each signature checked
+/// once; a step `known` to be placed already is taken unchecked (a step's ID commits to its
+/// bytes and its parent's ID).
+pub(crate) fn placed_depths(steps: &BTreeMap<StepId, Step>, known: impl Fn(&StepId) -> bool) -> BTreeMap<StepId, u32> {
+    let verified = |id: &StepId, check: &dyn Fn() -> bool| {
+        known(id) || {
+            osis_base::costs::count("step signatures verified", 1);
+            check()
+        }
+    };
+    let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
+    let mut todo: Vec<(StepId, u32)> = Vec::new();
+    for (id, s) in steps {
+        match s.prev {
+            Some(p) => children.entry(p).or_default().push(*id),
+            None if verified(id, &|| s.verify_genesis().is_ok()) => todo.push((*id, 0)),
+            None => {}
+        }
+    }
+    let mut out = BTreeMap::new();
+    while let Some((id, d)) = todo.pop() {
+        out.insert(id, d);
+        for c in children.remove(&id).unwrap_or_default() {
+            if verified(&c, &|| steps.get(&c).zip(steps.get(&id)).is_some_and(|(c, p)| c.verify_child(p).is_ok())) {
+                todo.push((c, d.saturating_add(1)));
+            }
+        }
+    }
+    out
+}
+
+/// The head of a sync ID among its placed steps, each with its depth (spec/sync-ids.md §3): the
+/// deepest, equal depths (two admins stepping at once) by lowest step ID.
+pub(crate) fn head(placed: impl IntoIterator<Item = (StepId, u32)>) -> Option<StepId> {
+    placed.into_iter().min_by_key(|(k, d)| (std::cmp::Reverse(*d), *k)).map(|(k, _)| k)
 }
 
 impl Core {
@@ -310,7 +328,7 @@ impl Core {
     /// `sync.0` records here. `None`: none recorded, and this node cannot write under `b`.
     pub(crate) fn listed_step(&self, b: &Tid) -> Option<Placed> {
         let (id, _) = self.named_sync_id(b).flatten()?;
-        self.ix.steps.get(b)?.head(&id).map(|(_, s)| s.clone())
+        self.ix.steps.get(b)?.head(&id).cloned()
     }
 
     /// The admin and write delete keys of `listed_step(b)`, parsed (`memo`: every write on a

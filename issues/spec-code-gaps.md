@@ -26,7 +26,6 @@ Judgement in brackets. Line numbers drift; grep the quoted words.
 - sync-hostile §1 "One test pass in flight per peer": "test pass" is defined nowhere. [Reword to opens' term.]
 
 ## spec/sync-ids.md, spec/sync-judgement.md, spec/sync-inbox.md
-- sync-ids §3 head: two copies of the rule, `sync_ids::actors::head_at` (tested) and `sync_ids::steps` `head`. [Low: one reads the other.]
 - sync-ids §6 Register "in its sync set": code takes Registers for a sync ID left and waiting to stop (`path.rs` checks only `Unread`). [Small; decide which, likely the spec: S is kept while it waits.]
 - Code only: a Deposit item at a stopped store is answered 4 (`store/mod.rs`, path filtered by `unheld`); a stamped entry pulled there 1, an ephemeral one without bytes 2. [Small: state the codes, or answer 14.]
 

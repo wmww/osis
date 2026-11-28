@@ -200,7 +200,7 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId) -> Result<Option<Du
         return Ok(None);
     }
     let Some(rec) = tx.state(g, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).and_then(|m| m.get(l).cloned()) else { return Ok(None) };
-    let steps = sync_steps(&rec)?;
+    let steps = sync_steps(l, &rec);
     let Some(head) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };

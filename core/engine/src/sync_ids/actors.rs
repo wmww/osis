@@ -28,47 +28,9 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, Step>) -> Option<Path> {
     Some(Path { steps: path })
 }
 
-/// The head a node reading S takes from its `sync.0` (spec/sync-ids.md §3 Head): of the tips whose
-/// path from genesis verifies, the deepest; equal depths (two admins stepping at once) by lowest
-/// step ID.
+/// The head a node reading S takes from its `sync.0` steps (spec/sync-ids.md §3 Head).
 pub(crate) fn head_of(steps: &BTreeMap<StepId, Step>) -> Option<StepId> {
-    head_at(steps).map(|(k, _)| k)
-}
-
-/// `head_of` with its depth (its path's steps after the genesis).
-pub(crate) fn head_at(steps: &BTreeMap<StepId, Step>) -> Option<(StepId, usize)> {
-    let parents: BTreeSet<StepId> = steps.values().filter_map(|s| s.prev).collect();
-    let depth = verified_depths(steps);
-    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((*k, *depth.get(k)?))).min_by_key(|(k, n)| (std::cmp::Reverse(*n), *k))
-}
-
-/// The depth of each step whose path from its genesis step verifies (`osis_blob::verify_path`:
-/// each step under its own ID, the genesis by its own delete key, each child by its parent's),
-/// each signature checked once, from the genesis steps down.
-pub(crate) fn verified_depths(steps: &BTreeMap<StepId, Step>) -> BTreeMap<StepId, usize> {
-    let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
-    let mut todo: Vec<(StepId, usize)> = Vec::new();
-    for (id, s) in steps {
-        if s.id() != *id {
-            continue;
-        }
-        match s.prev {
-            Some(p) => children.entry(p).or_default().push(*id),
-            None if s.verify_genesis().is_ok() => todo.push((*id, 0)),
-            None => {}
-        }
-    }
-    let mut out = BTreeMap::new();
-    while let Some((id, d)) = todo.pop() {
-        out.insert(id, d);
-        let Some(parent) = steps.get(&id) else { continue };
-        for c in children.remove(&id).unwrap_or_default() {
-            if steps.get(&c).is_some_and(|s| s.verify_child(parent).is_ok()) {
-                todo.push((c, d + 1));
-            }
-        }
-    }
-    out
+    super::steps::head(super::steps::placed_depths(steps, |_| false))
 }
 
 /// The delete keys owing an endorsement of S's recorded head (spec/sync-ids.md §6 Steps): each
@@ -120,7 +82,7 @@ pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
 /// Sync ID `id` of `g` with its recorded path from decoded `sync.0` `m` (none recorded, or none
 /// whose path verifies: an empty path), `hint` as given.
 fn owned(m: &ct::SyncIds, id: SyncId, hint: bool) -> OwnedSyncId {
-    let steps = m.get(&id).and_then(|l| Some((l, osis_blob::sync_steps(l).ok()?)));
+    let steps = m.get(&id).map(|l| (l, osis_blob::sync_steps(&id, l)));
     let (path, tree, endorsed) = match steps {
         Some((l, steps)) => (recorded_path(&steps).unwrap_or_default(), steps.clone(), osis_blob::sync_endorsements(l, &steps)),
         None => Default::default(),
@@ -600,6 +562,38 @@ mod tests {
         let c = osis_blob::register(high, &d, s0.keys, [3; 32]).unwrap();
         assert_eq!(of(&[&s0, &a, &b, &c]), Some(c.id()), "deeper");
         assert_eq!(recorded_path(&[&s0, &a, &b].iter().map(|s| (s.id(), (*s).clone())).collect()).unwrap().steps.last().map(Step::id), Some(low));
+    }
+
+    // spec/sync-ids.md §3 (Head), §4 (Owner: a verified path from that sync ID's genesis step,
+    // whatever else `sync.0` holds names nothing): the head and recorded path read only the
+    // entry's steps whose path verifies. A recorded child failing its signature leaves its parent
+    // the head; a deeper path from another sync ID's genesis, and a record that is no step, are
+    // ignored. Fails with the head taken among steps no record names as parent (the forged child
+    // hides the head), or with one bad record emptying the path.
+    #[test]
+    fn only_verified_steps_of_the_sync_id_bear_on_its_head_spec_sync_ids_3() {
+        let secret = |b| osis_crypto::Secret32::from_bytes([b; 32]);
+        let s0 = osis_blob::genesis(&secret(1));
+        let d = role_key(RoleKey::Delete, &secret(1));
+        let a = osis_blob::register(&s0, &d, s0.keys, [1; 32]).unwrap();
+        let mut forged = osis_blob::register(&a, &d, s0.keys, [2; 32]).unwrap();
+        forged.sig = osis_crypto::Signature([1; 64]);
+        let o0 = osis_blob::genesis(&secret(2));
+        let od = role_key(RoleKey::Delete, &secret(2));
+        let o1 = osis_blob::register(&o0, &od, o0.keys, [1; 32]).unwrap();
+        let o2 = osis_blob::register(&o1, &od, o0.keys, [2; 32]).unwrap();
+        let entry = |ss: &[&Step], junk: bool| {
+            let mut e = ct::SyncEntry { steps: ss.iter().map(|s| (s.id().0, osis_blob::step_record(s))).collect() };
+            if junk {
+                e.steps.insert([9; 32], ct::StepRecord { step: vec![1, 2, 3], endorsements: BTreeMap::new() });
+            }
+            ct::SyncIds::from([(s0.sync_id, e)])
+        };
+        let path = |m: &ct::SyncIds| owned(m, s0.sync_id, false).path.steps.iter().map(Step::id).collect::<Vec<_>>();
+        let want = vec![s0.id(), a.id()];
+        assert_eq!(path(&entry(&[&s0, &a, &forged], false)), want, "a forged child");
+        assert_eq!(path(&entry(&[&s0, &a, &o0, &o1, &o2], false)), want, "another sync ID's path");
+        assert_eq!(path(&entry(&[&s0, &a], true)), want, "a record that is no step");
     }
 
     // spec/sync-inbox.md §5 (Grant signal), spec/sync-hostile.md (a forged signal names a sync ID
