@@ -119,10 +119,10 @@ core=0 gui=1 unify=0 select=none"
 git checkout -q t; git remote remove origin
 check "no origin/main" "core=1 gui=1 unify=1 select=all tooling=1"
 # the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run LIMIT CMD` line in order with
-# stdin closed, every one run, `LIMIT EXIT LOG` per run in runs.res; exit 1 if any failed; `build` lines are not its
+# stdin closed, every one run, `LIMIT EXIT LOG` per run added to runs.res (the gate's, its GUI tests' line already in it); exit 1 if any failed; `build` lines are not its
 held() {
   name=$1 want=$2; shift 2
-  rm -f ran; rc=0; got=$(env "$@" sh "$gate" --held runs 2>&1) || rc=$?
+  rm -f ran runs.res; rc=0; got=$(env "$@" sh "$gate" --held runs 2>&1) || rc=$?
   got="exit $rc: $(printf '%s\n' "$got" | grep -v -e '^   (' -e '^   limit ' | tr '\n' '|')ran: $(cat ran 2>/dev/null | tr '\n' ' ')res: $(cut -d' ' -f1,2 runs.res 2>/dev/null | tr '\n' ' ')"
   n=$((n + 1)); if [ "$got" = "$want" ]; then :; else echo "FAIL held $name: got '$got', want '$want'"; fail=1; fi
 }
@@ -137,6 +137,13 @@ rm -f b
 printf '%s\n' 'run gate.replay i=0; while [ ! -e b ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; [ -e b ] && echo A >> ran' 'run t echo 1 >> ran' 'run gate.replay touch b; echo B >> ran; exit 3' > runs
 held "replays side by side" "exit 1: == sh -c echo 1 >> ran|== sh -c i=0; while [ ! -e b ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done; [ -e b ] && echo A >> ran|== sh -c touch b; echo B >> ran; exit 3|ran: 1 B A res: t 0 gate.replay 0 gate.replay 3 " HEAVY_HELD=1
 [ ! -e runs.1.out ] && [ ! -e runs.3.res ] || { echo "FAIL held: replay scratch files left"; fail=1; }
+# a result written before the hold (the GUI tests') kept; with --base the base replays run last
+# (tools/gate_base.py, its own test: here no NEW seed, so nothing built)
+printf 'gate.gui-tests 0 g\n' > runs.res
+printf '%s\n' "run t echo 1 >> ran" > runs
+rc=0; got=$(env HEAVY_HELD=1 sh "$gate" --held runs --base HEAD 2>&1) || rc=$?
+n=$((n + 1)); case "$rc $got" in "0 "*"gate_base.py"*"no NEW seed: no base replay"*) ;; *) echo "FAIL held --base: got $rc '$got'"; fail=1 ;; esac
+n=$((n + 1)); [ "$(cut -d' ' -f1,2 runs.res | tr '\n' ' ')" = "gate.gui-tests 0 t 0 " ] || { echo "FAIL held: earlier results not kept: $(cat runs.res)"; fail=1; }
 # a default-tests stage whose target hangs (a fake cargo: target a's "binary" sleeps after
 # libtest's 60-second notice): stopped after GATE_HANG_S, its running test named, target b still run
 mkdir fakebin
@@ -149,7 +156,7 @@ exit 101
 FAKE
 chmod +x fakebin/cargo
 echo "run default-tests python3 $(dirname "$gate")/test_watch.py cargo test --no-fail-fast" > runs
-s0=$(date +%s); rc=0; env HEAVY_HELD=1 GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" sh "$gate" --held runs > /dev/null 2>&1 || rc=$?
+rm -f runs.res; s0=$(date +%s); rc=0; env HEAVY_HELD=1 GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" sh "$gate" --held runs > /dev/null 2>&1 || rc=$?
 took=$(( $(date +%s) - s0 ))
 got="exit $rc, res $(cut -d' ' -f1,2 runs.res), hung $(grep -c '^gate: hung test: a::spin$' runs.1.log), b ran $(grep -c '^test b::fine \.\.\. ok$' runs.1.log)"
 n=$((n + 1)); [ "$got" = "exit 1, res default-tests 101, hung 1, b ran 1" ] || { echo "FAIL held hang: got '$got'"; fail=1; }

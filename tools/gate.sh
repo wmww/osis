@@ -61,9 +61,10 @@ tested() {
 # HEAVY_HELD; without it this would run the tests unlocked. The `gate.replay` runs (one seed each,
 # mostly on one thread) run side by side after the rest, each in its own subshell (its `times`
 # start at 0), their output and results printed in order once all end: their wall is the slowest's.
+# Last, with --base, each NEW seed the stages found replayed on the base's binary (tools/gate_base.py:
+# its build checks the base out and back, so nothing after it in the gate builds).
 if [ -n "$held" ]; then
   [ -n "$HEAVY_HELD" ] || { echo "gate: --held is internal: only the gate's tools/heavy hold runs it" >&2; exit 2; }
-  : > "$held.res"
   i=0
   side=
   while IFS= read -r l; do
@@ -75,7 +76,8 @@ if [ -n "$held" ]; then
   done < "$held"
   wait
   for j in $side; do cat "$held.$j.out"; cat "$held.$j.res" >> "$held.res"; rm -f "$held.$j.out" "$held.$j.res"; done
-  awk '$2 != 0 { f = 1 } END { exit f }' "$held.res"
+  [ -z "$base" ] || step python3 "$tools/gate_base.py" "$held" "$held.res" "$base"
+  awk '$2 != 0 && $1 != "gate.base" { f = 1 } END { exit f }' "$held.res"
   exit
 fi
 # origin's main, fetched: the base of the selection and what HEAD must contain. Local main lags (the
@@ -293,10 +295,12 @@ limited gate.deny deny
 # all-core runs at once each take about twice as long. Doctests compile inside it, at run time.
 # tools/heavy --gate goes ahead of waiting by-hand holds, checks the hold against `gate.hold` and
 # writes its lock wait to $wf, which the gate's own limit leaves out.
-# A failing stage ends neither the hold nor the gate: the GUI tests still run, then the summary.
+# A failing stage ends neither the hold nor the gate: the summary follows. The GUI tests run
+# first, unlocked: the hold's base replays (tools/gate_base.py) leave the branch's changed crates to
+# rebuild.
+gui_test
 wf=$tmp/wait
 export HEAVY_WAIT_FILE="$wf"
-step tools/heavy --gate sh tools/gate.sh --held "$sel" || :
+step tools/heavy --gate sh tools/gate.sh --held "$sel" ${base:+--base "$base"} || :
 wait_s=$(cat "$wf" 2>/dev/null || true); wait_s=${wait_s:-0}
-gui_test
 passed "${wait_s%.*}" ", ${wait_s%.*}s of it waiting for the heavy lock"

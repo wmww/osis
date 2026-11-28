@@ -40,6 +40,12 @@ REPRO`) that passes makes the line STALE-RATE (tools/merge-branch land removes i
 units its NAME's patterns match prints `replayed:` and is no failure; any other failure is NEW. A
 `rate:` REPRO must be replayable: `rate:VAR=VAL,...` (a test) or `rate:SEED` (a sim scenario).
 
+A NEW unit naming its seed (a property's `seed N ... (replay: ...)` line, a sim seed) is replayed on
+the merge base's binary (tools/gate_base.py: BASE_STAGE, its log's first lines `gate: base NAME SHA`
+and `gate: unit REPLAY`). A failing test whose every NEW unit failed there too is ON-BASE: a failure
+on main, listed for a known line, counted with the KNOWN ones (exit 3 when nothing is NEW); one with
+some is NEW, its seeds failing on the base marked so.
+
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
 tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale
 (tools/merge-branch land removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
@@ -96,6 +102,11 @@ RATE_SIM = re.compile(r"^rate:\d+$")
 # the gate's replay of one `rate:` line (tools/test_select.py), its first log line naming it
 REPLAY_STAGE = "gate.replay"
 REPLAY = re.compile(r"^gate: replay (\S+) (\S+)$", re.M)
+# tools/gate_base.py's replay of one NEW unit on the merge base
+BASE_STAGE = "gate.base"
+BASE = re.compile(r"^gate: base (\S+) (\S+)\ngate: unit (.+)$", re.M)
+BASE_NONE = re.compile(r"^gate: base none: (.*)$", re.M)
+SIM_REPLAY = re.compile(r'osis_sim::replay\("\w+", \d+\)')
 COUNTS = re.compile(r"^counts:((?:[^\s=,]+=\d+)(?:,[^\s=,]+=\d+)*)$")
 SETTING = re.compile(r"^-$|^(\w+=[^\s,]*)(,\w+=[^\s,]*)*$")
 
@@ -241,6 +252,64 @@ def cargo_failures(text):
     elif declared is not None and declared != hints:
         out.append((None, f"cargo counted {declared} failed targets, the log shows {hints}: read its output", []))
     return out
+
+
+def failing_targets(text):
+    """{failing test: its target's cargo arguments (the `to rerun pass` hint, `-p CRATE --lib`)} of a
+    `cargo test` log: where tools/gate_base.py finds the binary to replay a unit with."""
+    out, names = {}, []
+    for line in text.split("\n"):
+        if SEGMENT.match(line):
+            names = []
+        elif m := HINT.match(line):
+            for n in names:
+                out.setdefault(n, m.group(1))
+            names = []
+        elif m := FAILED.match(line):
+            names.append(m.group(1))
+    return out
+
+
+def new_units(name, us, names):
+    """The units of failing NAME no known line accounts for: all when unlisted, else those matching
+    none of its patterns; none of a `counts:` line's (its counts decide)."""
+    listed = names.get(name, [])
+    if listed and listed[0].counts is not None:
+        return []
+    return [u for u in us if not any(k.pattern.search(u) for k in listed)]
+
+
+def unit_replay(u):
+    """A unit's replay: a sim seed's `osis_sim::replay("SCENARIO", SEED)`, or the command of its
+    `seed N ... (replay: CMD)` line; None when it names no seed."""
+    m = SIM_REPLAY.search(u)
+    if m:
+        return m.group(0)
+    m = SEED.search(u)
+    return m.group(2).strip() if m else None
+
+
+def on_base(results):
+    """({(NAME, REPLAY): base sha} of each base replay that failed as on the branch, [why a base
+    replay did not run]) from the BASE_STAGE results [(stage, exit, log)]."""
+    out, why = {}, []
+    for stage, rc, log in results:
+        text = open(log, errors="replace").read() if os.path.exists(log) else ""
+        if m := BASE_NONE.search(text):
+            why.append(m.group(1))
+            continue
+        m = BASE.search(text)
+        if not m:
+            why.append(f"a base replay log without its header: {log}")
+            continue
+        name, sha, rep = m.groups()
+        if name.startswith("sim-sweep:"):
+            failed = rc != "0" and any(n == name for n, _, _ in sim_failures(text))
+        else:
+            failed = rc != "0" and re.search(rf"^test {re.escape(name)} \.\.\. FAILED$", text, re.M) is not None
+        if failed:
+            out[(name, rep)] = sha
+    return out, why
 
 
 def failing(lines):
@@ -427,6 +496,8 @@ def main():
     if os.path.exists(sel):
         expected.update(l.split()[1] for l in open(sel).read().split("\n") if l.startswith(("run ", "expect ")))
     results = [l.split(" ", 2) for l in open(res).read().split("\n") if l] if os.path.exists(res) else []
+    based, base_why = on_base([(r + ["", ""])[:3] for r in results if r[0] == BASE_STAGE])
+    results = [r for r in results if r[0] != BASE_STAGE]
     ran = collections.Counter(r[0] for r in results)
     names, errs = known(root)
     rows = []  # (kind, stage, text)
@@ -456,6 +527,10 @@ def main():
                 continue
             listed = names.get(name, [])
             hit = [next((k.issue for k in listed if k.pattern.search(u)), None) for u in us]
+            # the NEW units failing on the merge base too, by their replay
+            new = new_units(name, us, names)
+            there = [u for u in new if (name, unit_replay(u)) in based]
+            sha = based[(name, unit_replay(there[0]))][:9] if there else None
             base = listed[0].counts if listed else None
             now = None
             if base is not None and all(hit):
@@ -467,11 +542,18 @@ def main():
                              "the branch changed what fails: read it; a landing that explains it refreshes the `counts:` (notes/coordination.md, Known failures)"))
             elif listed and all(hit):
                 rows.append(("KNOWN", stage, f"{name}: {', '.join(dict.fromkeys(hit))}{', same failing counts' if now is not None else ''}"))
+            elif new and len(there) == len(new):
+                rows.append(("ON-BASE", stage, f"{name}: {'its seeds no pattern matches' if listed else 'its failing seeds'} fail on the base {sha} too: "
+                             f"failing on main, so add its known line ({KNOWN}; notes/coordination.md, Known failures)"))
+            elif there:
+                rows.append(("NEW-TEXT" if listed else "NEW", stage, f"{name}: {len(new) - len(there)} of {len(new)} new failing seeds pass on the base {sha} (each failing there too marked)"))
             elif listed:
                 miss = next(u for u, h in zip(us, hit) if h is None).strip().split("\n")[0][:200]
                 rows.append(("NEW-TEXT", stage, f"{name}: listed ({', '.join(dict.fromkeys(k.issue for k in listed))}), but this failure matches none of its patterns: {miss}"))
             else:
                 rows.append(("NEW", stage, name))
+            marks = {unit_replay(u) for u in there}
+            shown = [s + (" (fails on the base too)" if unit_replay(s) in marks else "") for s in shown]
             rows += [("", "", s) for s in shown[:3]] + ([("", "", f"... {len(shown) - 3} more seeds")] if len(shown) > 3 else [])
     cost, bare = [], []
     for stage, _, log in ((r + ["", ""])[:3] for r in results):
@@ -515,6 +597,8 @@ def main():
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
+    for why in base_why:
+        print(f"   base replay: {why}")
     stale = []
     for name in sorted(n for n in names if n in ok and n not in bad):
         stages = ', '.join(sorted(ok[name]))
@@ -539,11 +623,13 @@ def main():
     tail = (f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else "") + (f"; {len(stale_rate)} STALE-RATE to remove" if stale_rate else "") + (f"; {len(stale_cost)} STALE-COST to lower" if stale_cost else "")
     new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS", "NEW-COST"))
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
+    on_main = sum(1 for k, _, _ in rows if k == "ON-BASE")
+    also = f", {on_main} ON-BASE" if on_main else ""
     if new:
-        print(f"== gate FAILED: {new} NEW, {old} KNOWN{tail}")
+        print(f"== gate FAILED: {new} NEW, {old} KNOWN{also}{tail}")
         return 1
-    if old:
-        print(f"== gate FAILED, KNOWN failures only ({old}, {KNOWN}): mergeable (notes/coordination.md, Known failures){tail}")
+    if old or on_main:
+        print(f"== gate FAILED, KNOWN failures only ({old}{also}, {KNOWN}): mergeable{'; each ON-BASE gets its known line' if on_main else ''} (notes/coordination.md, Known failures){tail}")
         return 3
     if failed:
         print(f"== gate FAILED: {failed} stages failed, the summary found no failure in them: read their output")

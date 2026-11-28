@@ -1,9 +1,12 @@
 #!/bin/sh
-# tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]...:
-# REV's test binary (CRATE's `it`, or `--test NAME`, dev profile; `--lib CRATE`: that crate's lib
-# unit tests, e.g. osis-engine's `rotation::tests`; `--bin NAME`: CRATE's binary NAME, e.g. a model's
-# search driver `-p roles-model --bin roles-model`), built in this worktree and copied to
-# OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
+# tools/bin-at REV OUT TARGET... [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]...:
+# REV's test or binary target, TARGET one of `-p CRATE [--test NAME | --bin NAME]` (CRATE's `it`,
+# or test NAME, dev profile; `--bin NAME`: CRATE's binary NAME, e.g. a model's search driver `-p
+# roles-model --bin roles-model`) or `--lib CRATE` (that crate's lib unit tests, e.g. osis-engine's
+# `rotation::tests`), built in this worktree and copied to OUT, for old-vs-new runs and
+# `tools/icount` comparisons (notes/build.md). Several TARGETs at one checkout: OUT ends in `/`, a
+# directory, each copied to OUT/CRATE/lib, OUT/CRATE/test-NAME or OUT/CRATE/bin-NAME (the gate's
+# base replays: tools/gate_base.py). To build a new test
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
 # PATH` (a file or directory, root-relative) replaces PATH with the starting commit's copy (files
 # the start lacks removed), `--take-at REV2 PATH` with REV2's (tools/src-at: a library's sources at
@@ -20,20 +23,24 @@
 # fail to link with undefined symbols: `cargo clean -p <crate>` for the crate the error names
 # (notes/build.md, Footguns; deleting incremental dirs leaves a fresh-looking rlib unrebuilt).
 set -eu
-usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]..."
+usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE)... [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
-profile="" crate="" test=it lib="" bin="" patches="" takes=""
+# each target a line `KIND CRATE NAME` (KIND test, lib or bin); a `-p` one is added once its
+# --test or --bin (if any) is read
+profile="" targets="" patches="" takes="" p=""
 nl='
 '
+flush() { [ -z "$p" ] || targets="$targets$p$nl"; p=""; }
 while [ $# -gt 0 ]; do
     case $1 in
         --release) profile=--release ;;
-        -p) crate=$2; shift ;;
-        --test) test=$2; shift ;;
-        --lib) crate=$2 lib=1; shift ;;
-        --bin) bin=$2; shift ;;
+        -p) flush; p="test $2 it"; shift ;;
+        # the target of the `-p` before it
+        --test|--bin) [ -n "$p" ] || { echo "bin-at: $1 follows its -p CRATE" >&2; exit 2; }
+            c=${p#test }; p="${1#--} ${c%% *} $2"; flush; shift ;;
+        --lib) flush; targets="${targets}lib $2 -$nl"; shift ;;
         --patch) [ -f "$2" ] || { echo "bin-at: no patch file $2" >&2; exit 2; }
             patches="$patches$(cd "$(dirname "$2")" && pwd)/$(basename "$2")$nl"; shift ;;
         # each take a line `REV2 PATH` (REV2 empty: the starting commit)
@@ -45,8 +52,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+flush
 # no default crate: the binary wanted is the one whose test is compared
-[ -n "$crate" ] || { echo "bin-at: name the crate (-p CRATE or --lib CRATE)" >&2; echo "$usage" >&2; exit 2; }
+[ -n "$targets" ] || { echo "bin-at: name the crate (-p CRATE or --lib CRATE)" >&2; echo "$usage" >&2; exit 2; }
+case $out in */) ;; *) [ "$(printf %s "$targets" | wc -l)" = 1 ] || { echo "bin-at: several targets copy into a directory: OUT ends in /" >&2; exit 2; } ;; esac
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "bin-at: main checkout; run it in a task worktree (wt claim)" >&2; exit 1; }
@@ -70,30 +79,45 @@ for t in $takes; do
 done
 unset IFS
 [ -n "$patches$takes" ] || dirty=
-if [ -n "$lib" ]; then
-    target="--lib" pick='.profile.test and (.target.kind | index("lib"))'
-elif [ -n "$bin" ]; then
-    target="--bin $bin" pick='.target.name == "'"$bin"'" and (.target.kind | index("bin"))'
-else
-    target="--test $test" pick='.target.name == "'"$test"'"'
-fi
+# Every executable this build compiled at REV is deleted from the target (also on failure): the
+# path is the one cargo builds the branch's binary at (the hash does not follow the sources), so a
+# direct run of it would run REV's code until the next build. Deleted, it cannot; the next build
+# compiles it again, as it would anyway (the checkout back touched what REV changed). Executables
+# cargo found fresh were built from these same sources and stay.
 json=$(mktemp)
-trap 'rm -f "$json"; restore' EXIT
-# shellcheck disable=SC2086
-if [ -n "$bin" ]; then
-    cargo build $profile -p "$crate" $target --message-format=json-render-diagnostics > "$json"
-else
-    cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics > "$json"
-fi
-exe=$(jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' "$json" | tail -n 1)
-[ -n "$exe" ] || { echo "bin-at: no executable for $crate $target" >&2; exit 1; }
-mkdir -p "$(dirname "$out")"
-cp "$exe" "$out"
-# Every executable this build compiled at REV is deleted from the target: the path is the one
-# cargo builds the branch's binary at (the hash does not follow the sources), so a direct run of
-# it would run REV's code until the next build. Deleted, it cannot; the next build compiles it
-# again, as it would anyway (the checkout back touched what REV changed). Executables cargo found
-# fresh were built from these same sources and stay.
-jq -r 'select(.reason == "compiler-artifact" and .executable != null and .fresh == false) | .executable' "$json" \
-    | while IFS= read -r x; do rm -f "$x"; done
+built() {
+    jq -r 'select(.reason == "compiler-artifact" and .executable != null and .fresh == false) | .executable' "$json" 2>/dev/null \
+        | while IFS= read -r x; do rm -f "$x"; done
+    rm -f "$json" "$json.one"
+    restore
+}
+trap built EXIT
+# one cargo per target, each one's output added to $json
+IFS=$nl
+for t in $targets; do
+    unset IFS
+    kind=${t%% *} rest=${t#* } crate=${rest%% *} name=${rest#* }
+    case $kind in
+        lib) target="--lib" pick='.profile.test and (.target.kind | index("lib"))' dest=lib ;;
+        bin) target="--bin $name" pick='.target.name == "'"$name"'" and (.target.kind | index("bin"))' dest=bin-$name ;;
+        *) target="--test $name" pick='.target.name == "'"$name"'"' dest=test-$name ;;
+    esac
+    one=$json.one
+    rc=0
+    # shellcheck disable=SC2086
+    if [ "$kind" = bin ]; then
+        cargo build $profile -p "$crate" $target --message-format=json-render-diagnostics > "$one" || rc=$?
+    else
+        cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics > "$one" || rc=$?
+    fi
+    cat "$one" >> "$json"
+    [ "$rc" = 0 ] || exit "$rc"
+    exe=$(jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' "$one" | tail -n 1)
+    [ -n "$exe" ] || { echo "bin-at: no executable for $crate $target" >&2; exit 1; }
+    case $out in */) to=$out$crate/$dest ;; *) to=$out ;; esac
+    mkdir -p "$(dirname "$to")"
+    cp "$exe" "$to"
+    IFS=$nl
+done
+unset IFS
 echo "bin-at: $(git log -1 --format='%h %s' "$sha")${patches:+ + patches}${takes:+ + taken files} -> $out" >&2
