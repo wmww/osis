@@ -373,6 +373,12 @@ impl RoleEpochs {
         total < MAX_READING && mine < MAX_READING_PER_AUTHOR
     }
 
+    /// Forgets epoch `e`: every secret of it and what this node knew of it (spec/permissions.md §3
+    /// Lost access: a node drops exactly the secrets no role of its covers).
+    pub fn forget(&mut self, e: &Epoch) {
+        self.map.remove(e);
+    }
+
     /// Drops `commit` as a source of reading-only secrets (it applied, or was dropped as bad
     /// input); a secret it was the last source of goes. Returns whether any source went.
     pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {

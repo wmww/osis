@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 2 of 100 seeds fail (15, 45); classes: a reader reading unlike the reference (15), a store left at an older step (45); a stub the model holds that the node does not, a thing the model keeps unread that the node does not hold (small size); entries waiting for a read secret, not parked (small size).
+> Summary: the sync differential at full size: 2 of 100 seeds fail (15, 45); classes: a reader reading unlike the reference (15, shrunk to 20 steps), a stub the node holds that the model does not (45); a stub the model holds that the node does not, a thing the model keeps unread that the node does not hold, entries waiting for a read secret, not parked (small size).
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -10,10 +10,10 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | A stub the model holds that the node does not | none at full size; small size `OSIS_SYNC_START=62853083561` |
 | A thing the model keeps unread that the node does not hold | none at full size; small size `OSIS_SYNC_START=109415603779` |
 | A reader reads unlike the reference | 15 ("node 2 reads thing 0 unlike the reference") |
-| A store kept unread at an older step than its readers' head | 45 |
+| A stub the node holds that the model does not | 45 ("node 2's sync set holds thing 2 as Some(Stub), the model None") |
 | Entries waiting for a read secret, not parked | none at full size; small size `OSIS_SYNC_START=940149075780` |
 
-None is shrunk on the current tree. Shrink from the seed with the property's shrinker: a replayed script does not shrink.
+Shrink from the seed with the property's shrinker: a replayed script does not shrink.
 
 ## A stub the model holds that the node does not
 Small size `OSIS_SYNC_START=62853083561` ("node 0's sync set holds thing 0 as None, the model Some(Stub)"). Not diagnosed.
@@ -22,10 +22,13 @@ Small size `OSIS_SYNC_START=62853083561` ("node 0's sync set holds thing 0 as No
 Small size `OSIS_SYNC_START=109415603779` ("node 0's sync set holds thing 0 as None, the model Some(Unread)"), failing on main before the record weaks reached the model too. Not diagnosed.
 
 ## A reader reads unlike the reference (15)
-Not diagnosed. An earlier shrink (a disk failure on a node paired with the reader) passes on the current tree: shrink again.
+Not diagnosed. Shrunk from seed 15 (60 to 20 steps, the candidate budget spent; the script passes in seed 0's world): node 1 mints thing 0, grants node 2's account read, writes v8 and unstrongs thing 0; node 2 strongs thing 0 only at the end, with no `Run` between, and reads nothing where the reference reads v8 (node 2 holds thing 0's role entries, no content). Look at whether node 1's release waits for node 2's account (spec/sync-set.md §3 To be waited for) and what the end check counts as lost there.
+```
+New(1), New(2), Write(2, 1), Write(2, 1), Pair(2), Give(1, 0, Holder::Node(2), Reads), Write(4, 0), Write(1, 0), Run, Give(2, 1, Holder::Public, Reads), Give(4, 1, Holder::Node(0), Syncs), Run, Write(2, 1), Write(1, 0), Strong(0, None, 1), Unstrong(1, None, 0), New(2), Disk(4, 1, Fail), Give(2, 1, Holder::Thing(2), Syncs), Strong(2, None, 0)
+```
 
-## A store at an older step (45)
-Node 1 keeps thing 0 unread at a step 3 deep while its readers' head is 5 deep, holding sync[4] by a claim (`node 1 keeps thing 0 unread at step .. (3 deep), its readers' head is 5 deep`). No reader registers the later steps there. The steps past node 1's key are registered only by a member at a store source (spec/sync-ids.md §6 Walk), and node 1 opens S only at a head it holds a key or claim for. A store asks no Head (spec/sync-opens.md §5): path marks tell only a tester that would.
+## A stub the node holds that the model does not (45)
+Not diagnosed. Thing 2 is read by the public; node 2 holds it as a stub. The model's weaks are only records' (`history::Model::of`): check first whether the node's stub comes from another weak in a current value (a card, an inbox setting) the model lacks, as the record weak was.
 
 ## Entries waiting for a read secret, not parked
 Small size `OSIS_SYNC_START=940149075780` ("node 1: entries waiting for a read secret, not parked"). Not shrunk.

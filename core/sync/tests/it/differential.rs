@@ -700,3 +700,21 @@ fn a_pass_begun_while_quiet_waits_one_out_is_waited_out_spec_sync_status_1() {
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(0), Pair(3), Partition(3, 1), Run, Give(3, 0, Holder::Node(1), Syncs), Inbox(4, Some(0)), Partition(3, 0), Run], String::new(), false);
 }
+
+// spec/permissions.md §3 (Lost access: a sync secret whose epoch covers every departure of its own
+// things stays, a claim's, after a grant it cannot read), spec/sync-ids.md §6 (Walk; Moving it):
+// node 0 grants node 1's account sync on thing 0, removes it, grants it read, removes it and grants
+// it sync again; node 1 then strongs thing 0. Node 1 read thing 0's older epochs, learns its
+// removal and takes the newest sync epoch from the last grant's claim: losing read it keeps that
+// epoch, so it keeps thing 0 unread at its readers' head, as the model says (failed while a drop
+// took every sync secret once one was uncovered: node 1 stayed at an older step, showing nothing,
+// so no reader registered the steps past it).
+#[test]
+fn a_removed_reader_given_sync_again_keeps_the_epoch_its_claim_gave_spec_permissions_3() {
+    use crate::harness::script::*;
+    let script = [New(0), Give(0, 0, Holder::Node(1), Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)];
+    let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+    let t = w.history.things[0].0;
+    let held: Vec<_> = w.engine(1).sync_set().unwrap().ids.values().filter(|(ts, _)| ts.contains(&t)).map(|(_, h)| *h).collect();
+    assert_eq!(held, vec![osis_engine::sync::Holding::Unread]);
+}

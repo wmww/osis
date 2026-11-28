@@ -218,6 +218,16 @@ fn over_held(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(false)
 }
 
+/// Whether sync epoch `k` of `a` covers every departure of `own` as this node knows it
+/// (spec/crypto.md §4 Covers): its keyset known here (established with its secret, or held) and
+/// none of them uncovered. An epoch known by nothing here covers nothing, though `uncovered`
+/// finds no departure it leaves out.
+fn covers_all(tx: &mut Tx<'_>, a: &Tid, k: &osis_crypto::Epoch, own: &[super::Departure]) -> Result<bool> {
+    let core = &*tx.core;
+    let known = core.epochs(a).is_some_and(|ep| ep.role(Role::Sync).is_established(k) && ep.role(Role::Sync).secret(k).is_some()) || core.keyset(a, Role::Sync, k).is_some();
+    Ok(known && !super::uncovered(tx, a, Role::Sync, k, own)?)
+}
+
 /// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
 /// walked with every grant's time ahead and every finalize undone (it counts as the `until` it
 /// finalizes, spec/permissions.md §2), a role giving what it holds is there. A removal saying
@@ -530,8 +540,22 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
         if tx.core.holds_sync_alone(a) {
             osis_base::costs::count("lost access: sync secrets alone dropped", 1);
         }
-        // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
-        let sync = tx.core.ix.secrets.get(a).filter(|_| holds_sync(tx.core, a)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
+        // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6
+        // Read and unread move, spec/sync-set.md §1); without sync, those whose epoch covers every
+        // departure of its own things stay (a claim's, after a grant it cannot read), as do all of a
+        // node holding none of its grants: judged by its steps (spec/permissions.md §3 Lost access)
+        let mut sync = tx.core.ix.secrets.get(a).map(|e| e.role(Role::Sync).clone());
+        if let Some(r) = sync.as_mut().filter(|_| !holds_sync(tx.core, a) && tx.core.timelines().get(a).is_some()) {
+            let own: Vec<super::Departure> = super::departures(tx, a)?.into_iter().filter(|d| was_ours(tx.core, &d.holder)).collect();
+            // a reading-only secret (a pending commit's box) goes: nothing is read from it yet
+            let held: Vec<(osis_crypto::Epoch, bool)> = r.epochs().filter(|(_, i)| i.secret.is_some()).map(|(k, i)| (*k, i.checked().is_some())).collect();
+            for (k, checked) in &held {
+                if !*checked || !covers_all(tx, a, k, &own)? {
+                    r.forget(k);
+                }
+            }
+        }
+        let sync = sync.filter(|r| r.holds_any());
         #[cfg(debug_assertions)]
         osis_base::trace::note(|| {
             let went = tx.core.ix.secrets.get(a).map_or("none".into(), |e| secrets_brief(e, sync.is_some()));
