@@ -199,3 +199,6 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 
 ## Un-ignoring
 `tools/ignores.py --run` runs each ignored test alone: a count-based osis-sync test can pass alone and fail in the full run, so confirm an un-ignore in the crate's full run before landing.
+
+## Long by-hand runs
+Run a long by-hand job (a shrink, a sweep) from a copied test binary, as `tools/mutate.py` does, not through `cargo test`: an edit to the tree mid-run rebuilds under it and the run is lost.
