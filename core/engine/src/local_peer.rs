@@ -778,7 +778,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
         signals.set(*inbox, &ct::RETENTION, &setting)?;
         // A's card on the profile, acting as A; its keys filled in once A's `keys.0` is written
         // (`Engine::refresh_cards`)
-        let card = crate::flows::cards::put(*profile, *a, &ct::Card::default())?;
+        let card = crate::flows::cards::put(*profile, *a)?;
         // the node root's in commits of their own: it is local, under no sync ID
         let mut hold = Mutation::new();
         hold.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(osis_base::Value::Strong(*a)) })?;
@@ -1248,7 +1248,7 @@ impl LocalPeer {
         m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
         // its card, its keys filled in once it has them (`Engine::take_cards`)
-        let card = crate::flows::cards::put(t, t, &osis_schema::core_types::Card::default()).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
+        let card = crate::flows::cards::put(t, t).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
         self.peers[i].commit(card).unwrap_or_else(|e| panic!("card of {t:?}: {e}"));
         // keysets written before the card carry no KEM key it gives (spec/crypto.md §3): KEM key
         // due rotates them, here at once rather than at a pass's end

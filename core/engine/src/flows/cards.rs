@@ -1,23 +1,28 @@
 //! Cards (spec/sync-inbox.md §1 Card, spec/data-model.md §9): A's card on any thing C is the
-//! value of A's card aspect on C (`card_ak`), written whole along a path through A: A's and A's
-//! inbox's current `keys.0` commits in the holder keys form. A's inbox is a thing of its own: the
-//! one the `inbox` field of A's `keys.0` names (an admin's write, `Engine::set_inbox`), never A;
-//! with none named A has no inbox and its card carries A's keys alone. A node reading C takes
-//! those commits as holder keys (`Engine::take_cards`); at a pass's end a node that may write C
-//! along a path through A rewrites the card when it is stale (`stale`: per field, a current
-//! commit here newer than every signature-verified one the card carries). A card aspect is retained, snapshotted and covered as any content aspect: its
-//! snapshots, as its writes, state a path through A.
+//! value of A's card aspect on C (`card_ak`), written along a path through A: an entry per node,
+//! keyed by its node thing, holding A's and A's inbox's holder keys as that node holds them. A's
+//! inbox is a thing of its own: the one the `inbox` field of A's `keys.0` names (an admin's write,
+//! `Engine::set_inbox`), never A; with none named A has no inbox and an entry carries A's keys
+//! alone. A node reading C takes the commits of every entry together as holder keys
+//! (`Engine::take_cards`); at a pass's end a node that may write C along a path through A keeps its
+//! own entry (`refresh_card`: written where no entry carries what it holds, removed where another
+//! does and its own falls short). A card aspect is retained, snapshotted and covered as any
+//! content aspect: its snapshots, as its writes, state a path through A.
 //!
-//! Invariant: a card counts only written along a path through A (`apply::validity::note_cards`),
-//! and what it carries counts only as judged here (`take_holder_keys`: what is on A's or the
-//! inbox's authority chain, each commit judged valid). Who writes each input: a card, a writer of
-//! C along a path through A (a writer of A: it reads A anyway); its commits, A's and the inbox's
-//! admins (judged), so where grants to A go is chosen by A's admins alone (the inbox field needs
-//! admin, `validity::rotation_required`); C's other writers may remove a card, never put one. A
-//! removed writer of A writes no valid card once its removal applies; a stranger holding an old
-//! card seals to A's keysets as of that card until a newer one reaches it (spec/sync-inbox.md §2:
-//! what it seals is judged by A's readers). A card on a thing no node may write along a path
-//! through A any longer stays as written.
+//! Invariant: a card counts only written along a path through A, each entry by the node it names
+//! (`apply::validity::note_cards`), and what it carries counts only as judged here
+//! (`take_holder_keys`: what is on A's or the inbox's authority chain, each commit judged valid).
+//! Who writes each input: an entry, its node, a writer of C along a path through A (a writer of
+//! A: it reads A anyway), so no node rewrites another's and the sides of a fork keep an entry each,
+//! each side's readers taking its own side's keys from the whole; its commits, A's and the inbox's
+//! admins and writers (judged), so where grants to A go is chosen by A's admins alone (the inbox
+//! field needs admin, `validity::rotation_required`), and an honest entry's keysets carry the
+//! demotions of A's admins and writers (`holder_keys`), voiding a demoted party's later commits
+//! another entry carries. C's other writers may remove a card, never put one. A removed writer of
+//! A writes no valid entry once its removal applies; a stranger holding an old card seals to A's
+//! keysets as of that card until a newer one reaches it (spec/sync-inbox.md §2: what it seals is
+//! judged by A's readers). A card on a thing no node may write along a path through A any longer
+//! stays as written.
 
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
@@ -87,14 +92,36 @@ pub(crate) fn may_write_through(core: &crate::engine::Core, a: &Tid, host: &Tid)
     crate::engine::write::path_with(core, me, none, a, Need::Role(Role::Write), ts).is_some() && crate::engine::write::path_with(core, *a, none, host, Need::Role(Role::Write), ts).is_some()
 }
 
-/// Writes `card` as `a`'s on `host` into a mutation of its own, acting as `a`, so its stated
-/// path runs through `a` (spec/permissions.md §5.2): replaced whole, so no replaced list leaves
-/// its elements behind in the state.
-pub fn put(host: Tid, a: Tid, card: &ct::Card) -> Result<Mutation> {
+/// Puts `a`'s card on `host`, with no entry yet (its nodes write theirs, `refresh_card`), into a
+/// mutation of its own, acting as `a`, so its stated path runs through `a` (spec/permissions.md
+/// §5.2).
+pub fn put(host: Tid, a: Tid) -> Result<Mutation> {
     let mut m = Mutation::new();
     m.act_as(a);
-    m.op(host, &card_ak(&a), PathOp { path: vec![], op: Op::Replace(card.to_value()) })?;
+    m.op(host, &card_ak(&a), PathOp { path: vec![], op: Op::Replace(ct::Card::default().to_value()) })?;
     Ok(m)
+}
+
+/// Writes `entry` as node `node`'s in `a`'s card on `host` into a mutation of its own, acting as
+/// `a`: replaced whole, so no replaced list leaves its elements behind in the state. Valid only
+/// signed as `node` (spec/permissions.md §5.2).
+pub fn put_entry(host: Tid, a: Tid, node: Tid, entry: &ct::CardEntry) -> Result<Mutation> {
+    let mut m = Mutation::new();
+    m.act_as(a);
+    m.op(host, &card_ak(&a), PathOp { path: vec![PathSeg::Key(Value::Weak(node))], op: Op::Replace(entry.to_value()) })?;
+    Ok(m)
+}
+
+/// What a party holding `card` takes as holder keys (spec/sync-inbox.md §1 Card): the commits and
+/// records of every entry together, an entry not in the holder keys form counting for nothing.
+pub fn holder_keys_of(card: &ct::Card) -> osis_blob::Certificates {
+    let mut out = osis_blob::Certificates::default();
+    let mut recs = BTreeSet::new();
+    for e in card.values().filter_map(|e| certificates(&e.keys, &e.records)) {
+        out.commits.extend(e.commits);
+        out.records.extend(e.records.into_iter().filter(|r| recs.insert(r.tid())));
+    }
+    out
 }
 
 /// The `keys.0` write naming `inbox` `a`'s inbox (an admin's, spec/permissions.md §3).
@@ -136,81 +163,18 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// A card's `keys` and `records` (spec/wire.md §9 Holder keys).
-type KeyLists = (Vec<Vec<u8>>, Vec<Vec<u8>>);
-
-/// The commits a card carries, as holder keys (spec/wire.md §9).
+/// The commits a card entry carries, as holder keys (spec/wire.md §9).
 fn certificates(keys: &[Vec<u8>], records: &[Vec<u8>]) -> Option<osis_blob::Certificates> {
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let values = |l: &[Vec<u8>]| l.iter().map(|b| osis_base::decode(b, &limits).ok()).collect::<Option<Vec<Value>>>();
     osis_blob::Certificates::from_values(&Value::List(values(keys)?), &Value::List(values(records)?), usize::MAX).ok()
 }
 
-/// Whether `a`'s card (`keys`, with its `records`) is stale here (spec/sync-inbox.md §1 Card):
-/// per `keys.0` field of `a` or of its inbox `inbox`, this node's current commit for it is newer
-/// than every signature-verified card commit writing it (a current commit whose `keys.0` part
-/// dropped as covered writes nothing here: the covering snapshot, current too, holds its write).
-/// An unverified commit counts for nothing.
-/// A verified one this node holds valid writes no field newer than its current commit (that
-/// would be current here); one it does not (the other side of a fork, one waiting) counts as
-/// writing every field of its things whose role its signer ever held here
-/// (`validity::signer_role_ever`), its fields unread: so a current commit is stale against it
-/// where it needs more than that role (`rotation_role`). So a rewrite raises some field's newest,
-/// and no side's own verdict on the other's commits enters: the sides of a fork leave a card the
-/// other wrote newer, never rewriting each other's.
-///
-/// Invariant: who writes each input. The card, any writer of `a` (a writer's card may omit or
-/// add commits); its commits, their signers (verified here, `apply::signed_by_author`); the
-/// current commits and every signer's roles, this node's own judged state. A writer omitting an
-/// admin's later commit leaves that field's current commit newer than the card's (stale); one
-/// adding a commit it did not sign moves nothing; one adding its own, stamped however far
-/// ahead, counts only for the fields a writer may write (what it could write validly anyway), so
-/// holds back none only an admin may.
-fn stale(tx: &mut Tx<'_>, a: &Tid, inbox: Option<Tid>, keys: &[Vec<u8>], records: &[Vec<u8>]) -> Result<bool> {
-    let k = certificates(keys, records).unwrap_or_default();
-    let recs: BTreeMap<Tid, &osis_base::CreationRecord> = k.records.iter().map(|r| (r.tid(), r)).collect();
-    let mut carried: BTreeSet<osis_base::CommitId> = BTreeSet::new();
-    // per thing, the newest `ts` of a commit not held valid here, by its signer's role
-    let mut unknown: BTreeMap<Tid, Vec<(Role, osis_base::Ts)>> = BTreeMap::new();
-    for v in &k.commits {
-        let Ok(b) = osis_commit::CommitBlob::decode(&osis_base::encode(v)) else { continue };
-        let id = b.id();
-        let record = tx.core.created(&b.header.signer).or(recs.get(&b.header.signer).copied());
-        if crate::apply::signed_by_author(tx.core, &b, &id, record, None) != Some(true) {
-            continue;
-        }
-        carried.insert(id);
-        for t in [Some(*a), inbox].into_iter().flatten() {
-            let parts: Vec<usize> = b.header.aspect_parts(&t, "keys.0").collect();
-            if b.parts.iter().any(|p| parts.contains(&p.ai))
-                && !crate::sync_ids::judged_valid(tx.core, &id, &parts)
-                && let Some(r) = crate::apply::validity::signer_role_ever(tx.core, &b.header, &t)
-            {
-                unknown.entry(t).or_default().push((r, b.header.ts));
-            }
-        }
-    }
-    for t in [Some(*a), inbox].into_iter().flatten() {
-        for c in crate::sync_ids::current_keys_in(tx, &t)? {
-            let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-            // a part dropped as covered: its write is the covering snapshot's, itself current
-            let held: Vec<usize> = m.header.aspect_parts(&t, "keys.0").filter(|ai| !m.body_gone(*ai)).collect();
-            if held.is_empty() {
-                continue;
-            }
-            let ts = m.header.ts;
-            let need = if m.header.kind.is_compaction() {
-                Role::Admin
-            } else {
-                held.iter().filter_map(|ai| tx.core.ix.rotation_role.get(&(c, *ai)).copied()).max().unwrap_or(Role::Write)
-            };
-            let newer = unknown.get(&t).into_iter().flatten().filter(|(r, _)| *r >= need).all(|(_, u)| ts > *u);
-            if !carried.contains(&c) && newer {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+/// Whether `entry` carries every commit and record of `mine` (byte for byte): an entry that does
+/// gives a reader everything this node would.
+fn carries(entry: &ct::CardEntry, mine: &ct::CardEntry) -> bool {
+    let (keys, records): (BTreeSet<&Vec<u8>>, BTreeSet<&Vec<u8>>) = (entry.keys.iter().collect(), entry.records.iter().collect());
+    mine.keys.iter().all(|k| keys.contains(k)) && mine.records.iter().all(|r| records.contains(r))
 }
 
 impl Engine {
@@ -225,13 +189,12 @@ impl Engine {
         }
         let cards = self.cards_naming(&due)?;
         for ((_, a), c) in &cards {
-            if let Some(k) = certificates(&c.keys, &c.records) {
-                self.take_holder_keys(a, &k, None)?;
-                // A's inbox as A's keys just taken name it
-                let a = *a;
-                if let Some(inbox) = self.read(|tx| inbox_in(tx, &a))? {
-                    self.take_holder_keys(&inbox, &k, None)?;
-                }
+            let k = holder_keys_of(c);
+            self.take_holder_keys(a, &k, None)?;
+            // A's inbox as A's keys just taken name it
+            let a = *a;
+            if let Some(inbox) = self.read(|tx| inbox_in(tx, &a))? {
+                self.take_holder_keys(&inbox, &k, None)?;
             }
         }
         self.run(|tx| {
@@ -262,11 +225,9 @@ impl Engine {
         Ok(cards)
     }
 
-    /// At a pass's end, once this node holds what the pass brought (`settle_needs`): rewrites
-    /// the cards due a refresh (`Indexes::cards_stale`) that are stale and this node may
-    /// (spec/sync-inbox.md §1 Card): where it may write the card's host along a path through A
-    /// and the card is stale (`stale`), the card written again with the holder keys of A and that
-    /// inbox held here. Whether any card moved.
+    /// At a pass's end, once this node holds what the pass brought (`settle_needs`): keeps this
+    /// node's entry in the cards due a look (`Indexes::cards_stale`, `refresh_card`). Whether any
+    /// entry moved.
     pub fn refresh_cards(&mut self) -> Result<bool> {
         let mut moved = false;
         let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::refresh_cards (rewritten cards due again)");
@@ -291,28 +252,44 @@ impl Engine {
         }
     }
 
-    /// Writes `a`'s card on `host` (`card`, as held) again where it is stale and this node may
-    /// (`take_cards`): whether it did. Stale by the current commits here (`stale`), which a
-    /// rewrite carries (`card_keys`, signed by their signers), so a rewrite is not stale again.
+    /// Keeps this node's entry in `a`'s card on `host` (`card`, as held; spec/sync-inbox.md §1
+    /// Keeping an entry), where this node may write `host` along a path through `a`: written with
+    /// the holder keys of `a` and its inbox held here where no entry carries them all, removed
+    /// where its own falls short and another carries them. Whether it moved. Each node writes its
+    /// own entry alone, so what it does rests on what it holds and never undoes another's.
     fn refresh_card(&mut self, host: &Tid, a: &Tid, card: &ct::Card) -> Result<bool> {
         if !self.core.ix.closure.holds(host) {
             return Ok(false);
         }
         let (a, host) = (*a, *host);
-        let inbox = self.read(|tx| inbox_in(tx, &a))?;
         if !may_write_through(&self.core, &a, &host) {
             return Ok(false);
         }
-        if !self.read(|tx| stale(tx, &a, inbox, &card.keys, &card.records))? {
+        let inbox = self.read(|tx| inbox_in(tx, &a))?;
+        let Some(mine) = self.card_keys(&a, inbox)? else { return Ok(false) };
+        let me = self.core.tid();
+        let own = card.get(&Weak(me));
+        if own.is_some_and(|e| carries(e, &mine)) {
             return Ok(false);
         }
-        self.write_card(host, a)
+        let other = card.iter().any(|(n, e)| n.0 != me && carries(e, &mine));
+        let m = match (other, own) {
+            (true, None) => return Ok(false),
+            (true, Some(_)) => {
+                let mut m = Mutation::new();
+                m.act_as(a);
+                m.op(host, &card_ak(&a), PathOp { path: vec![], op: Op::Remove(Value::Weak(me)) })?;
+                m
+            }
+            (false, _) => put_entry(host, a, me, &mine)?,
+        };
+        self.run(|tx| Engine::commit_tx(tx, m).map(|_| true))
     }
 
-    /// What a card of `a` with inbox `inbox` written here carries (spec/wire.md §9 Holder keys):
-    /// the holder keys of `a` and of `inbox` held here, commits distinct, records ascending by tid
-    /// and distinct. `None` with no `keys.0` of `a` held.
-    fn card_keys(&mut self, a: &Tid, inbox: Option<Tid>) -> Result<Option<KeyLists>> {
+    /// What an entry of `a`'s card with inbox `inbox` written here carries (spec/wire.md §9
+    /// Holder keys): the holder keys of `a` and of `inbox` held here, commits distinct, records
+    /// ascending by tid and distinct. `None` with no `keys.0` of `a` held.
+    fn card_keys(&mut self, a: &Tid, inbox: Option<Tid>) -> Result<Option<ct::CardEntry>> {
         let mut keys = self.holder_keys(a)?;
         if keys.commits.is_empty() {
             return Ok(None);
@@ -326,24 +303,26 @@ impl Engine {
         let commits: Vec<Vec<u8>> = keys.commits.iter().map(osis_base::encode).filter(|b| seen.insert(b.clone())).collect();
         let recs: BTreeMap<Tid, &osis_base::CreationRecord> = keys.records.iter().map(|r| (r.tid(), r)).collect();
         let records: Vec<Vec<u8>> = recs.values().map(|r| osis_base::encode(&r.to_value())).collect();
-        Ok(Some((commits, records)))
+        Ok(Some(ct::CardEntry { keys: commits, records }))
     }
 
-    /// Writes `a`'s card on `host` as of what this node holds (spec/sync-inbox.md §1 Card): the
-    /// holder keys of `a` and of its inbox held here. Acting as `a`: refused where this node may
-    /// not write `host` along a path through `a`. `a` and its inbox, where dependent and this node
-    /// an admin of each, are made independent first (spec/permissions.md §3: a card carries keys
-    /// of their own), `a`'s keysets carrying KEM keys for every role as its card stands. Whether it
-    /// wrote (nothing to carry: no `keys.0` of `a` held).
+    /// Writes this node's entry in `a`'s card on `host` as of what it holds (spec/sync-inbox.md
+    /// §1 Card): the holder keys of `a` and of its inbox held here, putting the card where none
+    /// stands. Acting as `a`: refused where this node may not write `host` along a path through
+    /// `a`. `a` and its inbox, where dependent and this node an admin of each, are made
+    /// independent first (spec/permissions.md §3: a card carries keys of their own), `a`'s
+    /// keysets carrying KEM keys for every role as its card stands. Whether it wrote (nothing to
+    /// carry: no `keys.0` of `a` held).
     pub fn write_card(&mut self, host: Tid, a: Tid) -> Result<bool> {
         self.publish(a, true)?;
         let inbox = self.read(|tx| inbox_in(tx, &a))?;
         if let Some(i) = inbox {
             self.publish(i, false)?;
         }
-        let Some((keys, records)) = self.card_keys(&a, inbox)? else { return Ok(false) };
+        let Some(entry) = self.card_keys(&a, inbox)? else { return Ok(false) };
+        let me = self.core.tid();
         self.run(|tx| {
-            Engine::commit_tx(tx, put(host, a, &ct::Card { keys, records })?)?;
+            Engine::commit_tx(tx, put_entry(host, a, me, &entry)?)?;
             Ok(true)
         })
     }
@@ -365,9 +344,9 @@ impl Engine {
     /// Names `inbox`, a thing other than `a` (else `Misuse`), `a`'s inbox, where grants to `a`
     /// from outside go (spec/sync-inbox.md §1): the `inbox` field of `a`'s `keys.0`, which needs
     /// admin on `a` (spec/permissions.md §3), so refused unless this node is one. `a` and the inbox are made
-    /// independent first where this node is an admin of each (a card carries their keys). The
-    /// cards of `a` held here that this node may write are rewritten with it at once; the others
-    /// by the nodes that may, as they take it (`refresh_cards`).
+    /// independent first where this node is an admin of each (a card carries their keys). This
+    /// node's entries in the cards of `a` held here that it may write are written with it at once;
+    /// the others by the nodes that may, as they take it (`refresh_cards`).
     pub fn set_inbox(&mut self, a: Tid, inbox: Tid) -> Result<()> {
         if inbox == a {
             return Err(crate::Error::Misuse("a thing's inbox is a thing of its own"));

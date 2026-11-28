@@ -474,7 +474,7 @@ impl Engine {
     /// `roles.0` parts (`c`'s own among them where a keyset says `c` demotes) with their
     /// evidence, a cause's `keys.0` parts beside them (a rotation commit making a box stale),
     /// added to `out`: a receiver holds those keysets only with them.
-    fn carried_demotions(&mut self, ev: &Ev, t: &Tid, c: &CommitId, out: &mut Certs) {
+    pub(crate) fn carried_demotions(&mut self, ev: &Ev, t: &Tid, c: &CommitId, out: &mut Certs) {
         let mut carried: BTreeSet<CommitId> = BTreeSet::new();
         let mut causes: BTreeSet<CommitId> = BTreeSet::new();
         for (r, e, x) in self.core.keysets_noted(t) {
@@ -530,8 +530,6 @@ impl Engine {
 
 }
 
-/// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge
-/// write it makes is applied.
 /// `Engine::current_keys` in `tx`.
 pub(crate) fn current_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<BTreeSet<CommitId>> {
     let ak = Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
@@ -558,6 +556,8 @@ pub(crate) fn current_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
     Ok(out)
 }
 
+/// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge
+/// write it makes is applied.
 pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[usize]) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     if core.ix.pending.contains_key(c) || parts.iter().any(|ai| !m.valid_at(*ai)) {

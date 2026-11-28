@@ -26,6 +26,7 @@
 //! the chain gains.
 
 use crate::apply::carriers::Carrier;
+use crate::apply::Ingested;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::sync_ids::Certs;
@@ -175,9 +176,11 @@ impl Engine {
         holders.into_iter().find(|h| self.core.role_now(&me, h).is_some()).unwrap_or(me)
     }
 
-    /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current
+    /// `holder`'s holder keys (spec/wire.md §9; a stranded report's, a card entry's): its current
     /// `keys.0` commits each cut to keys on it (spec/permissions.md §4 Copies), with their
-    /// evidence (cut to evidence) and its records.
+    /// evidence (cut to evidence), the demotions their keysets carry (spec/crypto.md §4 Carried
+    /// demotions: a receiver holds those keysets only with them, and so the demoted party's later
+    /// commits are invalid there) and its records.
     pub fn holder_keys(&mut self, holder: &Tid) -> Result<Certificates> {
         let ev = self.evidence_now()?;
         let mut evidence = Certs::default();
@@ -193,6 +196,7 @@ impl Engine {
             own.commits.entry(k).or_default().extend(h.aspect_parts(holder, "sync.0"));
             evidence.records.insert(h.signer);
             self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);
+            self.carried_demotions(&ev, holder, &k, &mut evidence);
         }
         evidence.records.insert(*holder);
         self.close_records(&ev, &mut evidence);
@@ -259,10 +263,9 @@ impl Engine {
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
     /// the holder's `keys.0` commits carried (their cards), `sync.0` deltas on chain things (the
     /// steps placing the keys those commits list), `roles.0` deltas on chain things; each
-    /// commit, projected to those deltas, taken only where its signer ever held here the role
-    /// each `keys.0` delta needs (`validity::signer_role_ever`, retried as what is taken extends
-    /// the roles) and kept only if judged valid with every edge write it makes applied
-    /// (`ingest_valid`), carried by `from` while it pends. Everything else is ignored.
+    /// commit, projected to those deltas, kept only if judged valid with every edge write it makes
+    /// applied (`ingest_valid`), carried by `from` while it pends, one not kept judged again while
+    /// others are taken (in whatever order they come). Everything else is ignored.
     /// Returns the commits taken.
     pub fn take_holder_keys(&mut self, holder: &Tid, keys: &Certificates, from: Option<Carrier>) -> Result<usize> {
         let blobs: Vec<CommitBlob> = keys.commits.iter().filter_map(|v| CommitBlob::decode(&osis_base::encode(v)).ok()).collect();
@@ -303,28 +306,26 @@ impl Engine {
                 }
                 let mut p = b.clone();
                 p.parts.retain(|x| on(x.ai));
-                // a `keys.0` delta counts only where its signer ever held here the role it needs
-                // (spec/sync-inbox.md §1 Card): one it never did waits for what is taken next
-                let id = b.id();
-                let counts = |x: &osis_commit::Part| {
-                    let Some(a) = b.header.aspects.get(x.ai).filter(|a| a.ak.as_str() == "keys.0") else { return true };
-                    crate::apply::validity::signer_role_ever(&self.core, &b.header, &a.tid).is_some_and(|r| r >= crate::apply::validity::keys_part_role(&self.core, &b.header, &id, x))
-                };
-                if !p.parts.iter().all(counts) {
-                    continue;
-                }
-                done.insert(i);
                 osis_base::costs::count("stranded: holder keys judged", 1);
                 // a commit that is bad input (a bad signature, a malformed part) counts for
-                // nothing: the rest are taken all the same
-                match self.ingest_valid(&p.encode(), from) {
-                    Ok(Some(_)) => {
-                        taken += 1;
-                        moved = true;
+                // nothing: the rest are taken all the same; one not kept (its evidence later in
+                // the list) is judged again once something else is taken, so what is taken rests
+                // on the commits alone, never their order
+                let kept = match self.ingest_valid(&p.encode(), from) {
+                    // pending, it is kept only carried by `from`
+                    Ok(Some(Ingested::Pending(..))) => from.is_some(),
+                    Ok(Some(Ingested::Applied(_) | Ingested::Duplicate(_))) => true,
+                    Ok(_) => false,
+                    Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::BadInput => {
+                        done.insert(i);
+                        false
                     }
-                    Ok(None) => {}
-                    Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::BadInput => {}
                     Err(e) => return Err(e),
+                };
+                if kept {
+                    done.insert(i);
+                    taken += 1;
+                    moved = true;
                 }
             }
             if !moved {

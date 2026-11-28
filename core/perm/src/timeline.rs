@@ -750,15 +750,6 @@ impl<S: Store> Timeline<S> {
         View::new(&self.records, &ever, Some(Ts::ZERO)).roles_from(node)
     }
 
-    /// The best role `key` ever held on `thing` over every grant the walk applied, the ended ones
-    /// included (as `roles_ever`): admin where it is the key of `thing`'s record.
-    pub fn key_role_ever(&self, key: &SignKey, thing: &Tid) -> Option<Role> {
-        if self.records.holder(thing) == Some(Holder::Key(*key)) {
-            return Some(Role::Admin);
-        }
-        self.paths.history(&Holder::Key(*key), thing).into_iter().filter_map(|(_, v)| v.filter(|e| !e.says_retain())).map(|e| e.role).max()
-    }
-
     /// `roles_of` over the edges not in `skip`, each named (target, holder).
     pub fn roles_without(&self, node: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);

@@ -709,36 +709,6 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     Some(top)
 }
 
-/// The role `keys.0` part `p` of commit `h` (`id`) needs (`rotation_required`; a compaction's,
-/// admin), judged from its bytes alone: admin where it does not decode here.
-pub(crate) fn keys_part_role(core: &Core, h: &Header, id: &CommitId, p: &osis_commit::Part) -> Role {
-    if h.kind.is_compaction() {
-        return crate::engine::write::snapshot_role("keys.0");
-    }
-    let Some(a) = h.aspects.get(p.ai).filter(|a| a.ak.as_str() == "keys.0") else { return Role::Admin };
-    let Some(dedup) = core.dedup(&a.tid) else { return Role::Admin };
-    let mut interner = osis_crdt::Interner::new();
-    osis_commit::verify_part(h, id, p, &dedup, &mut interner, None).ok().and_then(|d| rotation_required("keys.0", d.fragment())).unwrap_or(Role::Admin)
-}
-
-/// The best role commit header `h`'s signing key ever held on `t` here (spec/sync-inbox.md §1
-/// Card): the least of its key's on its signer (a first form's, the signer's record key: admin)
-/// and the signer's on `t`, each over every edge write applied here, ended ones included
-/// (`Timeline::roles_ever`). `None`: no role.
-///
-/// Invariant: who writes each input. The header, the commit's signer (its signature verified by
-/// the caller); the roles, this node's own judged state, so a signer gains here no role it never
-/// held by what it signs.
-pub(crate) fn signer_role_ever(core: &Core, h: &Header, t: &Tid) -> Option<Role> {
-    let tl = core.timelines().get(&h.signer)?;
-    let key = match h.key {
-        None => Role::Admin,
-        Some(k) => tl.key_role_ever(&k, &h.signer)?,
-    };
-    let on = if h.signer == *t { Some(Role::Admin) } else { tl.roles_ever(&h.signer).get(t).copied() };
-    on.map(|r| r.min(key))
-}
-
 /// The role a `secrets.0` delta needs (spec/permissions.md §3, spec/crypto.md §4): at least
 /// write, and for each entry record (a put, a write into an entry, a removal) the role its key
 /// names; a record acts only on the entry of its key (spec/crdt.md §5.6), so this is judged
@@ -831,8 +801,9 @@ pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId
         let Some((a, of)) = h.aspects.get(*ai).and_then(|a| Some((a, ct::card_of(a.ak.as_str())?))) else { continue };
         let Some(members) = chain(h, view, &a.tid) else { continue };
         let f = d.fragment();
-        // any write but its own reset (`Fragment::written`) writes a card
-        let off = f.written().is_some() && of != a.tid && !members.contains(&of);
+        // any write but its own reset (`Fragment::written`) writes a card; a delta only its
+        // signer's own entry (a snapshot carries others' as copies)
+        let off = f.written().is_some() && (of != a.tid && !members.contains(&of) || !h.kind.is_compaction() && !own_entries(f, &h.signer));
         let was = core.ix.overreach.contains(&(*id, *ai));
         if off != was {
             match off {
@@ -842,6 +813,21 @@ pub(crate) fn note_cards(core: &mut Core, h: &Header, view: &View, id: &CommitId
             core.stale_commits.insert(*id);
         }
     }
+}
+
+/// Whether card delta `f` writes into no entry but the one keyed by `signer` (spec/permissions.md
+/// §5.2): no whole value written as a register (which would read as entries of its choosing),
+/// and each map entry it writes into keyed by `signer`; removing an entry writes nothing into it.
+///
+/// Invariant: who writes each input. An entry is its node's alone: a writer of the card's host
+/// along a path through its thing writes its own entry, so no node rewrites another's (the sides
+/// of a fork keep an entry each, spec/sync-inbox.md §1 Card).
+fn own_entries(f: &Fragment, signer: &Tid) -> bool {
+    if f.slot(osis_crdt::Encoding::Register).is_some() {
+        return false;
+    }
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) else { return true };
+    m.entries().all(|(_, _, k, e)| e.is_none() || k.is_some_and(|k| *k == Value::Weak(*signer)))
 }
 
 /// Whether a `secrets.0` delta writes only the boxes of the holders `granted` puts on `actor`, at

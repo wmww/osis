@@ -32,11 +32,7 @@ fn cards_current(e: &mut Engine, a: &Tid) -> bool {
     let mut keys = e.current_keys(a).unwrap();
     keys.extend(e.current_keys(&inbox).unwrap());
     let cards = e.cards_of(a).unwrap();
-    !cards.is_empty()
-        && cards.iter().all(|(_, card)| {
-            let carried: std::collections::BTreeSet<_> = card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect();
-            keys.is_subset(&carried)
-        })
+    !cards.is_empty() && cards.iter().all(|(_, card)| keys.is_subset(&carried(card)))
 }
 
 /// Write on `accs[0]` for `accs[1]`, `accs[0]` held at node 1.
@@ -64,6 +60,7 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     let mut m = Mutation::new();
     m.act_as(acc.thing);
     m.op(acc.profile, &ct::card_ak(&b), PathOp { path: vec![], op: Op::Set(ct::Card::default().to_value()) }).unwrap();
+    let node = lp.peers[0].engine.tid();
     assert!(lp.peers[0].commit(m.clone()).is_err(), "refused writer-side");
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -72,10 +69,11 @@ fn a_card_written_off_its_path_is_invalid_spec_permissions_5_2() {
     assert!(e.cards_of(&b).unwrap().is_empty(), "off its path: no card of B");
     let a = e.cards_of(&acc.thing).unwrap();
     assert_eq!(a.len(), 1, "A's card on the profile");
-    assert!(!a[0].1.keys.is_empty(), "carrying A's keys");
+    let entry = a[0].1.get(&osis_base::Weak(node)).expect("the node's entry");
+    assert!(!entry.keys.is_empty(), "carrying A's keys");
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let values = |l: &[Vec<u8>]| Value::List(l.iter().map(|b| osis_base::decode(b, &limits).unwrap()).collect());
-    assert!(osis_blob::Certificates::from_values(&values(&a[0].1.keys), &values(&a[0].1.records), usize::MAX).is_ok(), "in the holder keys form");
+    assert!(osis_blob::Certificates::from_values(&values(&entry.keys), &values(&entry.records), usize::MAX).is_ok(), "in the holder keys form");
     assert_eq!(e.inbox_of(&acc.thing).unwrap(), Some(acc.inbox));
 }
 
@@ -251,9 +249,9 @@ fn holder_keys_rebuild_the_whole_keys_state_after_a_rotation_spec_permissions_4(
     assert_eq!(q.engine.get_typed(&acc.inbox, &ct::KEYS).unwrap(), Some(want), "the inbox's keys.0 rebuilt whole from its holder keys");
 }
 
-/// A card carrying `certs` (spec/wire.md §9 Holder keys), as `card_keys` writes one.
-fn card_of(certs: &[osis_blob::Certificates]) -> ct::Card {
-    let mut card = ct::Card::default();
+/// A card entry carrying `certs` (spec/wire.md §9 Holder keys), as `card_keys` writes one.
+fn card_of(certs: &[osis_blob::Certificates]) -> ct::CardEntry {
+    let mut card = ct::CardEntry::default();
     let mut recs = std::collections::BTreeMap::new();
     for c in certs {
         card.keys.extend(c.commits.iter().map(osis_base::encode));
@@ -263,21 +261,20 @@ fn card_of(certs: &[osis_blob::Certificates]) -> ct::Card {
     card
 }
 
-/// What a party holding `card` takes as `a`'s holder keys (`take_cards`).
-fn certs_of(card: &ct::Card) -> osis_blob::Certificates {
-    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
-    let values = |l: &[Vec<u8>]| Value::List(l.iter().map(|b| osis_base::decode(b, &limits).unwrap()).collect());
-    osis_blob::Certificates::from_values(&values(&card.keys), &values(&card.records), usize::MAX).unwrap()
+/// What a party holding only the entry `card` takes as `a`'s holder keys.
+fn certs_of(card: &ct::CardEntry) -> osis_blob::Certificates {
+    cards::holder_keys_of(&ct::Card::from([(osis_base::Weak(Tid::from_bytes([0; 15])), card.clone())]))
 }
 
-/// The commit ID of each commit a card carries.
+/// The commit ID of each commit a card carries, in any entry.
 fn carried(card: &ct::Card) -> std::collections::BTreeSet<osis_base::CommitId> {
-    card.keys.iter().filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect()
+    card.values().flat_map(|e| &e.keys).filter_map(|b| osis_commit::CommitBlob::decode(b).ok()).map(|b| b.id()).collect()
 }
 
-/// Node 1 writes `card` as `a`'s on `c` (a writer of `a`: along a path through it).
-fn put_card(lp: &mut LocalPeer, c: Tid, a: Tid, card: &ct::Card) {
-    lp.peers[1].commit(cards::put(c, a, card).unwrap()).unwrap().unwrap();
+/// Node 1 writes `card` as its entry in `a`'s card on `c` (a writer of `a`: along a path through it).
+fn put_card(lp: &mut LocalPeer, c: Tid, a: Tid, card: &ct::CardEntry) -> osis_base::CommitId {
+    let node = lp.peers[1].engine.tid();
+    lp.peers[1].commit(cards::put_entry(c, a, node, card).unwrap()).unwrap().unwrap()
 }
 
 /// Syncs and refreshes every node's cards until quiet (a few rounds).
@@ -313,13 +310,13 @@ fn moved_then_rotated() -> (LocalPeer, Vec<Tid>, Tid, Tid, Tid, osis_base::Commi
     (lp, accs, c, i1, i2, mv[0])
 }
 
-// spec/sync-inbox.md §1 (Card: stale per `keys.0` field, by the newest signature-verified commit
-// writing it): node 1, a writer of A0, writes A0's card on C carrying A0's current `keys.0`
-// commits but node 0's move of A0's inbox (so the commit naming the first inbox and the newer
-// rotation), with both inboxes' keys: a stranger taking it fires at the first inbox. Node 0
-// rewrites it, and a stranger
-// taking the card then fires at the moved inbox. Fails with staleness judged per thing by the
-// newest commit carried (the rotation is newer than the move: nothing newer to carry).
+// spec/sync-inbox.md §1 (Card: an entry per node, its commits read together): node 1, a writer
+// of A0, writes its entry in A0's card on C carrying A0's current `keys.0` commits but node 0's
+// move of A0's inbox (so the commit naming the first inbox and the newer rotation), with both
+// inboxes' keys: a stranger taking that entry alone fires at the first inbox. Node 0's entry
+// carries the move, and a stranger taking the card fires at the moved inbox. Failed when one card
+// was judged stale per thing by the newest commit carried (the rotation is newer than the move:
+// the writer's card was left as written).
 #[test]
 fn a_writers_card_points_no_stranger_at_an_earlier_inbox_spec_sync_inbox_1() {
     let (mut lp, accs, c, i1, i2, mv) = moved_then_rotated();
@@ -338,15 +335,15 @@ fn a_writers_card_points_no_stranger_at_an_earlier_inbox_spec_sync_inbox_1() {
     }
     let card = lp.peers[0].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
     let mut q = osis_engine::local_peer::Peer::new(9, lp.peers[0].engine.now()).unwrap();
-    q.engine.take_holder_keys(&accs[0], &certs_of(&card), None).unwrap();
+    q.engine.take_holder_keys(&accs[0], &cards::holder_keys_of(&card), None).unwrap();
     assert_eq!(q.engine.inbox_of(&accs[0]).unwrap(), Some(i2), "a stranger taking the card fires at the moved inbox");
 }
 
-// spec/sync-inbox.md §1 (Card: an unverified commit counts for nothing): node 1, a writer of A0,
-// writes A0's card on C carrying A0's current `keys.0` commits and a copy of one of them stamped
-// far ahead, its signature no longer its commit's. Node 0 rotates A0 after: honest nodes ignore
-// the copy, rewrite the card and it carries the rotation. Fails with the copy's `ts` counted
-// (the card newer than anything a rewrite carries, for good).
+// spec/sync-inbox.md §1 (Card: an entry is its node's): node 1, a writer of A0, writes its entry
+// in A0's card on C carrying A0's current `keys.0` commits and a copy of one of them stamped far
+// ahead, its signature no longer its commit's. Node 0 rotates A0 after: the card carries the
+// rotation at both nodes. Failed when one card's newest `ts` held back a rewrite (the copy's
+// counted: the card newer than anything a rewrite carries, for good).
 #[test]
 fn an_unverified_card_commit_counts_for_nothing_spec_sync_inbox_1() {
     let (mut lp, accs, c, _, _, _) = moved_then_rotated();
@@ -370,14 +367,13 @@ fn an_unverified_card_commit_counts_for_nothing_spec_sync_inbox_1() {
     }
 }
 
-// spec/sync-inbox.md §1 (Card: a commit not held valid counts only for the fields whose role its
-// signer ever held): node 1, a writer of A0, writes A0's card on C carrying A0's current `keys.0`
-// commits and a move of A0's inbox it signs itself, stamped far ahead (judged nowhere: it waits
-// for the clock): a stranger taking the card's commits as a report's holder keys (which keep
-// what pends) keeps nothing of it. Node 0, A0's admin, then
-// rotates A0's admin keyset: the card at both nodes carries that rotation. Fails with a commit
-// not held valid counted for every field whoever signed it (the card newer than any honest
-// commit, for good), and, at the stranger, with it taken whoever signed it (pending).
+// spec/sync-inbox.md §1 (Card: an entry is its node's), spec/permissions.md §3 (Who rotates: the
+// inbox field needs admin): node 1, a writer of A0, writes its entry in A0's card on C carrying
+// A0's current `keys.0` commits and a move of A0's inbox it signs itself, stamped far ahead: a
+// stranger taking it fires at the admin's inbox. Node 0, A0's admin, then rotates A0's admin
+// keyset: the card at both nodes carries that rotation. Failed when a commit of one card not held
+// valid counted for every field whoever signed it (the card newer than any honest commit, for
+// good).
 #[test]
 fn a_writers_own_card_commit_stamped_ahead_holds_back_no_admin_field_spec_sync_inbox_1() {
     let (mut lp, accs, c, i1, i2, _) = moved_then_rotated();
@@ -397,8 +393,8 @@ fn a_writers_own_card_commit_stamped_ahead_holds_back_no_admin_field_spec_sync_i
     let inbox = e1.holder_keys(&i2).unwrap();
     let card = card_of(&[keys, inbox]);
     let mut q = osis_engine::local_peer::Peer::new(8, lp.peers[0].engine.now()).unwrap();
-    q.engine.take_holder_keys(&accs[0], &certs_of(&card), Some(osis_engine::Carrier::Report { actor: accs[0], sync_id: osis_base::SyncId([0; 16]), holder: accs[0] })).unwrap();
-    assert!(!q.engine.core.ix.pending.contains_key(&f), "a stranger taking the card's commits keeps nothing of the writer's own");
+    q.engine.take_holder_keys(&accs[0], &certs_of(&card), None).unwrap();
+    assert_eq!(q.engine.inbox_of(&accs[0]).unwrap(), Some(i2), "a stranger taking the card fires at the admin's inbox");
     put_card(&mut lp, c, accs[0], &card);
     settle(&mut lp);
     lp.advance(1000);
@@ -410,10 +406,10 @@ fn a_writers_own_card_commit_stamped_ahead_holds_back_no_admin_field_spec_sync_i
     }
 }
 
-// spec/sync-inbox.md §1 (Card: stale), spec/commits.md §5 (Covered): A rotated, its `keys.0`
-// compacted and the covered parts dropped, the rotation still current by its write the snapshot
-// holds. A refresh carries the snapshot and settles: the rotation, whose part no card can carry,
-// leaves the card stale for nothing. Failed when every current commit had to be carried itself
+// spec/sync-inbox.md §1 (Card: Keeping an entry), spec/commits.md §5 (Covered): A rotated, its
+// `keys.0` compacted and the covered parts dropped, the rotation still current by its write the
+// snapshot holds. A refresh carries the snapshot and settles: the rotation, whose part no card can
+// carry, moves no entry again. Failed when every current commit had to be carried itself
 // (`refresh_cards` passed its loop bound).
 #[test]
 fn a_card_settles_once_its_things_keys_are_compacted_spec_sync_inbox_1() {
@@ -432,4 +428,191 @@ fn a_card_settles_once_its_things_keys_are_compacted_spec_sync_inbox_1() {
     assert!(!e.refresh_cards().unwrap(), "settled: nothing left to rewrite");
     let cards = e.cards_of(&acc.thing).unwrap();
     assert!(cards.iter().all(|(_, card)| carried(card).contains(&s)), "the card carries the snapshot");
+}
+
+/// Commit IDs peer `i` holds.
+fn ids(lp: &LocalPeer, i: usize) -> std::collections::BTreeSet<osis_base::CommitId> {
+    lp.peers[i].engine.commit_ids().into_iter().collect()
+}
+
+/// The commits peer `i` made running `f`.
+fn made(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer)) -> Vec<osis_base::CommitId> {
+    let before = ids(lp, i);
+    f(lp);
+    ids(lp, i).into_iter().filter(|c| !before.contains(c)).collect()
+}
+
+/// Syncs and refreshes every node's cards for `n` rounds: whether any node made or took a commit
+/// in the last.
+fn rounds(lp: &mut LocalPeer, n: usize) -> bool {
+    let mut moved = false;
+    for _ in 0..n {
+        let before: Vec<usize> = (0..lp.peers.len()).map(|i| ids(lp, i).len()).collect();
+        lp.sync_all().unwrap();
+        for p in lp.peers.iter_mut() {
+            p.engine.refresh_cards().unwrap();
+        }
+        moved = (0..lp.peers.len()).any(|i| ids(lp, i).len() != before[i]);
+    }
+    moved
+}
+
+// spec/sync-inbox.md §1 (Card: each node keeps its own entry), spec/permissions.md §5.1 (Trust set:
+// each node keeps the side it took): admins a (peer 0) and b (peer 1) of T remove each
+// other; peers 2 (T's mint admin) and 3 (a writer) take a's side, peer 4 (a writer) b's. Each
+// side then writes T's `keys.0` alone: a rotates T, then a writer b grants on its side alone
+// (peer 5) rotates T's write keyset, stamped after. Peers 2, 3 and 4 may write C (T's child)
+// along a path through T on both sides, so each side reads the other's card writes. Once synced,
+// a round of sync makes no commit, and each side's stranger taking the card at a node of that
+// side reads that side's current keys. Failed when one card held one side's commits and each
+// side judged the other's by the roles it applied (the sides rewrote each other's card every
+// round).
+#[test]
+fn a_fork_settles_with_each_sides_card_spec_sync_inbox_1() {
+    let (mut lp, ps) = crate::flows::people(6);
+    let (a, b, c) = (ps[0], ps[1], ps[2]);
+    let mut m = Mutation::new();
+    let t = lp.peers[2].engine.new_thing(&mut m, c);
+    lp.peers[2].commit(m).unwrap();
+    lp.peers[2].engine.make_independent(&t).unwrap();
+    lp.hold(t);
+    let edge = crate::flows::edge_of;
+    for (p, r) in [(a, Role::Admin), (b, Role::Admin), (ps[3], Role::Write), (ps[4], Role::Write)] {
+        lp.peers[2].engine.grant(&t, &p, &edge(r)).unwrap();
+    }
+    let mut m = Mutation::new();
+    let child = lp.peers[2].engine.new_thing(&mut m, t);
+    lp.peers[2].commit(m).unwrap();
+    lp.hold(child);
+    lp.peers[2].engine.write_card(child, t).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    // b's clock runs ahead; a has not seen b's removal when it writes its own
+    lp.peers[1].clock.advance(5000);
+    let w = made(&mut lp, 1, |lp| drop(lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap()));
+    let r = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap()));
+    // each node's side: the removal it received first
+    for (to, first, then) in [(2, (0, &r), (1, &w)), (3, (0, &r), (1, &w)), (4, (1, &w), (0, &r)), (5, (1, &w), (0, &r))] {
+        crate::flows::send_carried(&mut lp, first.0, to, first.1);
+        crate::flows::send_carried(&mut lp, then.0, to, then.1);
+    }
+    crate::flows::send_carried(&mut lp, 0, 1, &r);
+    crate::flows::send_carried(&mut lp, 1, 0, &w);
+    lp.sync_all().unwrap();
+    let side_a = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&t).contains_key(&a);
+    for (i, on_a) in [(0, true), (1, false), (2, true), (3, true), (4, false), (5, false)] {
+        assert_eq!(side_a(&lp, i), on_a, "premise: peer {i}'s side");
+    }
+    // a's side rotates T after both removals; on b's, b grants peer 5 write, which rotates T's
+    // write keyset after that
+    lp.advance(10_000);
+    lp.peers[0].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
+    lp.peers[1].engine.grant(&t, &ps[5], &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    lp.peers[5].engine.rotate_leaving_out(&t, &[Role::Write], &[]).unwrap().unwrap();
+    rounds(&mut lp, 4);
+    assert!(!rounds(&mut lp, 1), "settled: no commit moves");
+    assert!(!rounds(&mut lp, 1), "settled: no commit moves, a round on");
+    for i in [2, 3, 4] {
+        let e = &mut lp.peers[i].engine;
+        let want = e.current_keys(&t).unwrap();
+        let card = e.cards_of(&t).unwrap().into_iter().find(|(h, _)| *h == child).expect("T's card on its child").1;
+        assert!(want.is_subset(&carried(&card)), "peer {i}: the card carries its side's current keys of T");
+    }
+}
+
+// spec/sync-inbox.md §1 (Card: an entry per node, read together), spec/permissions.md §5.1
+// (Frontier): D (peer 1), an admin of T demoted to writer, writes its entry in T's card on C
+// carrying T's keys as it held them as admin, the grant that made it admin and a move of T's
+// inbox to a thing of its own, signed against those keys and stamped after its demotion: a
+// stranger taking that entry alone fires at D's inbox. A stranger taking the card as honest nodes
+// hold it fires at T's own inbox: T's admin's entry carries the demotion. Failed when one card
+// held whatever its last writer put and honest nodes left it, D having once held admin.
+#[test]
+fn a_demoted_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
+    let (mut lp, ps) = crate::flows::people(2);
+    let (c, d) = (ps[0], ps[1]);
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, c);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.make_independent(&t).unwrap();
+    lp.hold(t);
+    let i1 = thing(&mut lp, 0, c, true);
+    lp.peers[0].engine.set_inbox(t, i1).unwrap();
+    let g = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.grant(&t, &d, &crate::flows::edge_of(Role::Admin)).unwrap()));
+    let mut m = Mutation::new();
+    let host = lp.peers[0].engine.new_thing(&mut m, t);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(host);
+    lp.peers[0].engine.write_card(host, t).unwrap();
+    let i2 = thing(&mut lp, 1, d, true);
+    settle(&mut lp);
+    // what D holds of T's keys as admin, and D's node as it stood then
+    let mut keys = lp.peers[1].engine.holder_keys(&t).unwrap();
+    let mut was = lp.peers[1].copy().unwrap();
+    lp.advance(1000);
+    let dm = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: d, new: Some(crate::flows::edge_of(Role::Write)), retain: None }).unwrap()));
+    settle(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write), "premise: D demoted");
+    // D's own move of the inbox, signed against the keys it held as admin, stamped after its
+    // demotion
+    was.clock.advance(10_000);
+    let mut m = Mutation::new();
+    cards::put_inbox(&mut m, t, i2).unwrap();
+    let f = was.commit(m).unwrap().unwrap();
+    assert!(dm.iter().all(|x| was.engine.header(&f).unwrap().ts > lp.peers[0].engine.header(x).unwrap().ts), "premise: stamped after the demotion");
+    let pk = was.engine.package(&f).unwrap().unwrap();
+    let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
+    let moved = osis_base::decode(&pk.bytes, &limits).unwrap();
+    keys.commits.push(moved);
+    // the grant that made D admin, and D's record
+    for id in &g {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        keys.commits.push(osis_base::decode(&pk.bytes, &limits).unwrap());
+    }
+    keys.records.push(lp.peers[1].engine.core.created(&d).unwrap().clone());
+    // T's own inbox's keys too, as an honest card carries them: the card looks current
+    let own = lp.peers[0].engine.holder_keys(&i1).unwrap();
+    let card = card_of(&[keys, own, lp.peers[1].engine.holder_keys(&i2).unwrap()]);
+    let mut q = osis_engine::local_peer::Peer::new(8, lp.peers[0].engine.now()).unwrap();
+    q.engine.take_holder_keys(&t, &certs_of(&card), None).unwrap();
+    assert_eq!(q.engine.inbox_of(&t).unwrap(), Some(i2), "premise: D's card alone points a stranger at D's inbox");
+    // D's entry reaches T's admin, D's node keeping it as written
+    let w = put_card(&mut lp, host, t, &card);
+    crate::flows::send_carried(&mut lp, 1, 0, &[w]);
+    lp.peers[0].engine.refresh_cards().unwrap();
+    assert!(lp.peers[0].engine.cards_of(&t).unwrap().iter().any(|(h, c)| *h == host && c.contains_key(&osis_base::Weak(d))), "premise: D's entry held at T's admin");
+    let held = lp.peers[0].engine.cards_of(&t).unwrap().into_iter().find(|(h, _)| *h == host).unwrap().1;
+    let mut q = osis_engine::local_peer::Peer::new(9, lp.peers[0].engine.now()).unwrap();
+    q.engine.take_holder_keys(&t, &cards::holder_keys_of(&held), None).unwrap();
+    assert_eq!(q.engine.inbox_of(&t).unwrap(), Some(i1), "a stranger taking the card fires at T's own inbox");
+}
+
+// spec/permissions.md §5.2 (card aspect: each entry a delta writes into keyed by its signer):
+// node 1, a writer of A0, writes into node 0's entry in A0's card on C, and in another commit
+// replaces the whole card with one holding an entry keyed by node 0: both invalid at both nodes,
+// node 0's entry as it wrote it. Control: node 1's own entry counts.
+#[test]
+fn a_card_entry_counts_only_written_by_its_node_spec_permissions_5_2() {
+    let (mut lp, accs, c, _, _, _) = moved_then_rotated();
+    let n0 = osis_base::Weak(lp.peers[0].engine.tid());
+    let card = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.cards_of(&accs[0]).unwrap().into_iter().find(|(h, _)| *h == c).unwrap().1;
+    let before = card(&mut lp, 0).get(&n0).cloned().expect("node 0's entry");
+    let junk = ct::CardEntry::default();
+    let mut whole = Mutation::new();
+    whole.act_as(accs[0]);
+    whole.op(c, &ct::card_ak(&accs[0]), PathOp { path: vec![], op: Op::Replace(ct::Card::from([(n0, junk.clone())]).to_value()) }).unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    let into = lp.peers[1].commit(cards::put_entry(c, accs[0], n0.0, &junk).unwrap()).unwrap().unwrap();
+    let replaced = lp.peers[1].commit(whole).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    let own = put_card(&mut lp, c, accs[0], &junk);
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        assert_eq!(lp.peers[i].engine.part_valid(&into, 0), Some(false), "node {i}: a write into another's entry is invalid");
+        assert_eq!(lp.peers[i].engine.part_valid(&replaced, 0), Some(false), "node {i}: a whole card holding another's entry is invalid");
+        assert_eq!(lp.peers[i].engine.part_valid(&own, 0), Some(true), "node {i}: control: its own entry counts");
+        assert_eq!(card(&mut lp, i).get(&n0), Some(&before), "node {i}: node 0's entry as it wrote it");
+    }
 }

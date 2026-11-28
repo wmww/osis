@@ -8,7 +8,9 @@
 //! are written (it syncs A); it may write some hosts along a path through A (a card it writes there
 //! is valid) and others only along other paths (a card written there is invalid: its entry keyed
 //! by A needs A among the path's members). Sync is reduced to passes: a node reads a host's valid
-//! card and applies the rewrite rule there.
+//! card and applies the rewrite rule there. A card holds an entry per node, each node writing its
+//! own; with no fork every node holds one view of A's keys, so the newest any entry carries is the
+//! one version modelled here.
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

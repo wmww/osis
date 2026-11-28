@@ -7,7 +7,7 @@ mod blobs;
 pub(crate) use blobs::RoleKeyEpochs;
 mod certs;
 pub(crate) mod entries;
-pub(crate) use certs::{Cut, current_keys_in, judged_valid};
+pub(crate) use certs::{Cut, judged_valid};
 pub(crate) mod opened;
 pub(crate) mod steps;
 pub(crate) mod unread;
