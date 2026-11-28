@@ -17,7 +17,7 @@ scen=(
   "F F K_SideY {} OneAspect {}"
   "C C K_SideX {\"b0\"} OneAspect {}"
   "P P K_SideY {\"b1\"} P_Aspect {}"
-  "Q Q K_SideY {\"t\",\"q\"} OneAspect {\"q\"}"
+  "Q Q K_SideY {\"t\",\"q\"} OneAspect {}"
   "Q0 Q K_SideY {\"t\"} OneAspect {}"
   "S S K_SideX {\"s1\"} OneAspect {}"
 )
@@ -66,6 +66,7 @@ CONSTANTS
   InitHeld <- ${pre}_Held
   InitStore = $storeset
   RoleC = $rolec
+  PassWait = TRUE
   Gate = "$gate"
   RelogOnce = $relog
   Fork = $fork

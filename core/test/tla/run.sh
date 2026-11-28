@@ -28,7 +28,8 @@ instances=(
   "sync sync MC por_live.cfg pass"
   "sides sides MC kill_touch.cfg pass"           # notes/disputes.md, Storage under a fork
   "sides sides MC purge_touch.cfg pass"
-  "sides sides MC place_touch.cfg pass"
+  "sides sides MC strong_touch.cfg pass"         # a strong reference, judged after a complete pass
+  "sides sides MC strong_nowait.cfg fail"        # negative control: judged at once
   "sides sides MC branch_kill.cfg pass"          # store branching, rule lifted per branch
   "sides sides MC branch_bridge.cfg pass"        # ... members carry clean bodies across
   "sides sides MC concede.cfg pass"              # a concession ends the fork

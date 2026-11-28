@@ -3,7 +3,10 @@
 (* parties x (side X) and y (side Y) and a member m that may switch.          *)
 EXTENDS Sides
 
-R(w, pol, kind, purge) == [w |-> w, pol |-> pol, kind |-> kind, purge |-> purge]
+R(w, pol, kind, purge) == [w |-> w, pol |-> pol, kind |-> kind, purge |-> purge, pass |-> FALSE]
+\* Outside the required set while strong reference w is invalid or not held,
+\* judged only at the end of a complete pass (spec/sync-judgement.md §2).
+Out(w) == [w |-> w, pol |-> "invalid", kind |-> "not", purge |-> FALSE, pass |-> TRUE]
 Not(w) == R(w, "valid", "not", FALSE)
 NoR(B) == [b \in B |-> {}]
 Both(B) == [b \in B |-> Sides]
@@ -57,13 +60,14 @@ P_Reasons == [b \in P_Bodies |-> IF b = "b1" THEN {R("p", "valid", "not", TRUE)}
 P_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"d"} [] n = "m" -> {"b1", "p"} [] OTHER -> {}])
 P_Aspect == [b \in P_Bodies |-> IF b = "p" THEN "pa" ELSE "a"]
 
-\* Q: Y's placement q keeps t in the sync ID's required set; on side X, t is
-\* outside it (must-not-hold while q is invalid or not held). m on Y
-\* holds both.
+\* Q: Y's post-dispute write q holds a strong reference to t, keeping t in
+\* the sync unit (spec/sync-set.md §2); on side X q is invalid, so t is
+\* outside the required set. q is content, not role-class: nothing fetches
+\* it first. Both at the store; m on Y holds both. Q0: q not logged yet.
 Q_Bodies == XB({"t", "q"})
 Q_Valid == [b \in Q_Bodies |-> IF b = "q" THEN {"Y"} ELSE Sides]
 Q_Seed == [b \in Q_Bodies |-> b = "q"]
-Q_Reasons == [b \in Q_Bodies |-> IF b = "t" THEN {R("q", "invalid", "not", FALSE)} ELSE {}]
+Q_Reasons == [b \in Q_Bodies |-> IF b = "t" THEN {Out("q")} ELSE {}]
 Q_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"q"} [] n = "m" -> {"t", "q"} [] OTHER -> {}])
 \* S: X's post-dispute write s1 is superseded by X's later s2 (purge on
 \* replace): both valid on side X only. Side X must not hold s1; side Y holds
