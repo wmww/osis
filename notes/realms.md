@@ -33,7 +33,7 @@ Not chat-specific: "to actors what tags are to groups". User-visible, user-manag
 - **Removal at depth 0**: removing a member rotates R in the removal commit; each thing R holds a grant on sealed its boxes to R's old keyset, which R's rotation lists as superseded, so its next writer rotates it before encrypting (notes/holder-actors.md). Nested realms cascade one level at a time. Depth 0's limit applies: an ignorant concurrent rotation of R lets the removed member read until R's next rotation that knows. Costs as for chats and shared tags: 2.7 KB per remaining holder for R, a few KB per thing below.
 
 ## Left for realm UX
-- The management screen: name and colour; members with role (`holders`' `HolderKind::Thing` entries, each `Link` shown as an invite link; nodes and link keys are machinery); contents; sub-realms and the realms holding a role on R; who can see a thing through which realm (`holders`' `through`). First-party apps confirm before adding to a realm, showing who will see it (the tags guideline, notes/tags.md).
+- The management screen: name and colour; members with role (`holders`' `HolderKind::Thing` holders, each `Link` shown as an invite link; nodes and link keys are machinery); contents; sub-realms and the realms holding a role on R; who can see a thing through which realm (`holders`' `through`). First-party apps confirm before adding to a realm, showing who will see it (the tags guideline, notes/tags.md).
 - A granter tells R's nodes of a grant by a grant signal on R's inbox (optional, spec/sync-inbox.md §5): a realm others grant on from outside needs a card and an inbox (a profile), as an account has.
 - For big realms: pure readers placing nothing under big sync IDs (notes/chat-cases.md core r).
 

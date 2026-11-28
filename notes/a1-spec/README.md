@@ -42,10 +42,9 @@ Every role-class commit the engine writes states one path in the clear (never th
 | may-grant grant (`grant_history` without admin) | r on each grant, the last giving admin or carrying the flag (`Need::MayGrant`) | `a_may_grant_grant_applies_by_its_paths_flag` |
 | finalize (`finalize_in`) | the signer's role on the target (write at least, and at least each ended grant's: `finalizable`) | `a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it` |
 | link redemption (`redeem_in`: the grant, and single use L's own removal) | L's grant on K: the empty path; the leave part, on the path's last grant, ordered last (Open 14) | `a_link_redemption_grants_once_and_ends_the_link` |
-| `keys.0`, `secrets.0`, `sync.0`, `listing.0`, `account.0` | the signer's role on the thing (a rotation rotates every role up to it, `rotation::may_rotate`) | none: judged like content (spec/permissions.md §5.1 lead) |
+| `keys.0`, `secrets.0`, `sync.0` | the signer's role on the thing (a rotation rotates every role up to it, `rotation::may_rotate`) | none: judged like content (spec/permissions.md §5.1 lead) |
 | role compaction snapshot (`retention::snapshot`) | `snapshot_role` (admin) | none |
 | records alone (a role commit carrying `created.0` only) | the mint admin's path, then its record grant (`path_with`) | `World::push` (descent) |
-| an account's rotation, a seed re-seal | empty, `[0]` (spec/wire.md §4 fields 15, 16) | none |
 | a thing minted with a key: its minting | empty: the signer is the thing | none |
 
 ## Left
