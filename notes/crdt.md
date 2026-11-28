@@ -19,7 +19,7 @@ The spec states the rules; this note gives their reasons and how the code is bui
 - Authenticated malicious writers are out of scope (gaming the HLC to win LWW is not a concern).
 - No tombstone compaction: worse merging after long separation is acceptable, discarding edits is not.
 - Purge-by per delta, keep bounds per thing setting (spec/commits.md §5), purge per commit without batching, expiry (§6).
-- Undo is per actor by default, plus an API listing every change in scope from which an admin may undo others'.
+- Undo is per author by default, plus an API listing every change in scope from which an admin may undo others'.
 - Accepted: a node receiving a multi-aspect commit after one delta was purged applies the rest, so it may briefly see an aspect combination no author produced.
 - The commit floor (Implementation (`osis-commit`)) is fine for editing workloads; revisit only if huge commit volumes appear.
 

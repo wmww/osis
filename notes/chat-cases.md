@@ -68,8 +68,8 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can strangers join by link with no admin online? | yes | yes |
 | Does a link joiner keep access when the sharer is kicked? | yes | opt⁷ |
 | Can an admin kick one link joiner without killing the link? | yes | opt⁷ |
-| Does a stranger's offer show a verified sender before you hold the thing? | yes | core e |
-| Does a stranger's offer fetch anything before you hold the thing? | no | no |
+| Does a stranger's grant signal show a verified sender before you hold the thing? | yes | core e |
+| Does a stranger's grant signal fetch anything before you hold the thing? | no | no |
 
 ## Nodes
 
@@ -122,7 +122,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can you block someone without deleting anything on either side? | yes | opt |
 | Is your evidence kept after blocking? | yes | opt |
 | Can a blocked contact you share a group with add you to a chat? | no | opt¹² |
-| Can a stranger holding your contact card fill your inbox with offers? | no | yes¹³! |
+| Can a stranger holding your contact card fill your inbox with grant signals? | no | yes¹³! |
 | Do message requests show a verified sender? | yes | core e |
 
 ## Admins
@@ -205,19 +205,19 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a chat have forward secrecy at all? | yes | core m |
 
 ## Realms (notes/realms.md)
-Nothing here is designed: each answer is what today's core would give if servers, organizations and roles were realms as notes/realms.md proposes (a channel a chat a realm holds write on).
+Chat's use of realms is not designed: each answer is what today's core would give if servers, organizations and roles were realms (a channel a chat a realm holds write on).
 
 | case | want | chat |
 |---|---|---|
 | Does removing a member from the top realm remove them from every channel at once? | yes | yes |
 | Does one commit protect all new content from the removed member (channels re-key on the next sync)? | yes | yes⁴¹ |
-| Does cutting the removed member's write and sync keys need an admin step per channel per node keeping the chat unread? | no | yes⁴¹! |
-| Can the removed member keep writing junk to a channel until an admin steps it there? | no | yes! |
+| Does cutting the removed member's write and sync keys need an admin step per channel per node keeping the chat unread? | no | no⁴¹ |
+| Can the removed member keep writing junk to a channel until its step is registered there? | no | yes! |
 | Removal under 10 MB sent at 1000 members and 100 channels? | yes | yes⁴² |
 | Removal under 10 MB sent at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
 | Does a member's lost node or leave cost the next poster the top realm's whole rotation? | no | yes! |
 | Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
-| Does each member's node download every other member's chains and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
+| Does each member's node download every other member's evidence and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | ? |
 | Can a mod mute one member in one channel while they hold the top realm? | yes | opt*⁴⁵ |
 | Can a mod ban one member from one channel while they hold the top realm? | yes | no! |
@@ -247,7 +247,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 
 ## Core changes
 
-- **e** Sender card in offers from strangers (Tess: yes).
+- **e** Sender card in grant signals from strangers (Tess: yes).
 - **h** Wake relay for background notifications (Tess: does not block).
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per node and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
 - **m** Erasable per-node KEM keys with per-node boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
@@ -269,14 +269,14 @@ Nothing here is designed: each answer is what today's core would give if servers
 28. the header-only blob of a purged permanent delta is kept forever and reaches new nodes, with its purge commit (spec/commits.md §5).
 30. nothing is compacted: messages are kept for good.
 31. admins may always purge (spec/commits.md §5 Who and how long): junk is what an admin's purge by author erases.
-33. The grant's `reads` (`GrantOpts::reads`: `FromNow` or `All`; notes/history-less-grant.md). Segments, a chain of chats, are rejected (notes/chat.md Left out).
+33. The grant's `reads` (`GrantOpts::reads`: `Kept`, `FromNow` or `All`; notes/history-less-grant.md). Segments, a chain of chats, are rejected (notes/chat.md Left out).
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the purge author is a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): a valid commit's purge author is its sender.
 40. 2.7 MB of key boxes, plus the frontier: about 34 B per message the member ever sent (3.4 MB at 10^5; past the list bound the rest go in the remover's addenda, notes/revocation.md Frontier encoding). Past about 2x10^5 messages from the member, no.
-41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each channel to register a step at each node keeping it unread; until then the removed member reads ciphertext and can log entries.
+41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs each channel's step (in its re-key) registered at each node keeping it unread, which any reader holding the path does (spec/sync-ids.md §6); until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each sync ID is stepped.
-44. Every syncing node logs its chain (11.5 KB per account) and card (1.5 KB) under each sync ID it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
+44. Every syncing node logs its path's evidence (11.5 KB per account) and card (1.5 KB) under each sync ID it reads: about 13 MB once at 1000; about 1.4 GB at 100,000.
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
 46. Messages on a thing minted with admin the chat, with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.

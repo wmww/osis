@@ -30,7 +30,7 @@
 - Node (osis-engine `engine/large.rs`, `engine/blobs.rs`; osis `large.rs`): the write path chunks large registers, blobs, strings, set elements and map keys; pages are fetched before their commit applies; the API offers `stream`, `len`, `set_stream`. A `set` over a large value reuses the current tree's chunks, so an edit writes and logs O(change) (notes/engine-paged.md, Large values).
 
 ## Wire choices (spec/wire.md)
-- Tags 1617-1622 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
+- Tags 1617-1621 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
 - A reference is a tag per kind, not one tag with a kind field: each kind costs nothing beyond its tag, and a decoder or index tells a strong from a weak by its head alone.
 - The creation record is a struct value so `created.0` stores exactly the hashed bytes. A link key derives its nonce from the seed, so the link alone names the link key's tid.
 - Tree-node content hashes cover their children's hashes, not the bytes below: an edit rehashes one path (O(change)), while covered-bytes hashing rehashes up to the whole value per level. The root stays a function of the value's bytes, so equality by content holds. Nodes close on a content-hash byte (prolly-tree style) so an insert does not shift every later node.
@@ -59,7 +59,7 @@ A worked example covering most of the DSL: the test fixture core/schema/tests/ex
 - Fields `name N: type [= default] [succeeds N | (N, ..)]`, cases `name N [(type)] [succeeds ..]`, `reserved N | (N, ..)`; numbers explicit, unique, in any order. `reserved N:` starts a field named `reserved`; in an enum `reserved` always starts a reservation, so no case is named `reserved`.
 - Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.
 - Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one name segment, no tid) only in the core schema; no `purge_by` on an ephemeral key, no expiry on an ephemeral signal.
-- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `schema/meta.osis` (local ID `ff..ff`, never written anywhere).
+- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `schema/meta.osis`.
 - `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `created.0` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage
