@@ -1041,6 +1041,11 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             return Ok(None);
         }
     }
+    // a part never received that the snapshot's writer may have held gone: its tables reach it
+    // without carrying it (`purge::named_before`)
+    if !held && m.missing(cai) && let Some(at) = tx.core.ix.commits.get(s).map(|x| x.view.ts) && super::purge::named_before(tx, c, cai, at)? {
+        return Ok(None);
+    }
     // a body this node holds no delta of (dropped at its keep bounds or as covered, a purge
     // rewrite) joins nothing: covered. Before an own replace the part must really have
     // dropped: a part not fetched yet is not established (a set add or map put still to come).

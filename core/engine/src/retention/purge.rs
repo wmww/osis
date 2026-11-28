@@ -319,6 +319,16 @@ fn requests_on(tx: &mut Tx<'_>, a: &AspectEntry, ch: &Header, c: &CommitId) -> R
     Ok(ids.into_iter().filter_map(|pc| Some((pc, tx.core.ix.commits.get(&pc)?.header.clone()))).collect())
 }
 
+/// Whether a held request that could ever stand names delta `ai` of `c`, stamped before `at`: a
+/// snapshot stamped `at` may then be written with its writes gone, carrying none of them (spec/crdt.md
+/// §4.7) though its tables count them applied (§8), so the tables alone never cover it
+/// (spec/commits.md §5 Covered). A writer holding the request stamps after it.
+pub(crate) fn named_before(tx: &mut Tx<'_>, c: &CommitId, ai: usize, at: Ts) -> Result<bool> {
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(false) };
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    Ok(requests_on(tx, a, &h, c)?.iter().any(|(_, p)| p.ts < at && could_stand(tx.core, p, a, &h, c)))
+}
+
 /// Every held request with an item on `(tid, ak)`, by name or not, each once.
 fn aspect_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
     let mut out = match tx.txn.get_local(&records::aspect_key(records::PURGES, tid, ak))? {

@@ -523,3 +523,54 @@ fn a_writers_misnamed_fact_lets_it_erase_an_admins_write_at_a_snapshot_only_node
     lp.deliver(2, &pk).unwrap();
     assert!(secret(&mut lp, 2), "the header decides once it arrives");
 }
+
+// spec/commits.md §5 Covered, spec/crdt.md §4.7 Snapshots, §8 Frontiers: admin 1, lowered to
+// write by 0 in a commit 1 has not seen, purges its own `SECRET` (purge-by `admin`) and compacts
+// the register without it, its frontier counting `SECRET` applied. A reader given the request,
+// the snapshot and the writes before the lowering drops `SECRET` for the request; the lowering
+// takes the request's right, so `SECRET` counts as never received, and the snapshot, whose
+// tables reach it without carrying it, does not cover it: given again it reads `SECRET`, as the
+// admin that had the lowering first does.
+#[test]
+fn a_fallen_purge_brings_back_a_write_its_snapshot_left_out_spec_commits_5() {
+    let (mut lp, t) = world();
+    let w = lp.peers[1].engine.tid();
+    let g = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+    lp.peers[0].engine.grant(&t, &w, &g(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let lower = lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: w, new: Some(g(Role::Write)), retain: None }).unwrap().commits;
+    lp.advance(1_000);
+    let mut made = Vec::new();
+    for v in ["v1", "SECRET"] {
+        let mut m = Mutation::new();
+        m.set(t, &reg(), &Value::Str(v.into())).unwrap();
+        made.push(lp.peers[1].commit(m).unwrap().unwrap());
+        lp.advance(1_000);
+    }
+    // its body as made: the purge drops it at its writer
+    let secret = lp.peers[1].engine.package(&made[1]).unwrap().unwrap();
+    let item = lp.peers[1].engine.purge_item(&made[1], t, reg()).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &lp.peers[1].engine.now()).unwrap();
+    m.purge(item);
+    made.push(lp.peers[1].commit(m).unwrap().unwrap());
+    lp.advance(1_000);
+    made.push(lp.peers[1].engine.snapshot(&t, &reg()).unwrap().unwrap());
+    for c in made.iter().rev().chain(&lower) {
+        let pk = if *c == made[1] { secret.clone() } else { lp.peers[if lower.contains(c) { 0 } else { 1 }].engine.package(c).unwrap().unwrap() };
+        lp.deliver(2, &pk).unwrap();
+        lp.deliver(0, &pk).unwrap();
+    }
+    let e = &mut lp.peers[2].engine;
+    // node-sync's drops: whatever covers it
+    for c in e.commit_ids() {
+        for (tid, ak) in e.covered_drops(&c).unwrap() {
+            e.drop_body(&c, &tid, &ak).unwrap();
+        }
+    }
+    lp.deliver(2, &secret).unwrap();
+    for i in [0, 2] {
+        assert_eq!(lp.peers[i].engine.get(&t, &reg()).unwrap(), Some(Value::Str("SECRET".into())), "peer {i}");
+    }
+}
