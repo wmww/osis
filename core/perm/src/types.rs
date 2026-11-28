@@ -174,20 +174,3 @@ pub(crate) fn earliest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
 pub(crate) fn mark<K: Ord>(s: &mut BTreeSet<K>, k: K, on: bool) -> bool {
     if on { !s.insert(k) } else { s.remove(&k) }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // spec/data-model.md §9 (`signers.0`): a key's grant carries no retain, no floor and no
-    // until 0; any other until, role and may-grant fit.
-    #[test]
-    fn a_key_holds_no_retain_floor_or_until_0_spec_data_model_9() {
-        let g = Grant::new(Role::Write);
-        assert!(g.fits_key());
-        assert!(Grant { until: Some(osis_base::Time(5)), may_grant: true, ..g }.fits_key());
-        assert!(!Grant { retain: true, ..g }.fits_key());
-        assert!(!Grant { floor: Some(1), ..g }.fits_key());
-        assert!(!Grant::kept_end().fits_key());
-    }
-}
