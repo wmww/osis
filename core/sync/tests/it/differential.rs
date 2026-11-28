@@ -135,6 +135,19 @@ fn a_grant_released_before_anyone_received_it_is_lost_spec_sync_set_3() {
     holds_on(0, 3, 4, &script, String::new(), false);
 }
 
+// spec/sync-set.md §3 (Nothing of R stays): node 1 makes a thing and grants node 2's account read
+// (a run gives node 2 its stub); node 1 writes it twice (its third body: it compacts into a
+// snapshot) and releases it cut off from node 2, which holds it by a strong only after. The
+// writes and the snapshot carrying them are at no node; the oracle counts the snapshot lost with
+// the writes, matching its signer, the writing node (failed: matched against the writer's
+// account, the reference kept the snapshot and read its value).
+#[test]
+fn a_snapshot_released_with_the_writes_it_carries_is_lost_spec_sync_set_3() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(2), Gives::Reads), Step::Run, Step::Write(1, 0), Step::Write(1, 0), Step::Partition(1, 2), Step::Unstrong(1, None, 0), Step::Run, Step::Heal, Step::Strong(2, None, 0)];
+    holds_on(0, 3, 4, &script, String::new(), false);
+}
+
 // spec: none (test harness): a hand probe tells the engine copies apart (`osis_base::trace::copy`):
 // a node the world hands out or steps is named by the world's number and its index, each
 // reference twin by the world's number and its account's, and a copy of a world is a world of

@@ -1224,13 +1224,14 @@ fn holds_value(w: &mut World, i: usize, c: &CommitId) -> bool {
 }
 
 /// The compaction snapshots a release lost with the value writes `lost` (`lost_writes`): on the
-/// value of a thing a lost write is on, by that write's author, held by no node at the check.
-/// A writer's snapshot carries its own writes, so one no node holds goes with them (spec/sync-set.md
-/// §3 Nothing of R stays); a later reader holding none of it has nothing to fetch.
+/// value of a thing a lost write is on, signed by the node that wrote it (a node signs as its node
+/// thing), held by no node at the check. A writer's snapshot carries its own writes, so one no
+/// node holds goes with them (spec/sync-set.md §3 Nothing of R stays); a later reader holding none
+/// of it has nothing to fetch.
 fn snapshots_lost(w: &mut World, refs: &mut Refs, lost: &BTreeSet<CommitId>) -> BTreeSet<CommitId> {
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let h = &w.history;
-    let by: BTreeSet<(Tid, Tid)> = h.events.iter().filter(|e| e.wrote.is_some_and(|c| lost.contains(&c))).filter_map(|e| Some((h.things[e.thing].0, w.node(e.node).account?))).collect();
+    let by: BTreeSet<(Tid, Tid)> = h.events.iter().filter(|e| e.wrote.is_some_and(|c| lost.contains(&c))).map(|e| (h.things[e.thing].0, w.nodes[e.node].node.engine().tid())).collect();
     let mut out = BTreeSet::new();
     for (t, author) in by {
         for r in refs.all() {
