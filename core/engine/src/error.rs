@@ -36,8 +36,8 @@ pub enum Error {
     /// A bounded read (`get_within`, `get_at_within`, `aspects_within`, `read_large_max`) would
     /// hold more than `bound`, the bound it was given. Local.
     PastBound { bound: usize },
-    /// A transaction would leave a thing it made outside the node closure (spec/sync-set.md §2
-    /// Making a thing). Local.
+    /// A transaction would leave a thing it minted outside the node closure (spec/sync-set.md §2
+    /// Minting a thing). Local.
     NotHeld(Tid),
     /// A role commit would leave this thing, which has a standing admin, with none, and does not
     /// carry the adminless mark (spec/permissions.md §1, The last admin). Local.

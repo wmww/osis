@@ -1,5 +1,5 @@
 //! Creating a thing (spec/permissions.md §1): its `created.0`, which names its mint admin, and
-//! the strong that holds it (spec/sync-set.md §2 Making a thing). A dependent one derives its secrets from the mint
+//! the strong that holds it (spec/sync-set.md §2 Minting a thing). A dependent one derives its secrets from the mint
 //! admin's (spec/crypto.md §3).
 
 use super::Done;

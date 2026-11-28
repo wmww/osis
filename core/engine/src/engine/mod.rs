@@ -1336,7 +1336,7 @@ pub struct Core {
     /// This node's node root (spec/sync-set.md §1), from its first start (`records::NODE_ROOT`).
     pub(crate) node_root: Option<Tid>,
     /// The things the running transaction's own commits made or wrote, each held at its end as
-    /// it says (spec/sync-set.md §2 Writing, Making a thing).
+    /// it says (spec/sync-set.md §2 Writing, Minting a thing).
     pub(crate) wrote_on: Vec<Written>,
     /// The things the running transaction's own commits made (minted, or gave a keyset): their
     /// role entries are the node's own, a route by which the local part's log takes them

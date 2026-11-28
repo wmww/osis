@@ -105,7 +105,7 @@ Compare old and new code by instruction counts, never wall time; no timing runs 
 - What a followed key's held reads come from: `Effects::held_reads` (and `Cutoff`'s) lists each followed key's reads by container; sync `memory::held_reads_by_container_probe` (by hand, `MEM_N` commits, default 3) prints them for the engine's per-commit rows (`Engine::sync_held_reads`) and sync read (`Read::held_reads`) on both nodes, then each (follower, container)'s total.
 - Exact call counts by caller (valgrind is on fastbox-0, not ostrich): `valgrind --tool=callgrind` on one test (`--test-threads=1`), `callgrind_annotate --tree=caller`; a recursive function's inclusive cost (`name'2`) counts each level again.
 - Per-test wall times: `RUSTC_BOOTSTRAP=1 <binary> -Z unstable-options --report-time` from its package dir (on the binary: through cargo it builds a second artifact set).
-- **What a make costs** (notes/slim-design.md, Today): osis-sync `growth::today_table` (by hand) prints, per dependent make, 1-byte change and independent make, frames each way by kind, stored rows by family at the maker and the second node, and kept blob bytes. At a base: `tools/bin-at BASE OUT -p osis-sync --take core/sync/tests/it/growth.rs` (the probe from this tree on the base's code), then `OUT growth::today_table --ignored --nocapture` from `core/sync`.
+- **What a make costs** (notes/slim-design.md, Today): osis-sync `growth::today_table` (by hand) prints, per dependent make, 1-byte change and independent minting, frames each way by kind, stored rows by family at the minting node and the second node, and kept blob bytes. At a base: `tools/bin-at BASE OUT -p osis-sync --take core/sync/tests/it/growth.rs` (the probe from this tree on the base's code), then `OUT growth::today_table --ignored --nocapture` from `core/sync`.
 - **Every default test, or every module, alone**: `tools/pertest.py` (its header). `--modules` shows what a gate pays and where to cut; per test, which test moved. A compare against the last profile also catches a storm that landed passing (a test 20x its old count).
 
 ## Default-test cost
@@ -137,7 +137,7 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 - A mutation that changes nothing writes no delta, and a commit with no delta is not made (`commit_tx` returns `None`).
 - `Engine::run` rolled back keeps what a trial cached in some `Core` maps: derive secrets from the store record, never from a cache filled inside a trial.
 - `Meta::missing_parts` counts parts whose body is absent, not parts the node cannot open: test readability by value (`engine.get`).
-- `Engine::seal_package` writes a `dw/` row at the maker: seal after taking a census.
+- `Engine::seal_package` writes a `dw/` row at the minting node: seal after taking a census.
 - A test on what a store holds keeps history on the aspects it probes: a store otherwise compacts by its own judgment.
 - A thing re-entering the node closure usually rejoins by its own sync ID, so a re-entry test passes with `refetch` broken: only a dependent thing in a unit whose sync ID never left exercises it.
 - A drop path that marks commits stale needs a test where the drop happens in the end-of-transaction tail: only the debug assert "stale validity left unjudged" catches a marker set after the last re-judge.
@@ -166,7 +166,7 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 - Which callers moved a count: `costs::by_caller(name, depth)` before the run records it also as `name <- f <- g` (a backtrace per record: a probe, not a suite; a tail call leaves no frame).
 - `testenv::Cpu` counts only threads `testenv` ran: count other threads' work with `tools/icount`.
 - A count taken inside a `measured` closure (`osis_base::costs::take`) zeroes what the closure is measured by: every n/10n check then passes at 0.
-- A new `osis_base::costs` count shows in every test comparing all spans (osis `making::`, engine `closure::`): a counter one scale test reads goes outside the shared table (as `osis_store::bytes_handed`).
+- A new `osis_base::costs` count shows in every test comparing all spans (osis `minting::`, engine `closure::`): a counter one scale test reads goes outside the shared table (as `osis_store::bytes_handed`).
 - A memo's `try_settle` returns `None` for an unchanged answer: count `Some` returns against total runs. A memo read before its key is inserted computes again at the next look: look once before counting.
 - An n/10n count through a real world needs an event that moves inputs alone (most also bring new keys).
 - A cost test varying only what the node closure holds cannot see a pass judging every held thing when the filter is uncounted: count what is due before filtering.

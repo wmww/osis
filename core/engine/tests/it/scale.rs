@@ -2138,7 +2138,7 @@ fn removing_a_node_spec_permissions_8() {
 }
 
 /// The certificates an independent thing T of an account of `n` nodes carries in its unit
-/// (`Engine::certificates` at peer 0, its minter): (copies, records, copy bytes) with paired node
+/// (`Engine::certificates` at peer 0, the node that minted T): (copies, records, copy bytes) with paired node
 /// 1 the one node writing in T, and with every paired node writing once.
 fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
     let (mut lp, acc) = account_nodes(n);
@@ -2173,7 +2173,7 @@ fn unit_evidence(n: usize) -> [[u64; 3]; 2] {
         m.set(t, &crate::common::REG, &s(&format!("by {k}"))).unwrap();
         let c = lp.peers[k].commit(m).unwrap().unwrap();
         let pk = lp.peers[k].engine.package(&c).unwrap().unwrap();
-        assert!(matches!(lp.deliver(0, &pk).unwrap(), osis_engine::Ingested::Applied(_)), "node {k}'s write is valid at the minter");
+        assert!(matches!(lp.deliver(0, &pk).unwrap(), osis_engine::Ingested::Applied(_)), "node {k}'s write is valid at the minting node");
         if k == 1 || k == n - 1 {
             let e = &mut lp.peers[0].engine;
             let c = e.certificates(&t).unwrap();

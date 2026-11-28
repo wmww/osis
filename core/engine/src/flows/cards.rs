@@ -343,7 +343,7 @@ impl Engine {
 
     /// Names `inbox`, a thing other than `a` (else `Misuse`), `a`'s inbox, where grants to `a`
     /// from outside go (spec/sync-inbox.md §1): the `inbox` field of `a`'s `keys.0`, which needs
-    /// admin on `a` (spec/permissions.md §3), so refused unless this node is one. `a` and the inbox are made
+    /// admin on `a` (spec/permissions.md §3), so refused unless this node is one. `a` and the inbox are minted
     /// independent first where this node is an admin of each (a card carries their keys). This
     /// node's entries in the cards of `a` held here that it may write are written with it at once;
     /// the others by the nodes that may, as they take it (`refresh_cards`).

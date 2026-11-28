@@ -832,7 +832,7 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 /// Plays `steps` on three peers: 0 is G's mint admin and gives 1 write and 2 admin on it. The
 /// peers write no addenda (`play_with` for histories carrying them).
 /// A new dependent thing's record at peer `by`, held by the node root's strong in a commit of its
-/// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
+/// own (spec/sync-set.md §2 Minting a thing), so the commit making it is on it alone. That commit
 /// is on the peer's node root, which no other node syncs: marked `seen`, never played.
 fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
     let me = lp.peers[by].engine.tid();

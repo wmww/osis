@@ -178,7 +178,7 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
         assert_eq!(value(&mut w, 1, &t), None);
         assert!(!w.engine(1).closure_holds(&t) && !w.engine(1).in_sync_things(&t).unwrap());
     }
-    assert!(!w.engine(0).closure_holds(&gone) && value(&mut w, 0, &gone).is_none(), "released at its maker");
+    assert!(!w.engine(0).closure_holds(&gone) && value(&mut w, 0, &gone).is_none(), "released at the node that minted it");
     assert_eq!(w.engine(1).sync_set().unwrap().ids, before, "nothing synced for either");
 }
 
@@ -703,7 +703,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
 // spec/sync-set.md §2 (T's keys open), spec/commits.md §4 (Outside the node closure): Bob's node 1
 // makes T0 and grants Alice read on it; his node 2 mints T2 with admin T0 (its value sealed under T0's
 // epochs), grants Alice sync on T2 (T2 made independent) and removes T0's record edge. T0 holds no role on T2:
-// no reader of T0 reads T2, its maker's nodes included, and every entry under T0's sync ID filed
+// no reader of T0 reads T2, its mint admin account's nodes included, and every entry under T0's sync ID filed
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
 fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {

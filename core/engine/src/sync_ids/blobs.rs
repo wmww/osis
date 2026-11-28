@@ -999,7 +999,7 @@ impl Engine {
         Some((ep, (checked && self.established(g, e, Role::Write, &ep)).then_some(s)))
     }
 
-    /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing made
+    /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing minted
     /// independent, as the epoch derived from an established epoch of the mint admin
     /// it derived from before (spec/crypto.md §3-§4; the history box carries it without establishment).
     fn established(&self, g: &Tid, e: &ActorEpochs, r: Role, ep: &Epoch) -> bool {

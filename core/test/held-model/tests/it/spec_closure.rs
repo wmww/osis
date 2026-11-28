@@ -577,23 +577,23 @@ fn p3_held_is_carried_exhaustive() {
     assert_eq!(closure(&w, &e, &n, Walk::Units).held, set(&[0, 1]));
 }
 
-/// P3, the making rule: the commit must leave the new thing in the node closure. X and U independent
-/// the maker reads: a dependent thing minted with admin X is admitted; a dependent thing from U referenced
+/// P3, the minting rule: the commit must leave the new thing in the node closure. X and U independent
+/// the minting node reads: a dependent thing minted with admin X is admitted; a dependent thing from U referenced
 /// only by X is refused, though a held thing references it (X's keys do not open it); an independent
-/// thing minted with admin X whose keys the maker holds is admitted, and other readers of X hold it only once
+/// thing minted with admin X whose keys the minting node holds is admitted, and other readers of X hold it only once
 /// X is granted read on it.
 #[test]
-fn p3_making_rule() {
+fn p3_minting_rule() {
     // X=0, U=1, Q=4 independent; M=2 dependent on X, N=3 dependent on U.
     let mut w = world(&[K, K, p(0), p(1), K], &[]);
-    let maker = node(&mut w, &[0], &[0, 1, 4], &[]);
+    let minting = node(&mut w, &[0], &[0, 1, 4], &[]);
     let other = node(&mut w, &[0], &[0], &[]);
-    assert!(may_make(&w, &es(&[(0, 2)]), &maker, 2));
-    assert!(!may_make(&w, &es(&[(0, 3)]), &maker, 3));
-    assert!(may_make(&w, &es(&[(0, 4)]), &maker, 4));
-    assert!(!may_make(&w, &es(&[(0, 4)]), &other, 4));
+    assert!(may_mint(&w, &es(&[(0, 2)]), &minting, 2));
+    assert!(!may_mint(&w, &es(&[(0, 3)]), &minting, 3));
+    assert!(may_mint(&w, &es(&[(0, 4)]), &minting, 4));
+    assert!(!may_mint(&w, &es(&[(0, 4)]), &other, 4));
     w.grants.insert((0, 4), Role::Read);
-    assert!(may_make(&w, &es(&[(0, 4)]), &other, 4));
+    assert!(may_mint(&w, &es(&[(0, 4)]), &other, 4));
 }
 
 // ---- Release ----

@@ -1,4 +1,4 @@
-//! Making an account (spec/permissions.md §8): A minted with the node thing as mint admin and
+//! Minting an account (spec/permissions.md §8): A minted with the node thing as mint admin and
 //! independent at once, its inbox and profile minted with admin A, the node entering all three.
 
 use crate::common::T0;
@@ -6,14 +6,14 @@ use osis_base::Role;
 use osis_engine::local_peer::Peer;
 use osis_schema::core_types as ct;
 
-// spec/permissions.md §8 Making, spec/sync-inbox.md §1: A is minted with the node thing as mint
+// spec/permissions.md §8 Minting, spec/sync-inbox.md §1: A is minted with the node thing as mint
 // admin, independent; its inbox and profile are minted with admin A, independent, held by strongs
 // from A; A's `keys.0` names the inbox, whose setting takes both inbox signals, and A's card is on
 // the profile; the node holds A
 // (a strong from its root) and reads all three, the inbox and profile in A's sync unit, with
 // admin on each by A's record edge.
 #[test]
-fn making_an_account_spec_permissions_8() {
+fn minting_an_account_spec_permissions_8() {
     let mut p = Peer::new(1, T0).unwrap();
     let (acc, _) = osis_engine::local_peer::make_account(&mut p.engine).unwrap();
     let e = &mut p.engine;
@@ -46,8 +46,8 @@ fn independent_of_0(lp: &mut osis_engine::local_peer::LocalPeer) -> osis_base::T
     t
 }
 
-// spec/sync-set.md §1, spec/permissions.md §8 Making: a node's settings are its node thing's
-// entries on the thing its root's `settings^.0` names, A from its making. A sibling holding admin
+// spec/sync-set.md §1, spec/permissions.md §8 Minting: a node's settings are its node thing's
+// entries on the thing its root's `settings^.0` names, A from its minting. A sibling holding admin
 // on A writes the node's caps entry there and the node applies it; one holding write on A cannot
 // (`caps^.0` is admin-only: its commit, sent past its own rules, is invalid at the node); and no
 // sibling signs as the node: only a key holding a grant on the node thing does.

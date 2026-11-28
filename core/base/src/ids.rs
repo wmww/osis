@@ -133,10 +133,10 @@ impl crate::Classified for TidParseError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreationRecord {
     /// Its mint admin or its key.
-    pub minter: Minter,
+    pub minted_with: MintedWith,
     /// 32 bytes: random, a link key's from its seed (spec/crypto.md §3).
     pub nonce: [u8; 32],
-    /// Beside a mint admin: it is a link's thing K, made for this target; beside a key: it is
+    /// Beside a mint admin: it is a link's thing K, minted for this target; beside a key: it is
     /// a link key, holding a grant on this K (spec/permissions.md §7).
     pub link: Option<Tid>,
     /// Beside a mint admin only: the wall ms the thing ends at, whatever any minting of it says
@@ -147,7 +147,7 @@ pub struct CreationRecord {
 /// What a thing was minted with (spec/permissions.md §1): its mint admin, holding its record
 /// edge (admin) from the start, or a key, the record's key, holding admin from the start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Minter {
+pub enum MintedWith {
     Admin(Tid),
     Key(SignKey),
 }
@@ -164,18 +164,18 @@ pub const SIGNING_KEY_ED25519: u64 = 1;
 impl CreationRecord {
     /// A thing minted with admin `admin`.
     pub fn with_admin(admin: Tid, nonce: [u8; 32]) -> CreationRecord {
-        CreationRecord { minter: Minter::Admin(admin), nonce, link: None, expires: None }
+        CreationRecord { minted_with: MintedWith::Admin(admin), nonce, link: None, expires: None }
     }
     /// A thing minted with `key`.
     pub fn with_key(key: SignKey, nonce: [u8; 32]) -> CreationRecord {
-        CreationRecord { minter: Minter::Key(key), nonce, link: None, expires: None }
+        CreationRecord { minted_with: MintedWith::Key(key), nonce, link: None, expires: None }
     }
     /// The record's value; its canonical encoding is what the tid hashes.
     pub fn to_value(&self) -> Value {
         let mut m = crate::ValueMap::new();
-        match self.minter {
-            Minter::Admin(admin) => m.insert(Value::Int(REC_ADMIN), Value::Weak(admin)),
-            Minter::Key(key) => m.insert(Value::Int(REC_KEY), key.to_value()),
+        match self.minted_with {
+            MintedWith::Admin(admin) => m.insert(Value::Int(REC_ADMIN), Value::Weak(admin)),
+            MintedWith::Key(key) => m.insert(Value::Int(REC_KEY), key.to_value()),
         };
         m.insert(Value::Int(REC_NONCE), Value::Bytes(self.nonce.to_vec()));
         if let Some(t) = self.link {
@@ -196,9 +196,9 @@ impl CreationRecord {
             Some(Value::Bytes(b)) => b.as_slice().try_into().ok()?,
             _ => return None,
         };
-        let minter = match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY))) {
-            (Some(Value::Weak(admin)), None) => Minter::Admin(*admin),
-            (None, Some(k)) => Minter::Key(SignKey::from_value(k)?),
+        let minted_with = match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY))) {
+            (Some(Value::Weak(admin)), None) => MintedWith::Admin(*admin),
+            (None, Some(k)) => MintedWith::Key(SignKey::from_value(k)?),
             _ => return None,
         };
         let link = match m.get(&Value::Int(REC_LINK)) {
@@ -208,10 +208,10 @@ impl CreationRecord {
         };
         let expires = match m.get(&Value::Int(REC_EXPIRES)) {
             None => None,
-            Some(Value::Int(t)) if *t >= 0 && matches!(minter, Minter::Admin(_)) => Some(t.unsigned_abs()),
+            Some(Value::Int(t)) if *t >= 0 && matches!(minted_with, MintedWith::Admin(_)) => Some(t.unsigned_abs()),
             _ => return None,
         };
-        (m.len() == 2 + usize::from(link.is_some()) + usize::from(expires.is_some())).then_some(CreationRecord { minter, nonce, link, expires })
+        (m.len() == 2 + usize::from(link.is_some()) + usize::from(expires.is_some())).then_some(CreationRecord { minted_with, nonce, link, expires })
     }
     pub fn nonce(&self) -> &[u8; 32] {
         &self.nonce
@@ -234,7 +234,7 @@ impl CreationRecord {
     pub fn expires(&self) -> Option<u64> {
         self.expires
     }
-    /// The target a link's thing K was made for, as its creator says (spec/permissions.md §7).
+    /// The target a link's thing K was minted for, as its creator says (spec/permissions.md §7).
     pub fn link_target(&self) -> Option<Tid> {
         self.mint_admin().and(self.link)
     }
@@ -245,24 +245,24 @@ impl CreationRecord {
     /// The mint admin (spec/permissions.md §1): the next thing up the record chain, whose
     /// secrets a dependent thing derives from (none for a thing minted with a key).
     pub fn mint_admin(&self) -> Option<Tid> {
-        match self.minter {
-            Minter::Admin(a) => Some(a),
-            Minter::Key(_) => None,
+        match self.minted_with {
+            MintedWith::Admin(a) => Some(a),
+            MintedWith::Key(_) => None,
         }
     }
     /// The key the record holds (spec/permissions.md §1 Key grant), where it names no mint admin.
     pub fn key(&self) -> Option<SignKey> {
-        match self.minter {
-            Minter::Admin(_) => None,
-            Minter::Key(k) => Some(k),
+        match self.minted_with {
+            MintedWith::Admin(_) => None,
+            MintedWith::Key(k) => Some(k),
         }
     }
     /// The holder of the record's admin edge from the start: its mint admin (the record edge) or
     /// its key (the record's key).
     pub fn holder(&self) -> Holder {
-        match self.minter {
-            Minter::Admin(a) => Holder::Thing(a),
-            Minter::Key(k) => Holder::Key(k),
+        match self.minted_with {
+            MintedWith::Admin(a) => Holder::Thing(a),
+            MintedWith::Key(k) => Holder::Key(k),
         }
     }
 }

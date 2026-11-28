@@ -188,8 +188,8 @@ fn texts(db: &Osis, c: Tid) -> Vec<String> {
     since(db, c, None, 100).unwrap().messages.iter().map(|k| text(&k.at(c, MSG).unwrap().body)).collect()
 }
 
-// spec/sync-set.md §4: a chat made through the library is
-// held by the maker's account, so it reaches the maker's other node, and one joined by its link
+// spec/sync-set.md §4: a chat minted through the library is
+// held by its mint admin's account, so it reaches that account's other node, and one joined by its link
 // syncs both ways, with no write besides create, the join and the posts.
 #[test]
 fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
@@ -199,7 +199,7 @@ fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
     let bob = on(&net, 20, &c0);
     let c = create(&alice, &Options { name: "room".into(), ..Options::default() }, account).unwrap();
     drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
-    assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the maker's other node");
+    assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the account's other node");
     let link = alice.make_link(c, Role::Write, account, LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, bob.redeem(&link, bob.node())).unwrap(), c);
     post(&bob, c, "hi from bob");

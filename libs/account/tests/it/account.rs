@@ -19,11 +19,11 @@ fn make(db: &Osis, a: &Account, name: &str) -> Tid {
     t
 }
 
-// spec/permissions.md §8 Making: the account is a thing of its own, the node its admin, keeping
+// spec/permissions.md §8 Minting: the account is a thing of its own, the node its admin, keeping
 // its settings and dial entry on it; its profile names it, carries the entry too and is public; a
 // node makes one account at most, and a node that made none acts for none.
 #[test]
-fn making_an_account_spec_permissions_8() {
+fn minting_an_account_spec_permissions_8() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let (db, a, _) = person(&net, 1, &c);
@@ -111,7 +111,7 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
     assert!(bob.grants(t).unwrap().contains_key(&who));
 }
 
-// spec/permissions.md §7, §8 Making: a link made with the account as admin is the account's:
+// spec/permissions.md §7, §8 Minting: a link made with the account as admin is the account's:
 // another node of it lists and ends it, and a node leaving its own grant on the target leaves
 // the link to the account, which stays its admin.
 #[test]
@@ -133,7 +133,7 @@ fn links_are_the_accounts_spec_permissions_7() {
     assert!(b.links().unwrap().is_empty());
 }
 
-// notes/realms.md: an account is a realm, and a realm made in it is marked and named, held from
+// notes/realms.md: an account is a realm, and a realm minted with it as mint admin is marked and named, held from
 // the account, administered through it, and keeps a removed member's copy by default.
 #[test]
 fn a_realm_made_in_the_account() {

@@ -16,7 +16,7 @@ mod scale;
 mod codegen;
 mod text;
 mod tracking;
-mod making;
+mod minting;
 mod thing_cost;
 mod sync;
 mod port;

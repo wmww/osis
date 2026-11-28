@@ -23,11 +23,11 @@ What differs between the stories is not in the commits: in mine the other admins
 - For a window counted from each node's own receipt of the add (never from a stamp), any admin may cancel the add.
 - After the window the key has its full effect at that node, and only such keys remove it.
 
-The window is a picked number (notes/arbitrary-values.md): at 0 the key has full effect at once, so a thief holding a node wins; at infinity no added key ever takes effect, so only keys a thing was made with count. It protects against a theft after the window, never one inside it, and each node counts its own window, so nodes differ on whether a key has taken effect until all have passed it (a fork like any admin dispute: notes/principles.md, Forks are permanent).
+The window is a picked number (notes/arbitrary-values.md): at 0 the key has full effect at once, so a thief holding a node wins; at infinity no added key ever takes effect, so only keys a thing was minted with count. It protects against a theft after the window, never one inside it, and each node counts its own window, so nodes differ on whether a key has taken effect until all have passed it (a fork like any admin dispute: notes/principles.md, Forks are permanent).
 
 ## To settle with Tess
 - spec/requirements.md Concepts: a role can be changed or removed by those with the right to. A key no admin can remove fits only where some party (other such keys, a cancel in the window) holds that right.
-- Whether a thing made with a key gives that key the stronger standing from the start (the infinity end), and whether that standing can be given up.
+- Whether a thing minted with a key gives that key the stronger standing from the start (the infinity end), and whether that standing can be given up.
 - What a node that first syncs after the add counts its window from, and whether a node given another's recorded sides takes its receipt times.
 - Who may cancel, and whether a cancel can itself be contested.
 - A stolen recovery key: two parties holding one key cannot be told apart.

@@ -79,7 +79,7 @@ impl Osis {
         // thing acts for `admin` no longer than the node may (a node removed from the account,
         // spec/permissions.md §8 Removing, loses its clients' roles there by the ordinary rules).
         // The node root holds the thing by a strong, in the transaction minting it
-        // (spec/sync-set.md §2 Making a thing)
+        // (spec/sync-set.md §2 Minting a thing)
         let thing = self.engine(|e| {
             let d = e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))?;
             let (ts, _) = e.mint_independent(&[osis_engine::MintAdmin::Thing(admin)], |ts| {

@@ -1031,7 +1031,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
 /// The mint admin of independent `a` where `a`'s record names unit `c`'s owner `o` or a thing `c`
 /// holds whole (spec/sync-set.md §2 Stubs): its record edge is `a`'s grant that `c`'s readers
 /// hold by `a`'s record, so `c` carries `a`'s stub with that edge's writes, whatever `c`'s role on
-/// `a` is now. Who writes it: `a`'s minter (the record), fixed in `a`'s tid.
+/// `a` is now. Who writes it: `a`'s minting (the record), fixed in `a`'s tid.
 pub(crate) fn record_admin(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Tid> {
     let m = core.mint_admin(a)?;
     let cl = &core.ix.closure;
@@ -1478,7 +1478,7 @@ pub(crate) enum Written {
 }
 
 /// The things this transaction's own commits made or wrote, each held at its end as `Written`
-/// says, or the transaction is refused (spec/sync-set.md §2 Writing, Making a thing: a node writes
+/// says, or the transaction is refused (spec/sync-set.md §2 Writing, Minting a thing: a node writes
 /// only what it holds; it fires at what it does not). A node with no node root yet (its first
 /// start) checks nothing, nor a hostile writer (`skip_writer_rules`): a writer's rule.
 pub(crate) fn check_written(tx: &mut Tx<'_>) -> Result<()> {

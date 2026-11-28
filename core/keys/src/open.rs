@@ -211,7 +211,7 @@ pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut Acto
 }
 
 /// `ingest_with` with no box to open: what the secrets `epochs` holds already learn from
-/// `actor`'s `secrets.0` by history (a thing minted with a key, its secrets the minter's alone,
+/// `actor`'s `secrets.0` by history (a thing minted with a key, its secrets the key holder's alone,
 /// boxed to nobody).
 pub fn ingest_held(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
     if unchecked.is_none() {

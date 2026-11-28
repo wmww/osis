@@ -1141,7 +1141,7 @@ impl Engine {
     }
 
     /// Tests: writes in `m` the strong that holds `t`, minted with admin `admin` (spec/sync-set.md §2
-    /// Making a thing): from `admin` where that is a thing `m` makes or the node holds, else from
+    /// Minting a thing): from `admin` where that is a thing `m` makes or the node holds, else from
     /// the node root, as for the node thing (its sync unit is itself alone, spec/sync-set.md §1).
     #[doc(hidden)]
     #[allow(clippy::expect_used)] // tests: an op on a static core aspect
@@ -1221,9 +1221,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    // a node writes only what it holds (spec/sync-set.md §2 Writing, Making a thing): every thing
+    // a node writes only what it holds (spec/sync-set.md §2 Writing, Minting a thing): every thing
     // the commit makes, and every thing it writes not held as it writes, must be held at the
-    // transaction's end; a thing made with its role entries alone may be held as a holder
+    // transaction's end; a thing minted with its role entries alone may be held as a holder
     // (`Written::Holder`); role entries on a thing held as a stub are no write outside it; a
     // sealed fire is built, never applied.
     if !sealed {

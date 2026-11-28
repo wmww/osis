@@ -84,7 +84,7 @@ pub fn keep_day(db: &Osis, t: Tid, aks: &[&str]) {
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&x)).unwrap();
 }
 
-/// A thing made held (`create_held`) with a setting keeping each of `entries`' history.
+/// A thing minted and held (`create_held`) with a setting keeping each of `entries`' history.
 pub fn thing_keeping(db: &Osis, entries: &[(&str, osis::History)]) -> Tid {
     let x = setting(entries);
     db.commit_with(|w| {
@@ -360,7 +360,7 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 
 
 
-/// A thing made and held in one write (spec/sync-set.md §2 Making a thing).
+/// A thing minted and held in one write (spec/sync-set.md §2 Minting a thing).
 pub trait Held {
     /// A thing minted with the home (`home`) as admin, held by a strong in its `holds.0`.
     fn create_held(&mut self) -> Result<Tid>;

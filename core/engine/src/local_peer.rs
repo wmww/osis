@@ -721,7 +721,7 @@ pub struct Account {
     pub profile: Tid,
 }
 
-/// Makes an account on `e` as the account library does (spec/permissions.md §8 Making), with the
+/// Makes an account on `e` as the account library does (spec/permissions.md §8 Minting), with the
 /// same engine calls, in one transaction: A minted with the node thing as mint admin, its inbox and
 /// profile minted with admin A, each independent, held by strongs from A's `holds.0`; the inbox's
 /// setting enabling both inbox signals; A's `keys.0` naming the inbox in the commit holding them; A's card on the profile; the node root's strong to A

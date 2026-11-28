@@ -10,7 +10,7 @@
 //! KEM-less keyset leaves the holder out rather than sealing at an older one, which a party
 //! removed since may hold).
 //! Who writes each input: the grants are their writers' (judged by the timelines, with key
-//! access); the setting is the thing's own; the creation record the minter's; a card a writer's
+//! access); the setting is the thing's own; the creation record its minting's; a card a writer's
 //! of its host along a path through the thing (`flows::cards`). A writer that may
 //! grant H a role makes H's keysets due for KEM keys, nothing more (one rotation by H's rotator).
 

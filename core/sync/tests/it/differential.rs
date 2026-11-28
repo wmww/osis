@@ -107,18 +107,18 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
 // spec/sync-set.md §3 (Nothing of R stays): a node's own writes on a thing it releases, not yet
 // held elsewhere, go. Node 1 makes a thing and grants node 0's account read; a run connects them
 // while no node of that account holds the thing (the grant is an offer); a paired node of the
-// account then holds it by a strong and node 1 releases it before any run. The making's value is
+// account then holds it by a strong and node 1 releases it before any run. The minting's value is
 // at no node, and the oracle counts it lost: a run gives a node a value write only where its
 // account's node closure held the thing then (`harness::history::ran`).
 #[test]
-fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
+fn a_minting_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Run, Step::Strong(2, None, 1), Step::Unstrong(1, Some(0), 1)];
     holds_on(0, 2, 3, &script, String::new(), false);
 }
 
 // spec/sync-set.md §3 (Nothing of R stays): node 1 makes a thing, gives the public sync and node
-// 2's account read, and releases it before any run: its making and the public's grant are at no
+// 2's account read, and releases it before any run: its minting and the public's grant are at no
 // node, while the grant to node 2's account reaches it as an offer and node 2 holds the thing by
 // a strong. The oracle counts a lost grant as it counts a lost value write (`lost_writes`) and
 // builds the reference and the model without it, so node 2 reads the roster it holds (failed:
@@ -305,7 +305,7 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
 
 // spec/sync-opens.md §6 (Where it stopped: a node that stops holding S tells each stop kept),
 // spec/sync-ids.md §6 (Walk: a Hit refused counts as that credential not shown): node 1 grants
-// node 0's account sync on thing 0, a thing made in thing 0 beside it; node 0 holds thing 0 and
+// node 0's account sync on thing 0, a thing minted with thing 0 as mint admin beside it; node 0 holds thing 0 and
 // removes its account's other node, so node 1 rotates thing 0's sync role and issues a step.
 // Node 0 takes the step before the box under it, judges itself past its keys, stops
 // S (its store shredded) and syncs it again before its sync modules see it leave. Node 0 keeps
@@ -585,9 +585,9 @@ fn a_grantee_judges_a_thing_minted_in_another_by_its_record_blob_spec_permission
 // world's time): past the drift bound, node 0 grants node 1's account write on its thing and node 1
 // makes things in it. Every node and twin reads each, held by thing 0's strongs, as the model says
 // (failed while a twin's clock stayed at the world's making until after the commits were handed:
-// each later commit pended on its `ts` and the tick took them by commit ID, a making before the grant
+// each later commit pended on its `ts` and the tick took them by commit ID, a minting before the grant
 // dropped as invalid and never handed again; the model, reading thing 0's strongs from that twin,
-// held the making nowhere, and node 0 read it).
+// held the minting nowhere, and node 0 read it).
 #[test]
 fn the_reference_takes_writes_at_the_worlds_time_spec_permissions_6() {
     use crate::harness::script::*;

@@ -135,7 +135,7 @@ pub trait Ground {
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;
     /// S's first sync here ended (`Store::first_synced`, spec/sync-streams.md §5; a stamped read),
-    /// or S's thing was made here (nothing to sync first).
+    /// or S's thing was minted here (nothing to sync first).
     fn first_synced(&mut self, s: &SyncId) -> Result<bool>;
     /// This node may log `c`'s body under S now (`Engine::may_log`, spec/sync-judgement.md §2
     /// Loggable): must-hold only while it may.

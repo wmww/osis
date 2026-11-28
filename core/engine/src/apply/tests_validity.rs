@@ -637,7 +637,7 @@ mod tests {
         }
     }
     // spec/permissions.md §1: the cap counts mint-admin links (the record chain), whether the
-    // things were made with a write or by their record alone: a chain at `MAX_CHAIN_DEPTH`
+    // things were minted with a write or by their record alone: a chain at `MAX_CHAIN_DEPTH`
     // links applies; one link more is invalid, at the writer and at receivers.
     #[test]
     fn record_chain_through_mint_admins_capped_spec_permissions_1() {

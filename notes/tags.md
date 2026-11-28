@@ -8,7 +8,7 @@
 - No `kind` aspect: what a thing is, is defined by its aspects, and a thing may be several kinds (ECS).
 - No directory or folder concept (the tree was always too inflexible) except for interfacing with real filesystems. User-facing organization is **tags**: nestable as a graph, any thing can be in any tag, a thing with `holds.0` and `tag.0` (spec/data-model.md §8). Not every `holds.0` is a tag; internal application containers carry no `tag.0` and are never shown.
 - No user-visible "space". A thing never changes tid, so users must never be expected to move things between containers; a share is per thing, by a grant (below).
-- Chat is notes/chat.md: a thing made by its record, not a tag. Shared permission collections are realms (notes/realms.md): `realm.0` marks a thing as a realm as `tag.0` marks one as a container.
+- Chat is notes/chat.md: a thing minted by its record, not a tag. Shared permission collections are realms (notes/realms.md): `realm.0` marks a thing as a realm as `tag.0` marks one as a container.
 
 ## Core aspects
 `name.0`, `body.0`, `tag.0`: schema/core.osis.
@@ -35,6 +35,6 @@ Adding a thing or a tag to a shared tag has significant privacy implications and
 A thing made of parts (a presentation of slides) is mint admin of its parts and references them strongly; sharing it is one grant on the whole. Users never see this as a container. Apps must not depend on sharing parts individually.
 
 ## Other conventions settled
-- Shared roots (a shared tag, a chat) are independent from creation and held by a strong from a thing in the node closure of the node minting them (spec/sync-set.md §2, Making a thing).
+- Shared roots (a shared tag, a chat) are independent from creation and held by a strong from a thing in the node closure of the node minting them (spec/sync-set.md §2, Minting a thing).
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
 - Files: `blob` plus a mime string on a file thing.

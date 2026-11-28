@@ -32,7 +32,7 @@ How it reads the plan:
   - `p3_worked_case`: Bob (read on X and Y) holds Y. Carol (X only) does not, and holds the same with or without X -> Y. PASS.
   - `p3_strong_never_changes_what_no_role_holds_exhaustive` covers every world of 2 independent and 2 dependent things, grants, 5 candidate strongs, root strongs and every role combination. A node reads an independent thing only at a role of read or above, and stores one unread only at a role of sync. A strong into or out of an independent thing it holds no role on, and that no stored sync unit's keys open, never changes what it holds. PASS.
   - `p3_held_is_carried_exhaustive`: everything held is carried by an entered sync unit or the local part. PASS. The literal walk fails it: with X and U open, X -> L -> M, L and M dependents of U, X holding no role on U, it holds M, which nothing carries. Sync unit by sync unit it holds X alone.
-  - `p3_making_rule`: "leave it in the node closure" admits a dependent thing minted with admin X and an independent thing whose keys the maker holds. It refuses one of U's dependents referenced only by X, though a held thing references it. PASS.
+  - `p3_minting_rule`: "leave it in the node closure" admits a dependent thing minted with admin X and an independent thing whose keys the minting node holds. It refuses one of U's dependents referenced only by X, though a held thing references it. PASS.
   - Checks (a)-(c) and the reach test for (d) are under Further checks.
 - **P4 Release.**
   - A pass ends once neither side has anything the other's closure wants, or both hold it; then the node drops what its closure does not reach.

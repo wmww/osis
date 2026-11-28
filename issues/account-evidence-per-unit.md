@@ -1,9 +1,9 @@
 # What an account's nodes add to every unit
-> Summary: Copies are cut per sync ID (spec/permissions.md §4 Copies; engine built: notes/certificates.md The cut): T's unit at its minter 10.7 KB at n and 10n (one writer); a pairing offer 8.6 KB. `secrets.0` in pieces is built, snapshots too (a holder's cut carries its piece and the history boxes, 34 B a holder more); `Contents` paging is spec, not built. A's public key record carries no grant: pairing adds nothing per unit; a removal's rotation carries about 526 B a node of box records. Left: a held copy holding more than S's cut is not removed.
+> Summary: Copies are cut per sync ID (spec/permissions.md §4 Copies; engine built: notes/certificates.md The cut): T's unit at the node that minted it 10.7 KB at n and 10n (one writer); a pairing offer 8.6 KB. `secrets.0` in pieces is built, snapshots too (a holder's cut carries its piece and the history boxes, 34 B a holder more); `Contents` paging is spec, not built. A's public key record carries no grant: pairing adds nothing per unit; a removal's rotation carries about 526 B a node of box records. Left: a held copy holding more than S's cut is not removed.
 > Priority: normal
 > Tags: engine, permissions, keys, performance
 
-Counted: engine `scale::evidence_per_unit_spec_permissions_4` (an independent thing T minted with admin A, `Engine::certificates` at its minter, accounts of 3 and 21 nodes), `pairing_a_node_spec_permissions_8`; figures in notes/thing-cost.md (Accounts at n and 10n nodes). The cut's rule and why: notes/certificates.md (The cut); model held-model `copy_cut`.
+Counted: engine `scale::evidence_per_unit_spec_permissions_4` (an independent thing T minted with admin A, `Engine::certificates` at the node that minted it, accounts of 3 and 21 nodes), `pairing_a_node_spec_permissions_8`; figures in notes/thing-cost.md (Accounts at n and 10n nodes). The cut's rule and why: notes/certificates.md (The cut); model held-model `copy_cut`.
 
 ## The cut (built)
 Measured against whole copies: one writer 34.1 to 20.4 KB at n, 49.9 to 38.0 KB at 10n; every node writing 40.3 to 20.4 KB at n, 168 to 38.0 KB at 10n (a writer's grant is evidence as its edge write, which A's keys copy of it already holds); the pairing offer 25.2 to 8.5 KB. Test: `accounts::a_units_stub_is_carried_as_its_sync_only_cut_spec_sync_set_2` (the stub carries its sync-only cut alone, no other holder's grant).
@@ -15,7 +15,7 @@ Left of the build job:
 ## A's public key record per unit (built)
 Grants and re-seals record nothing in `keys.0`; a rotation records its own boxes, for Foreign (spec/crypto.md §4 Box records). A's current `keys.0` commits are every commit with a write live in A's `keys.0` state (spec/permissions.md §4): its newest rotations and whichever commits last wrote the sync ID, deposit seed and step keys. Stale reads every box a held valid `secrets.0` body puts, not the state's (a rotation foreign at a node strips the state's: notes/holder-actors.md, Stale boxes). Depth0's deep-departure property (a writer holding none of A's boxes kept out by records), stronger than the requirement, is given up (Tess); `NoLeakKnowing` holds (`D0_rs_blind`, `D0_pf_blind`).
 
-Measured (engine `scale::an_accounts_key_record_per_unit_*`, by hand `an_accounts_key_record_table`; A's copies under each unit T minted with admin A, at A's minter):
+Measured (engine `scale::an_accounts_key_record_per_unit_*`, by hand `an_accounts_key_record_table`; A's copies under each unit T minted with admin A, at the node that minted A):
 
 | | nodes of A | per unit: copies, bytes | distinct blobs over 1, 10, 100 units |
 |---|---|---|---|
@@ -24,7 +24,7 @@ Measured (engine `scale::an_accounts_key_record_per_unit_*`, by hand `an_account
 | after a removal | 3 | 3, 16,554 B | 3 (16,554 B) |
 | after a removal | 21 | 3, 26,024 B | 3 (26,024 B) |
 
-Pairing adds nothing to any unit (the one copy is A's making commit, cut to `keys.0` and `sync.0`). After a removal a unit carries the making commit (8,480 B: sync ID, deposit seed, step), the removal's rotation cut to `keys.0` with its own `roles.0` (it demotes: Carried demotions; 7,646 B at 3 nodes, 17,116 B at 21) and the removed node's grant `roles.0` (428 B). Every unit carries the same cuts, so they dedup to one blob each whatever the count of units (spec/permissions.md §4: one blob per distinct cut). Wire: osis-sync `growth::a_holders_key_record_crosses_the_wire_once_*` (by hand).
+Pairing adds nothing to any unit (the one copy is A's minting commit, cut to `keys.0` and `sync.0`). After a removal a unit carries the minting commit (8,480 B: sync ID, deposit seed, step), the removal's rotation cut to `keys.0` with its own `roles.0` (it demotes: Carried demotions; 7,646 B at 3 nodes, 17,116 B at 21) and the removed node's grant `roles.0` (428 B). Every unit carries the same cuts, so they dedup to one blob each whatever the count of units (spec/permissions.md §4: one blob per distinct cut). Wire: osis-sync `growth::a_holders_key_record_crosses_the_wire_once_*` (by hand).
 
 Left, growing with A's nodes per unit: the rotation's box records, one per box (four roles a node), about 130 B each: 526 B a node. They serve Foreign alone, which judges a box at k naming a keyset held invalid or foreign: the simplest lever is one record per holder actor per rotation (every role's box to M names keysets of M chosen alike), a quarter of the bytes; dropping them needs Foreign judged from the rotation's own `secrets.0` piece, which keys-copy holders do not hold.
 

@@ -20,7 +20,7 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
   - `holding::an_entry_whose_pending_commit_is_forgotten_is_parked_again`: its setup is gone (it needs a commit that pends and is then forgotten while its entry stays).
   - `inbox::a_store_on_a_losing_sibling_step_is_moved_on`, `inbox::a_store_on_a_losing_sibling_under_a_new_admin_secret_is_moved_on` (both: node 1 is registered no step).
   - `retention::a_released_things_sync_id_write_stays_off_its_mint_admins_sync_id` (the harness's quiet check: a caught-up reader lacks a must-hold certificate copy).
-  - Public `osis` `thing_cost::what_a_thing_costs_as_the_app_makes_it` (a dependent thing's maker rows over the 2,000 B budget; not replayed).
+  - Public `osis` `thing_cost::what_a_thing_costs_as_the_app_mints_it` (a dependent thing's minting node rows over the 2,000 B budget; not replayed).
 
 ## For review
 Rulings the rewrite made that the review should check:

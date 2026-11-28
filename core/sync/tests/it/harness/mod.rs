@@ -142,7 +142,7 @@ pub struct WNode {
     pub account: Option<Tid>,
     /// Its account's profile thing.
     pub profile: Option<Tid>,
-    /// The inbox its account was made with.
+    /// The inbox its account was minted with.
     pub inbox: Option<Tid>,
 }
 
@@ -588,7 +588,7 @@ pub struct World {
     pub record: bool,
     /// Restarts in place after a device crash (`DiskFault::Crash`), so far.
     pub crashes: u64,
-    /// The differential's state: things made, values written, commits handed to the reference.
+    /// The differential's state: things minted, values written, commits handed to the reference.
     pub history: history::Made,
     /// The fixture this world is a copy of, live in this test.
     fixture: Option<String>,
@@ -1153,9 +1153,9 @@ impl World {
         t.applied(i, entries, commits);
         let mut things = Vec::new();
         for k in t.things() {
-            let Some((tid, maker)) = self.history.things.get(k).copied() else { continue };
+            let Some((tid, minting)) = self.history.things.get(k).copied() else { continue };
             things.push(tid.to_string());
-            for s in self.engine(maker).sync_ids(&tid).map(|v| v.iter().map(|o| trace::short(&o.id)).collect::<Vec<_>>()).unwrap_or_default() {
+            for s in self.engine(minting).sync_ids(&tid).map(|v| v.iter().map(|o| trace::short(&o.id)).collect::<Vec<_>>()).unwrap_or_default() {
                 things.push(s);
             }
         }
@@ -1661,7 +1661,7 @@ pub fn fixture(key: &str, build: impl FnOnce() -> World) -> World {
     fixture_with(key, || (build(), ())).0
 }
 
-/// `fixture` with a value the build names (the things it made) handed out beside each copy.
+/// `fixture` with a value the build names (the things it minted) handed out beside each copy.
 pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (World, T)) -> (World, T) {
     LIVE.with(|l| {
         if !l.borrow_mut().insert(key.to_string()) {
@@ -1793,12 +1793,12 @@ pub enum Step {
     Pair(usize),
     Unpair(usize, usize),
     /// Node i redeems a locator of thing k for its account (`Node::redeem`), the link made at
-    /// an online node where the public reads it, preferably the thing's maker.
+    /// an online node where the public reads it, preferably the node that minted the thing.
     Redeem(usize, usize),
     /// Node i writes its account's card on thing k (spec/sync-inbox.md §1 Card).
     Card(usize, usize),
     /// Node i moves its account's inbox (spec/sync-inbox.md §1): to thing k, its setting first
-    /// taking both inbox signals, or back to the inbox the account was made with (`None`): the
+    /// taking both inbox signals, or back to the inbox the account was minted with (`None`): the
     /// account's `keys.0` names it (an admin's write, refused at any other node).
     Inbox(usize, Option<usize>),
 }

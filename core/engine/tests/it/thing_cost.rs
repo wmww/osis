@@ -1,5 +1,5 @@
 //! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a dependent thing minted with the account as admin and an
-//! independent thing minted with the account as admin, for the maker and for the account's second
+//! independent thing minted with the account as admin, for the minting node and for the account's second
 //! node: commits, store rows by family, bytes a peer downloads, KEM and signature operations.
 
 use crate::common::{REG, s};
@@ -36,12 +36,12 @@ fn ops() -> BTreeMap<&'static str, u64> {
 #[allow(dead_code)] // read by its Debug print
 struct Cost {
     commits: usize,
-    maker_rows: i64,
-    maker_blobs: i64,
+    minting_rows: i64,
+    minting_blobs: i64,
     download: usize,
     reader_rows: i64,
     reader_blobs: i64,
-    maker_ops: BTreeMap<&'static str, u64>,
+    minting_ops: BTreeMap<&'static str, u64>,
     reader_ops: BTreeMap<&'static str, u64>,
 }
 
@@ -82,10 +82,10 @@ fn make(lp: &mut LocalPeer, admin: Tid, build: fn(&mut Engine, Tid) -> Tid, labe
     let before: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
     costs::take();
     let t = build(&mut lp.peers[0].engine, admin);
-    let maker_ops = ops();
+    let minting_ops = ops();
     let mut new: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     new.sort_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts);
-    let mut cost = Cost { commits: new.len(), maker_ops, ..Cost::default() };
+    let mut cost = Cost { commits: new.len(), minting_ops, ..Cost::default() };
     if show {
         eprintln!("== {label}: {} commits", new.len());
     }
@@ -117,12 +117,12 @@ fn make(lp: &mut LocalPeer, admin: Tid, build: fn(&mut Engine, Tid) -> Tid, labe
     cost.reader_ops = ops();
     let (c1, r1) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
     let (mg, rg) = (grown(&c0, &c1), grown(&r0, &r1));
-    cost.maker_rows = mg.iter().map(|x| x.2).sum();
+    cost.minting_rows = mg.iter().map(|x| x.2).sum();
     cost.reader_rows = rg.iter().map(|x| x.2).sum();
-    cost.maker_blobs = blob_bytes(lp, 0) - b0;
+    cost.minting_blobs = blob_bytes(lp, 0) - b0;
     cost.reader_blobs = blob_bytes(lp, 1) - rb0;
     if show {
-        eprintln!("  maker rows by family (rows, bytes): {mg:?}");
+        eprintln!("  minting node rows by family (rows, bytes): {mg:?}");
         eprintln!("  reader rows by family: {rg:?}");
         eprintln!("  {cost:?}");
     }
@@ -146,11 +146,11 @@ fn what_a_thing_costs() {
     let e = &mut lp.peers[0].engine;
     assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
     assert_eq!((dependent.commits, independent.commits), (1, 2), "its rotation carrying its record, then what the dependent one writes");
-    assert!(dependent.maker_rows < 1_500 && dependent.reader_rows < 1_500 && dependent.download < 600, "{dependent:?}");
-    assert_eq!(dependent.maker_ops.get("sign"), Some(&1), "the commit's signature alone");
-    assert!(independent.maker_rows < 10_000 && independent.reader_rows < 10_100 && independent.download < 4_800, "{independent:?}");
+    assert!(dependent.minting_rows < 1_500 && dependent.reader_rows < 1_500 && dependent.download < 600, "{dependent:?}");
+    assert_eq!(dependent.minting_ops.get("sign"), Some(&1), "the commit's signature alone");
+    assert!(independent.minting_rows < 10_000 && independent.reader_rows < 10_100 && independent.download < 4_800, "{independent:?}");
     // it holds nothing and takes no signal: no KEM key (spec/crypto.md §3 Published KEM keys)
-    assert_eq!(independent.maker_ops.get("kem: keygen"), None, "no KEM key made");
+    assert_eq!(independent.minting_ops.get("kem: keygen"), None, "no KEM key made");
     assert!(!independent.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
 
@@ -173,7 +173,7 @@ fn what_a_reader_costs() {
         let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
         costs::take();
         let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-        let maker_ops = ops();
+        let minting_ops = ops();
         let mut download = 0;
         for c in &done.commits {
             let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
@@ -213,7 +213,7 @@ fn what_a_reader_costs() {
             eprintln!("{rows}");
         }
         let sum = |x: &[(String, i64, i64)]| x.iter().map(|x| x.2).sum::<i64>();
-        each.push((done.commits.len(), download, sum(&mg), sum(&rg), sum(&offered), maker_ops, reader_ops));
+        each.push((done.commits.len(), download, sum(&mg), sum(&rg), sum(&offered), minting_ops, reader_ops));
     }
     eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, reader rows with the offer, granter ops, reader ops) {:?}", each[1]);
     let (commits, bytes, _, reader, offered, _, _) = &each[1];
@@ -261,7 +261,7 @@ fn what_a_small_commit_costs() {
     let t = a_dependent(&mut lp.peers[0].engine, a);
     lp.sync_all().unwrap();
     small_commit(&mut lp, 0, t, None, "x");
-    let by_minter = small_commit(&mut lp, 0, t, None, "y");
+    let by_minting = small_commit(&mut lp, 0, t, None, "y");
     let by_paired = small_commit(&mut lp, 1, t, None, "z");
     // a key granted write on a thing signs as it (as key_grants::granted): peer 1's node reads
     // T, its key holds write on T
@@ -275,26 +275,26 @@ fn what_a_small_commit_costs() {
     small_commit(&mut kp, 0, k, None, "x");
     let by_admin = small_commit(&mut kp, 0, k, None, "y");
     let by_key = small_commit(&mut kp, 1, k, Some(k), "z");
-    eprintln!("small commit (opened, header, path, second signer form, sealed blob): minter {by_minter:?}, paired node {by_paired:?}, T's admin {by_admin:?}, a key granted on T {by_key:?}");
-    assert_eq!((by_minter[2], by_paired[2]), (2, 18), "the empty path; A's tid stated");
-    assert_eq!(by_paired[0] - by_minter[0], 16, "only the path differs");
+    eprintln!("small commit (opened, header, path, second signer form, sealed blob): minting node {by_minting:?}, paired node {by_paired:?}, T's admin {by_admin:?}, a key granted on T {by_key:?}");
+    assert_eq!((by_minting[2], by_paired[2]), (2, 18), "the empty path; A's tid stated");
+    assert_eq!(by_paired[0] - by_minting[0], 16, "only the path differs");
     // the second form's key is a `signing_key` agility value (1617([1, h'..32..']), 39 B) in a
     // two-item list; the key's commit takes the commit form (1 B), not the node's session
     // form (19 B: its nonce), as no session of the key's is open
     assert_eq!(by_key[3], 40, "{by_key:?}");
     assert_eq!(by_key[0] - by_admin[0], 40 - 18, "the signer's second form and the commit form: {by_admin:?} {by_key:?}");
-    assert!(by_minter[0] < 420 && by_minter[4] < 520, "{by_minter:?}");
+    assert!(by_minting[0] < 420 && by_minting[4] < 520, "{by_minting:?}");
 }
 
 /// Per independent thing nobody seals to (`an_independent`: holding no role, no card, no
-/// signal): what `n` of them cost the maker, averaged: (stored bytes, bytes its commits
+/// signal): what `n` of them cost the minting node, averaged: (stored bytes, bytes its commits
 /// download as, ML-KEM keygens).
 fn independent_each(n: usize) -> (i64, usize, u64) {
     let (mut lp, a) = account_two_nodes();
     let make = |lp: &mut LocalPeer| {
         an_independent(&mut lp.peers[0].engine, a);
     };
-    // the first thing made pays once for what every later one shares
+    // the first thing minted pays once for what every later one shares
     make(&mut lp);
     let census = |lp: &mut LocalPeer| lp.peers[0].engine.census().unwrap().values().map(|x| x.1 as i64).sum::<i64>() + blob_bytes(lp, 0);
     let (c0, before) = (census(&mut lp), lp.peers[0].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>());
@@ -325,7 +325,7 @@ fn an_independent_thing_nobody_seals_to_carries_no_kem_key() {
 /// What a commit on a public thing costs per referring unit (spec/sync-set.md §2 T's keys open:
 /// a strong to a public thing brings it whole into the referrer's unit): an account's public
 /// profile P referenced by strongs from `n` independent things of the account, each a unit of its
-/// own as an importer's account is. Then, at the maker: the bodies (entries, one per sync ID
+/// own as an importer's account is. Then, at the minting node: the bodies (entries, one per sync ID
 /// logging it) of a small value write on P and of the account's card on P written again (its
 /// keys refreshed after a rotation of A), with each commit's bytes, and the card's own bytes.
 #[derive(Debug, PartialEq, Eq)]
@@ -364,7 +364,7 @@ fn public_referenced(n: usize) -> PublicCost {
 
 // spec/sync-set.md §2 (T's keys open: a strong to a public thing brings it into the referrer's
 // unit whole), notes/thing-cost.md: a commit on a public thing is logged once under its own
-// sync ID, once under its maker's account's, and once more under each unit referring to it, the
+// sync ID, once under its mint admin account's, and once more under each unit referring to it, the
 // accepted cost of the built unit: exactly one entry per referrer at n and 10n, the commit's
 // bytes the same whatever the referrers. The account's card on its public profile alike (its
 // bytes: A's and the inbox's `keys.0` commits with their evidence).

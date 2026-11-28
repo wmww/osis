@@ -43,7 +43,7 @@ fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
     let e = &mut lp.peers[0].engine;
     assert!(e.caps().unwrap().things.is_empty(), "no settings thing: the defaults");
     let (acc, _) = osis_engine::local_peer::make_account(e).unwrap();
-    assert_eq!(e.settings_thing().unwrap(), Some(acc.thing), "the account, from its making");
+    assert_eq!(e.settings_thing().unwrap(), Some(acc.thing), "the account, from its minting");
     assert!(e.caps().unwrap().things.is_empty(), "no entry: the defaults");
     let t = Tid::from_bytes([9; 15]);
     let caps = ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t.into(), ct::ThingCaps { entries: 3, bytes: 4 })].into() };
@@ -107,7 +107,7 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
     (lp, a, t)
 }
 
-// spec/permissions.md §3 (Lost access: whichever node of the account made it), spec/sync-status.md
+// spec/permissions.md §3 (Lost access: whichever node of the account minted it), spec/sync-status.md
 // §2: node 0 removes its account from a thing; node 1, its sibling, applies the removal and waits
 // for sync as the writer does (through a restart and the lost-access trigger), then drops; the
 // other account's node waits on nothing.

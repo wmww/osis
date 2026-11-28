@@ -1532,7 +1532,7 @@ impl Engine {
     /// commit or content snapshot every part of which dropped as covered (by any writer's cover),
     /// as invalid or as a fire out of history or expired (a stranger's external fires, each its own
     /// commit, would leave a header for good), or missing on a thing whose record is not held (a
-    /// release's marked part: the commit of a thing made and released beside a write on a root
+    /// release's marked part: the commit of a thing minted and released beside a write on a root
     /// stayed for good once that write was covered), no purge
     /// request (else each write another writer compacts, and each snapshot under a later one,
     /// would leave a header for good: `growth::several_writers_grow_nothing`; and a writer,

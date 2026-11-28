@@ -29,7 +29,7 @@ impl Engine {
     }
 }
 
-/// The node's first start (spec/sync-set.md §1, §2 Making a thing), in `tx`: its node thing N
+/// The node's first start (spec/sync-set.md §1, §2 Minting a thing), in `tx`: its node thing N
 /// minted with its key, independent at its minting (its keysets, sync ID and deposit seed, its
 /// secrets this node's alone), and its node root, minted with admin N, a dependent of N, holding a
 /// strong to N. Both made in one transaction, so each is in the node closure at its end.

@@ -261,7 +261,7 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 #[test]
 fn changes_on_as_many_things_spec_requirements_decentralization() {
     // per kind summed over the three steps: which step does some work depends on size, not on a
-    // per-step cost. The things are made in four commits of n / 4 (at the floor 500 each), each
+    // per-step cost. The things are minted in four commits of n / 4 (at the floor 500 each), each
     // listing them in home: which make passes home's compaction trigger (a snapshot of its
     // holds.0, whose apply derives each listed thing's epochs at b) depends on the size, the
     // epochs derived once per thing either way, and a superlinear step still shows in the sum.
@@ -293,7 +293,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     };
     let key = untyped("t:x.0");
     let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
-    // the large value's thing, made before the counts: its making is the same at every n
+    // the large value's thing, made before the counts: its minting is the same at every n
     let large = a.commit_with(|w| w.create_held_with_admin(crate::common::home(&a))).unwrap();
     costs::take();
     let r0 = osis_perm::roles_reached();

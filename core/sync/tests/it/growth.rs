@@ -736,7 +736,7 @@ fn expiry_round(w: &mut World) {
 // S1, its expiry arm, spec/commits.md §5 (Destruction: a thing goes by ordinary expiry at its
 // record's; Forgetting: a part not held on a thing whose record is not held, a forgotten name
 // past its expiry), spec/requirements.md (data may carry an expiry at which every node drops it):
-// a thing made to expire with its holding strong, written and expired, leaves its rows and blobs
+// a thing minted to expire with its holding strong, written and expired, leaves its rows and blobs
 // as a fresh node's of the same account, at 1 and 10 rounds, the expired strongs in D's snapshot
 // included (gone with their adds, spec/crdt.md §4.7).
 #[test]
@@ -949,7 +949,7 @@ fn grants_as_fresh(held: bool, redeem: bool, removals: usize) -> Vec<Work> {
     let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(held, redeem);
     // the redeem round's set removals: the link's seed thing's and K's strongs beside the thing's
     let extra = if redeem { 4 } else { 0 };
-    for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
+    for (i, who) in ["the minting node", "the grantee"].iter().enumerate() {
         as_fresh(&a[i], &fresh[i], removals + extra, &format!("{who}, 1 round"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
         as_fresh(&b[i], &fresh[i], 10 * removals + extra, &format!("{who}, 10 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
@@ -1060,7 +1060,7 @@ fn two_as_fresh(mut w: World, removals: usize, what: &str) {
         (w, held)
     });
     let held = settled(&mut w);
-    for (i, who) in ["the maker", "the other"].iter().enumerate() {
+    for (i, who) in ["the minting node", "the other"].iter().enumerate() {
         as_fresh(&held[i], &fresh[i], removals, &format!("{what}: {who}"), &mut |f| leaked(&mut w, i, &mut wf, i, f));
         assert_eq!(w.engine(i).retake_listed(), wf.engine(i).retake_listed(), "{what}: {who}: actors listed for retake");
     }
@@ -1429,7 +1429,7 @@ fn an_independent(e: &mut osis_engine::Engine, a: Tid) {
 /// One unit of notes/slim-design.md's Today table in a world of its own (`World::new(0)`,
 /// `add_node`, `pair(0)`): three warm-up makes by `make`, then per make over 10, A's `holds.0`
 /// compactions included. Printed: frames each way (count, bytes, by kind), stored rows at the
-/// maker (node 0) and the second node (node 1), engine local rows (`local_census`: no index
+/// minting node (node 0) and the second node (node 1), engine local rows (`local_census`: no index
 /// rows or states) plus sync store rows (`scan_local`), with the families moving most, and blob
 /// bytes on each node's disks.
 fn today_row(name: &str, mut make: impl FnMut(&mut World) -> Box<dyn FnMut(&mut osis_engine::Engine, Tid)>) {
@@ -1451,7 +1451,7 @@ fn today_row(name: &str, mut make: impl FnMut(&mut World) -> Box<dyn FnMut(&mut 
         let kinds: Vec<String> = kinds.iter().map(|(b, c, k)| format!("{k} {}/{}", per(*c as i64), per(*b as i64))).collect();
         eprintln!("  wire {x}->{}: {} frames, {} B ({})", 1 - x, per(c as i64), per(b as i64), kinds.join(", "));
     }
-    for (x, who) in [(0, "maker"), (1, "second")] {
+    for (x, who) in [(0, "minting"), (1, "second")] {
         let (b, a) = (&before[x], &after[x]);
         let mut fams: Vec<(i64, String)> = Vec::new();
         for (side, (cb, ca)) in [("", (&b.0, &a.0)), ("sync ", (&b.1, &a.1))] {

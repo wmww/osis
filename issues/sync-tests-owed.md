@@ -40,7 +40,7 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 
 ## API behaviours the rebuild's deletion left untested
 Names from `git show 28641727e`; each goes through the facade.
-- libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat made, joined by link and relayed over sync): deletes and tombstones reaching a new node; a participant kicked while offline: its late post rejected and told, then revived by its re-adding (design E, notes/chat.md Left out).
+- libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat minted, joined by link and relayed over sync): deletes and tombstones reaching a new node; a participant kicked while offline: its late post rejected and told, then revived by its re-adding (design E, notes/chat.md Left out).
 - Redeem edges (spec/permissions.md §7, spec/sync-inbox.md §6): after a joiner left, a node removal, an expired delivery, a mismatched target, a stalled pull, one refusing peer (old sharing.rs `redeem_*`).
 - Cross-node rules other notes list as awaiting sync tests: retention dating (notes/engine-retention-dating.md), destruction (notes/expiry-creation-design.md), paged scale checks (notes/engine-paged.md).
 

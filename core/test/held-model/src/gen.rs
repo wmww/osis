@@ -100,7 +100,7 @@ pub const RECORDS: [Record; 6] = [
     Record { id: LINK_L, link: RecordLink::Key },
     Record { id: ACCOUNT, link: RecordLink::Admin(2) },
 ];
-/// The things made by a creation (thing, its mint admin, the node creating it): with a node or
+/// The things minted by a creation (thing, its mint admin, the node creating it): with a node or
 /// the account as mint admin.
 pub const CREATIONS: [(ThingId, RecordLink, NodeId); 6] = [
     (10, RecordLink::Admin(0), 0),
@@ -214,7 +214,7 @@ fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Pa
 
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the
 /// covering snapshots writers owe): content under every purge option, signal writes, compaction
-/// snapshots, purges, undos, `retention^.0` settings (things made with one, late ones stamped up to
+/// snapshots, purges, undos, `retention^.0` settings (things minted with one, late ones stamped up to
 /// an hour back, invalid ones by a non-admin), writers following the setting they hold half the
 /// time, stated paths and purge authors (`stated`), edge writes (grants, `until`, may-grant, self-removals, finalizes, link
 /// redemptions); creations kept for good or `admin` with no history, a few expiring, some
@@ -240,7 +240,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             break id;
         }
     };
-    // things made with a setting (as an app writes one at creation), now and then
+    // things minted with a setting (as an app writes one at creation), now and then
     for (k, &(t, chief)) in CONTENT.iter().enumerate() {
         if r.chance(40) {
             let d = Delta::Retention(setting(&mut r, START));

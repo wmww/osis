@@ -105,15 +105,15 @@ fn cost(n: usize) -> Cost {
 // spec/sync-judgement.md §3 (Own store: an entry of the body under S it pulled stands as that
 // log, another's body or certificate logged only once S's first sync here ended or a complete
 // pass of S did), spec/permissions.md §4 (Logging certificates: except what an entry under the
-// sync ID already holds): a new reader syncing a closure from its maker logs no copy of
-// what the maker holds under each member's sync ID, so the maker fetches nothing back from it:
+// sync ID already holds): a new reader syncing a closure from the node that minted it logs no copy
+// of what that node holds under each member's sync ID, so it fetches nothing back from the reader:
 // as many bodies at 5n members as at n.
 #[test]
 fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
     let (small, large) = (cost(N), cost(LARGE));
     let (asked, answered) = ((small.sent(0, 2, "Fetch"), large.sent(0, 2, "Fetch")), (small.sent(2, 0, "FetchReply"), large.sent(2, 0, "FetchReply")));
-    assert!(asked.1.0 <= asked.0.0, "the maker fetched from the reader {} times at n, {} at 5n", asked.0.0, asked.1.0);
-    assert!(answered.1.1 <= answered.0.1, "the reader sent the maker {} bytes of bodies at n, {} at 5n", answered.0.1, answered.1.1);
+    assert!(asked.1.0 <= asked.0.0, "the minting node fetched from the reader {} times at n, {} at 5n", asked.0.0, asked.1.0);
+    assert!(answered.1.1 <= answered.0.1, "the reader sent the minting node {} bytes of bodies at n, {} at 5n", answered.0.1, answered.1.1);
 }
 
 // spec/sync-streams.md §4 (Joining: opens from one Offer batch join in one Pull; Bodies: a
@@ -158,8 +158,8 @@ fn a_blob_is_fetched_once_per_holding_whatever_sync_ids_carry_it_spec_sync_strea
 // spec/permissions.md §4 (Logging certificates: a record or list blob counts once opened, while
 // held here or at a source, and one losing to another leaves the own store), spec/sync-streams.md §4
 // (Bodies: nor one it counts is fetched): what a new reader fetches and does not keep is only
-// what it could judge by opening it alone (the maker's record blob that the grant made lose, which
-// the store keeping the root unread still lists until the maker's Delete reaches it), once per
+// what it could judge by opening it alone (the minting node's record blob that the grant made lose,
+// which the store keeping the root unread still lists until that node's Delete reaches it), once per
 // holding of the sync ID it is under (spec/sync-judgement.md §6 Read and unread move: a raise
 // pulls S anew) and as many at 5n members as at n.
 #[test]
@@ -178,7 +178,7 @@ fn what_a_reader_fetches_and_drops_does_not_grow_spec_permissions_4() {
 // Pushes: ephemeral entries go only in a message with a cursor): a node holding an entry of S has
 // S's head logged, so its log names a position whenever it serves S and no ephemeral entry is
 // held back for one (streams::ephemeral_entries_wait_for_a_log_position builds that case on a
-// bare store): the maker, the node keeping the closure unread and the new reader alike.
+// bare store): the minting node, the node keeping the closure unread and the new reader alike.
 #[test]
 fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
     let c = cost(N);

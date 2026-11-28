@@ -13,7 +13,7 @@
 //!
 //! # A first write
 //! A thing is minted with an admin, its mint admin, usually the thing it lives in: whoever reads that reads
-//! it. A thing is made only where something holds it: a strong reference from a thing this node
+//! it. A thing is minted only where something holds it: a strong reference from a thing this node
 //! holds, written in the same write. Here the node thing is both.
 //! ```
 //! use osis::{Config, MemStore, Osis, Store, Value};

@@ -37,7 +37,7 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engine-lost-access.md Self-removal drops), "no peer but its own node" is `Ground::waited` (`Opens::waited` skipping a peer whose proven things include this node's node thing; notes/sync-opens.md Peers to wait for), and `Engine::removal_done` drops each thing lost that no other waiting removal is behind.
 - The same rule as leaving (notes/sync-leave.md): it waits only while a peer could take it. Own nodes leave by the same commit, so counting them would leave two nodes of one account waiting on each other for good. Skipping them is safe because they learn the removal from this account's own sync IDs and inbox (spec/permissions.md §2), never only from S.
 - `by_commit` is a plain map: a pair leaving it leaves `held_pairs`, which the judgement reads per (S, commit).
-- Own commits come by pair (`Engine::own_feed`, each pair read as it stands with `own_has`), so one more own commit costs one pair, never the S's set (osis `making::*`, `status: own commits taken`).
+- Own commits come by pair (`Engine::own_feed`, each pair read as it stands with `own_has`), so one more own commit costs one pair, never the S's set (osis `minting::*`, `status: own commits taken`).
 - Tests: status.rs `self_removal_*`, flows.rs `a_self_removal_*`, siblings.rs `a_siblings_self_removal_*`.
 
 ## Stranded

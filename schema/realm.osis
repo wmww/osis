@@ -1,7 +1,7 @@
 //! Realms, as the account library (osis-account) makes them. A realm is a thing whose holders are
 //! its members, each at a role: read sees what is in it, write takes part (chats, documents) and
 //! adds to it, admin also manages its members and details. In it is what it is mint admin of
-//! (made in it: stays when its maker leaves) and what it holds a grant on (shared into it).
+//! (minted with it as mint admin: stays when the member who minted it leaves) and what it holds a grant on (shared into it).
 //! Nesting, overlap and roles inside a realm are grants between realms.
 //!
 //! A person's account is a realm whose members are the person's nodes, each writing as its node

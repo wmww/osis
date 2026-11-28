@@ -543,9 +543,9 @@ pub(crate) fn walk_with(w: &World, e: &Edges, roots: &Set, walk: Walk, ring: &Se
     c
 }
 
-/// The making rule: a new thing `m` may be made only if the commit making it leaves it in the
+/// The minting rule: a new thing `m` may be minted only if the commit minting it leaves it in the
 /// node closure (`e` is the strongs after that commit).
-pub fn may_make(w: &World, e: &Edges, n: &NodeView, m: T) -> bool {
+pub fn may_mint(w: &World, e: &Edges, n: &NodeView, m: T) -> bool {
     closure(w, e, n, Walk::Units).held.contains(&m)
 }
 

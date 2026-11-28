@@ -1,5 +1,5 @@
 //! The reference-graph differential (notes/test-properties.md): random
-//! histories of making, strongs added and removed, grants to accounts and to things (so chains
+//! histories of minting, strongs added and removed, grants to accounts and to things (so chains
 //! occur), lowering, revoking, rotating, pairing, removing a node and faults over a few nodes of
 //! fewer accounts; at quiet each node holds what held-model's first entry (`closure::entry`) says
 //! its node closure is, built from the history alone: it reads a thing exactly when the model
@@ -81,7 +81,7 @@ pub fn value_ak() -> Ak {
     Ak::new("u:v.0").expect("aspect key")
 }
 
-/// A history thing's mint admin: its maker's account, or thing k (whose keys a dependent
+/// A history thing's mint admin: the account of the node that minted it, or thing k (whose keys a dependent
 /// thing's derive from).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MintAdmin {
@@ -112,9 +112,9 @@ struct Event {
 /// What a history made, carried with the world (copied with it).
 #[derive(Clone, Default)]
 pub struct Made {
-    /// Things made (`Step::New`, `Step::NewIn`), by index, with the node that made them.
+    /// Things minted (`Step::New`, `Step::NewIn`), by index, with the node that minted them.
     pub things: Vec<(Tid, usize)>,
-    /// Where each thing was made.
+    /// What each thing was minted with.
     pub minted_with: Vec<MintAdmin>,
     /// Each thing is independent: a grant or rotation on it applied.
     pub independent: Vec<bool>,
@@ -123,8 +123,8 @@ pub struct Made {
     /// Commits handed to the reference, in the order seen.
     pub handed: Vec<Package>,
     handed_ids: BTreeSet<CommitId>,
-    /// The commits that made the things (each writes its thing's first value).
-    made: BTreeSet<CommitId>,
+    /// The commits that minted the things (each writes its thing's first value).
+    mintings: BTreeSet<CommitId>,
     written: u64,
     /// Things whose record edge a removal took (the roster then shows no mint admin either).
     record_gone: BTreeSet<usize>,
@@ -329,7 +329,7 @@ pub fn ran(w: &mut World) {
 
 /// The model at a quiet run with every node on and connected on a clean network, from the
 /// history alone (a reference of what was handed); `None` at any other run. Every node then
-/// holds its node closure: a thing made that no account's model closure holds or carries is held
+/// holds its node closure: a thing minted that no account's model closure holds or carries is held
 /// by no node, so it is gone (`Made::gone`).
 fn quiet_model(w: &mut World) -> Option<Model> {
     if !w.net.cut_off.is_empty() || (0..w.len()).any(|i| !w.online(i)) {
@@ -571,12 +571,12 @@ fn holder_tid(w: &World, h: Holder) -> Option<Tid> {
 }
 
 /// Node `i` redeems a locator of thing `k` for its account (spec/sync-set.md §4): the link
-/// made at an online node where the public reads `k`, its maker first. It writes the strong once
+/// made at an online node where the public reads `k`, its minting node first. It writes the strong once
 /// the public's grant is held here, else gives up after its follow time (`Node::redeem`).
 fn redeem(w: &mut World, i: usize, k: usize) -> Result<String, String> {
     let Some(t) = thing(w, k) else { return Ok("skipped: no such thing".into()) };
-    let maker = w.history.things[k].1;
-    let at = std::iter::once(maker).chain(0..w.len()).find(|&m| m < w.len() && w.online(m) && w.engine(m).public_reads(&t));
+    let minting = w.history.things[k].1;
+    let at = std::iter::once(minting).chain(0..w.len()).find(|&m| m < w.len() && w.online(m) && w.engine(m).public_reads(&t));
     let Some(link) = at.and_then(|m| w.locator(m, t)) else { return Ok("skipped: the public reads it at no online node".into()) };
     let done = w.redeem_any(i, &link);
     // done, or following the link until it writes the strong
@@ -600,7 +600,7 @@ fn card(w: &mut World, i: usize, k: usize) -> Result<String, String> {
 
 /// Node `i` moves its account's inbox to thing `k` (made independent first where it is not, as a
 /// fire goes under the inbox's own sync ID sealed to its keys, spec/sync-inbox.md §2; then its
-/// setting taking both inbox signals) or back to the one the account was made with (`None`): the
+/// setting taking both inbox signals) or back to the one the account was minted with (`None`): the
 /// account's `keys.0` names it, an admin's write (spec/sync-inbox.md §1), refused at a node that
 /// is no admin of the account.
 fn inbox(w: &mut World, i: usize, k: Option<usize>) -> Result<String, String> {
@@ -665,7 +665,7 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
             h.independent.push(false);
             h.values.extend(c.map(|c| (v, c)));
             if let Some(c) = c {
-                h.made.insert(c);
+                h.mintings.insert(c);
                 h.wrote(h.things.len() - 1, c, i);
             }
             Ok(format!("thing {}", h.things.len() - 1))
@@ -846,7 +846,7 @@ pub fn world_of(seed: u64, accounts: usize, nodes: usize) -> World {
 }
 
 /// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
-/// account's first node makes a locator of its profile (public from its making), a node of
+/// account's first node makes a locator of its profile (public from its minting), a node of
 /// every other account redeems it, holding the profile from that account (a redeem writes the
 /// strong, spec/sync-set.md §4). Before any history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
@@ -1156,7 +1156,7 @@ impl Model {
 /// The one excuse (spec/permissions.md §3 Left out): account `a` may fail to read thing `k` at
 /// quiet exactly when its last grant on `k` and a change of `k`'s read keys were made each by a
 /// node that had not surely received the other (`Made::know`), and no account that change boxed
-/// (its maker's, the thing's maker's, and those whose grants its maker had surely received)
+/// (its maker's, the thing's minting node's, and those whose grants its maker had surely received)
 /// holds write or above on `k` at the end (every node is on at the check: such a node re-seals).
 /// A grant or change whose commits a release lost all of (`lost_writes`) was never made. It
 /// permits a failure, never requires one.
@@ -1181,7 +1181,7 @@ fn excused(w: &World, m: &Model, lost: &BTreeSet<CommitId>, a: Tid, k: usize) ->
 /// release k: a removed node erases), that no other node surely received by then (`Made::froze`)
 /// whose account's node closure holds k at the end, and that no node whose account's node closure
 /// holds k holds at the check (its value part, for a value write: i, holding k again, fetches what
-/// others hold; a node holding the commit only as evidence of another thing serves none of k). A thing's making
+/// others hold; a node holding the commit only as evidence of another thing serves none of k). A thing's minting
 /// is such a write: released before another node received it, its value is gone. The reference
 /// and the model are built without the lost commits (a lost grant changes the roster, and a
 /// later commit on it stands without it where a node took it as a piece); a lost making the
@@ -1247,16 +1247,16 @@ pub fn check(w: &mut World) {
     let mut r = reference(w, &BTreeSet::new());
     let mut m = Model::of(w, &mut r);
     let mut lost = lost_writes(w, &m);
-    let unmade: BTreeSet<CommitId> = lost.intersection(&w.history.made).copied().collect();
-    lost.retain(|c| !unmade.contains(c));
+    let unminted: BTreeSet<CommitId> = lost.intersection(&w.history.mintings).copied().collect();
+    lost.retain(|c| !unminted.contains(c));
     if !lost.is_empty() {
         lost.extend(snapshots_lost(w, &mut r, &lost));
         r = reference(w, &lost);
         m = Model::of(w, &mut r);
     }
     let checked = catch_unwind(AssertUnwindSafe(|| {
-        // the values of the lost makings (`lost_writes`): gone, the reference's as none
-        let gone: BTreeSet<String> = w.history.values.iter().filter(|(_, c)| unmade.contains(*c)).map(|(v, _)| v.clone()).collect();
+        // the values of the lost mintings (`lost_writes`): gone, the reference's as none
+        let gone: BTreeSet<String> = w.history.values.iter().filter(|(_, c)| unminted.contains(*c)).map(|(v, _)| v.clone()).collect();
         closure_clauses(w, &mut r, &m, &gone, &lost);
         card_clauses(w, &mut r, &m);
         body_clauses(w, &mut r, &m, &gone);
@@ -1278,9 +1278,9 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
     let mut out = format!("at the check of world {} (probes: `osis_base::trace::copy`, `w{}.n<i>`):", w.id, w.id);
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let views: Vec<Option<View>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(a))).collect();
-    for (k, (t, maker)) in w.history.things.clone().iter().enumerate() {
+    for (k, (t, minting)) in w.history.things.clone().iter().enumerate() {
         let x = m.thing(k);
-        out.push_str(&format!("\n  thing {k} (made by node {maker}, {:?}): reference", m.world.kinds[x]));
+        out.push_str(&format!("\n  thing {k} (minted by node {minting}, {:?}): reference", m.world.kinds[x]));
         for (a, r) in refs.accounts() {
             out.push_str(&format!(" {} {}", m.account(a).map_or("-".into(), |a| format!("a{a}")), brief(&reads(&mut r.engine, t))));
         }
@@ -1301,7 +1301,7 @@ fn at_check(w: &mut World, refs: &mut Refs, m: &Model) -> String {
 
 /// `check`'s closure clauses, per online node of an account and history thing: it reads a
 /// value of the thing only where the model reads it, and there reads as the reference (no value
-/// where the thing's making was lost and no later value stands, `lost_writes`); its sync set holds a
+/// where the thing's minting was lost and no later value stands, `lost_writes`); its sync set holds a
 /// independent thing read, for keys or kept unread exactly as the model does; it keeps no store entry
 /// under the sync ID of an independent thing the model has it neither read nor keep unread; its
 /// store of one it keeps unread stands at the head an online reader records.
@@ -1458,7 +1458,7 @@ pub fn held_somewhere(w: &mut World, t: &Tid, v: &str, ids: &BTreeSet<CommitId>)
 }
 
 /// `check`'s body clause: some node holds a body the reference reads each thing's value from,
-/// but a lost making's (`gone`)
+/// but a lost minting's (`gone`)
 /// (a thing nobody holds any more is gone for everyone, spec/sync-set.md §3: no node must), for
 /// each thing some account's node closure reads by the model (one read nowhere is held at most
 /// as ciphertext kept unread, which shows no value: a later reader fetches it there).
@@ -1510,10 +1510,10 @@ pub fn size() -> (usize, usize, usize, u64) {
 pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -> Vec<Step> {
     let mut rng = SeededRng::from_u64(seed ^ 0x6869_7374);
     let mut pick = |m: usize| (rng.next_u64() % m.max(1) as u64) as usize;
-    /// A sketch of a thing: its maker's account, whether it is independent, the roles given.
+    /// A sketch of a thing: its mint admin's account, whether it is independent, the roles given.
     struct Sketch {
         account: usize,
-        /// Minted with its maker's account (`New`), held from it for good.
+        /// Minted with that account as mint admin (`New`), held from it for good.
         root: bool,
         independent: bool,
         given: BTreeMap<Holder, Gives>,
@@ -1533,7 +1533,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
         let k = pick(things.len());
         let on: Vec<usize> = (0..acct.len()).filter(|i| !off.contains(i) && !gone.contains(i)).collect();
         let node = on[pick(on.len())];
-        // the nodes that may write thing k: its maker's account's and each given write
+        // the nodes that may write thing k: its mint admin account's and each given write
         let writers = |things: &[Sketch], k: usize| -> Vec<usize> {
             let t = &things[k];
             (0..acct.len()).filter(|i| !off.contains(i) && !gone.contains(i)).filter(|i| acct[*i] == t.account || t.given.get(&Holder::Node(acct[*i])) == Some(&Gives::Writes)).collect()

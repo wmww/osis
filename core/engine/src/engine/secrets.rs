@@ -714,7 +714,7 @@ impl osis_commit::Secrets for HandSecrets {
 
 impl crate::Engine {
     /// [`HandSecrets`] for the things of `records`, their delete keys as this engine lists them
-    /// (ask the thing's maker: a forging peer often records no step of its base). A record this
+    /// (ask the node that minted the thing: a forging peer often records no step of its base). A record this
     /// engine does not hold counts as created by the commit.
     #[doc(hidden)]
     pub fn hand_secrets(&self, records: &[CreationRecord]) -> HandSecrets {

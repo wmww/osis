@@ -781,7 +781,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
 /// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
 /// as for a held dependent thing. A thing minted with a key is minted so, its rotation from none
 /// signed by that key as it, its secrets random or, for a link key, `seed`'s (spec/crypto.md §3).
-/// `keys`: more of its `keys.0` its minter writes in that commit (its inbox). Its tid.
+/// `keys`: more of its `keys.0` its minting writes (its inbox). Its tid.
 pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, seed: Option<&osis_crypto::Secret32>, keys: Vec<osis_crdt::PathOp>, done: &mut Done) -> Result<Tid> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {

@@ -309,7 +309,7 @@ impl<'d> Write<'d> {
     /// As `create` (with no expiry), the thing minted with its keys: whoever learns of its role or
     /// of the roles granted it (a grant to it or on it) learns its keys with them,
     /// before it syncs the thing, and `Osis::keys` shows them at once. Make so a thing that is to
-    /// hold roles or be granted from outside at once (an account, its inbox); a thing made with
+    /// hold roles or be granted from outside at once (an account, its inbox); a thing minted with
     /// `create` gets its keys at its first grant or card. Its minting is a commit of its
     /// own ahead of this write's, in the same transaction.
     pub fn create_with_keys(&mut self, admin: Tid) -> Result<Tid> {
@@ -335,7 +335,7 @@ impl<'d> Write<'d> {
 
     /// `holder` holds `t`: a strong to `t` in `holder`'s `holds.0`, so `t` syncs with `holder`
     /// wherever `holder` is held (spec/sync-set.md §2) and stays while some held thing holds it.
-    /// Holding a thing made in this write is what keeps it (`create`); holding one granted here
+    /// Holding a thing minted in this write is what keeps it (`create`); holding one granted here
     /// syncs it (spec/sync-set.md §4). Held by `Osis::node_root`, this node alone holds it.
     pub fn hold(&mut self, holder: Tid, t: Tid) -> Result<()> {
         self.at(holder, crate::core::HOLDS).path(osis_schema::p![]).add(&Ref::Strong(Strong(t)))
@@ -403,7 +403,7 @@ impl<'d> Write<'d> {
             return Ok(c.map(|c| c.reporting(db)));
         }
         let ra = db.read_as();
-        // a thing made here expiring sets the commit's expiry, which `expires` must then agree with
+        // a thing minted here expiring sets the commit's expiry, which `expires` must then agree with
         let made = self.ops.iter().find_map(|o| match o {
             WriteOp::Create(r) => r.expires().map(Time),
             _ => None,

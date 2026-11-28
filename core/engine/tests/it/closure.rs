@@ -372,11 +372,11 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
     e.commit(m).map(|_| t)
 }
 
-// spec/sync-set.md §2 Making a thing: the commits of one storage transaction must
+// spec/sync-set.md §2 Minting a thing: the commits of one storage transaction must
 // leave every thing they make in the node closure at its end, or nothing
 // applies. X and U are independent: a dependent thing minted with admin X referenced by X is made; one nothing
 // references, or one from U referenced only by X (X's keys do not open it), is refused and
-// leaves no commit; a thing made in one commit and held by the next of its transaction is made,
+// leaves no commit; a thing minted in one commit and held by the next of its transaction is made,
 // and refused with that commit holding nothing, its record alone held by nothing and a holder of
 // nothing; a link is made, its link key held by no strong, as K's holder (made with its role
 // entries alone).

@@ -118,7 +118,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     };
     let expires = commit_expiry(ctx, w, did, expiry(&a.e)?)?;
     let t = w.create(admin, expires)?;
-    // a thing is made only where something holds it (spec/sync-set.md §2 Making a thing)
+    // a thing is minted only where something holds it (spec/sync-set.md §2 Minting a thing)
     w.hold(holder, t)?;
     for pair in a.pairs.chunks(2) {
         let key = ctx.aspect_key(&pair[0])?;

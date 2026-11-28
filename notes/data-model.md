@@ -47,7 +47,7 @@
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
 
 ## Closures
-Example: a spreadsheet thing holds strongs to two axis things, each holding strongs to its row or column things, each holding strongs to its cells (each cell in two closures). Nothing belongs anywhere by its mint admin (Tess): an app writes each strong (spec/sync-set.md §2 Making a thing).
+Example: a spreadsheet thing holds strongs to two axis things, each holding strongs to its row or column things, each holding strongs to its cells (each cell in two closures). Nothing belongs anywhere by its mint admin (Tess): an app writes each strong (spec/sync-set.md §2 Minting a thing).
 
 ## Schema DSL (`*.osis` files; implemented in osis-schema)
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, Tess's decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).

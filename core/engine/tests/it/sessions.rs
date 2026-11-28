@@ -104,7 +104,7 @@ fn snapshot_lists_the_held_commits_sessions_spec_crdt_8() {
     let snap = e.snapshot(&t, &reg).unwrap().unwrap();
     let fr = frontiers_of(e, &snap, &t, &reg);
     let last = source_of(&lp, 0, commits.last().unwrap());
-    // the making commit's too, held for its record
+    // the minting commit's too, held for its record
     let listed: BTreeSet<_> = fr.sources().map(|x| x.0).collect();
     assert!(sessions.is_subset(&listed) && listed.len() == sessions.len() + 1, "every held commit's session listed");
     assert!(sessions.iter().all(|x| fr.of(x) == 1), "each reached");
@@ -256,7 +256,7 @@ fn session_writing_nothing_leaves_nothing() {
 
 // spec: none (notes/growth.md, Tess's session rule). A register and a map written whole,
 // overwritten and compacted once per launch, cost what the same writes cost in one launch: the
-// snapshots hold steady (the register lists the making commit, held for its other parts, and the
+// snapshots hold steady (the register lists the minting commit, held for its other parts, and the
 // last launch's session; the map its entry's first and the last), and the store holds no more per
 // launch.
 #[test]

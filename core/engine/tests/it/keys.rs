@@ -133,7 +133,7 @@ fn history_chain_from_state_spec_crypto_4() {
     assert_eq!(v1.read.secret(&e1), lp.peers[0].engine.epochs(&a).unwrap().read.secret(&e1));
 }
 
-// spec/permissions.md §3, spec/crypto.md §3 (a thing minted with a key: its secrets its minter's,
+// spec/permissions.md §3, spec/crypto.md §3 (a thing minted with a key: its secrets the key holder's,
 // held by the minting store, boxed to nobody): a node thing's minting boxes nobody, its node holds
 // its secrets established, and another node holding every commit of it holds none of them. A
 // thing the node mints with admin N derives from those secrets, and a box N's node writes to N

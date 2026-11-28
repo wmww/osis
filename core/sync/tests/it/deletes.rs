@@ -475,12 +475,12 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 
 // spec/sync-judgement.md §2 (Per blob: a delta dropped as covered strips only where its aspect
 // may be under purge on replace), spec/commits.md §5 (Covered): node 1 makes a thing with a value
-// (the making commit also holds its record and the strong from its account), replaces the
+// (the minting commit also holds its record and the strong from its account), replaces the
 // value, and with its sibling node 2 replaces it again at once, after node 2 grants node 0's
-// account read (told by a grant signal); node 0 holds the thing. The making commit's value part is dropped as covered, its cover
+// account read (told by a grant signal); node 0 holds the thing. The minting commit's value part is dropped as covered, its cover
 // covered in turn by a snapshot whose tables no longer name the part's session (no write of it
 // is left). A blob stripped of it would leave node 0 counting it never received with no source
-// for it; unstripped, node 0 receives the making commit whole (the harness checks every must-hold
+// for it; unstripped, node 0 receives the minting commit whole (the harness checks every must-hold
 // body reached at quiet). It passes with that strip too: node 0 counts the part covered either way
 // (the next test), so no test catches it (issues/strip-rule-gaps.md).
 #[test]
@@ -490,16 +490,16 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
 
 // spec/crdt.md §8 (or that the writer holds with a delta on the aspect), spec/commits.md
 // §5 (Covered), spec/sync-judgement.md §2 (Per blob): as above with the value under purge on
-// replace, so the making commit's value part strips once dropped as covered. Its cover is covered
-// in turn by a snapshot no write of the making commit is left in; that snapshot still lists the
-// making commit, held by its writer, so node 0, receiving the commit stripped, counts the part
+// replace, so the minting commit's value part strips once dropped as covered. Its cover is covered
+// in turn by a snapshot no write of the minting commit is left in; that snapshot still lists the
+// minting commit, held by its writer, so node 0, receiving the commit stripped, counts the part
 // covered, not missing, and reads the value. Fails if a snapshot lists only what occurs in it.
 #[test]
 fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     covers_cover(true);
 }
 
-/// The two tests above: the making commit's value under purge on replace or not.
+/// The two tests above: the minting commit's value under purge on replace or not.
 fn covers_cover(purge_on_replace: bool) {
     let mut w = crate::harness::siblings();
     let a0 = w.node(0).account.unwrap();
@@ -528,7 +528,7 @@ fn covers_cover(purge_on_replace: bool) {
     });
     w.run();
     let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
-    assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
+    assert!(w.engine(0).holds_commit(&c), "the reader holds the minting commit");
     assert!(!w.engine(0).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");
 }
@@ -704,10 +704,10 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
 // spec/sync-judgement.md §2 (Loggable; Per blob: the rewrite is the rest of the body, a fresh
 // encryption where no held blob is it): node 1 makes a thing (its record, a value under purge on
 // replace, the strong from its account in the same commit) and replaces the value while cut
-// off from its sibling, node 2. Node 1 strips the value from the making commit and drops the
+// off from its sibling, node 2. Node 1 strips the value from the minting commit and drops the
 // account's `holds.0` part as covered, which strips nothing. The rest is still must-hold and
 // loggable at node 1: its fresh encryption takes the covered part from the held blob it opened.
-// Rejoined, node 2 receives the making commit, so the thing's record. Fails if a part dropped
+// Rejoined, node 2 receives the minting commit, so the thing's record. Fails if a part dropped
 // here that strips nothing makes the rest unloggable.
 #[test]
 fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_sync_judgement_2() {
@@ -730,7 +730,7 @@ fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_syn
     assert!(!w.engine(2).holds_commit(&c), "node 2 is cut off");
     w.heal();
     w.run();
-    assert!(w.engine(2).holds_commit(&c), "node 2 holds the making commit");
+    assert!(w.engine(2).holds_commit(&c), "node 2 holds the minting commit");
     assert!(!w.engine(2).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), Some(Value::Str("v1".into())));
 }

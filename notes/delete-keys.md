@@ -37,7 +37,7 @@ Derived from the `sync.0` state at every write of it (`Tx::derive`; again at ope
   - Left: honest purgers cannot delete such a chunk at stores (only the keys it bears can); and a demoted writer keeps deleting it through any level-1 key it chose, past the fix planned in issues/demoted-writer-deletes-at-stores.md.
 
 ## Tests
-- Hand-built commits take their secrets from `Engine::hand_secrets(records)` (`HandSecrets`): each thing's dedup secret and the keys the engine asked lists (ask the thing's maker), made up where it lists none, at level 2, and whole with `all_made_up()` (a forger's keys). Engine `it` tests build them with `common::forged_write` and seal them with `common::seal` (peer 0's secrets) or `seal_with`. A hand-built commit is stamped after the write recording the step it lists.
+- Hand-built commits take their secrets from `Engine::hand_secrets(records)` (`HandSecrets`): each thing's dedup secret and the keys the engine asked lists (ask the node that minted the thing), made up where it lists none, at level 2, and whole with `all_made_up()` (a forger's keys). Engine `it` tests build them with `common::forged_write` and seal them with `common::seal` (peer 0's secrets) or `seal_with`. A hand-built commit is stamped after the write recording the step it lists.
 
 ## Signing a Delete
 A holder tries every held epoch up the thing's record chain (`Core::delete_chain`, `delete_secret`) and signs with the one whose step key the header lists (`DeleteSecret::at_level`).

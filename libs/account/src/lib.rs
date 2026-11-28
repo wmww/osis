@@ -141,7 +141,7 @@ impl Account {
         }
         let root = db.node_root()?;
         // A, its inbox and profile, held: A by the node root, naming A its settings thing, the
-        // others by A, in one transaction (spec/permissions.md §8 Making)
+        // others by A, in one transaction (spec/permissions.md §8 Minting)
         let mut w = db.write();
         // with their keys: a node paired in or a contact learns of each with its role entries
         let a = w.create_with_keys(db.node())?;

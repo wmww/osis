@@ -376,7 +376,7 @@ impl Ground for Live<'_, '_> {
         if self.cx.store.first_synced(s)? {
             return Ok(true);
         }
-        // S's thing made here: nothing to sync first
+        // S's thing minted here: nothing to sync first
         let things = self.things(s);
         Ok(things.iter().any(|t| self.cx.engine.minted_here(t)))
     }

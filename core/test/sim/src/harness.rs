@@ -156,13 +156,13 @@ pub struct Sim {
     history: History,
 }
 
-/// What a run played, as the harness played it: things made, roles given and taken, content
+/// What a run played, as the harness played it: things minted, roles given and taken, content
 /// written. What each node must hold at quiet is computed from it (`Sim::check_history`), apart
 /// from what any node sends.
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    /// Thing -> (maker node, its mint admin, if any).
-    made: BTreeMap<Tid, (usize, Option<Tid>)>,
+    /// Thing -> (the node that minted it, its mint admin, if any).
+    minted: BTreeMap<Tid, (usize, Option<Tid>)>,
     /// (thing, node) -> the role given it last (`grant`), `None` once removed (`revoke`).
     roles: BTreeMap<(Tid, usize), Option<Role>>,
     /// (thing, node) once removed: its writes there are judged by the removal's frontier, which
@@ -173,14 +173,14 @@ pub struct History {
 }
 
 impl History {
-    /// Node `n`'s role on `t` by the history: its maker's admin, a role given it, or its role on
+    /// Node `n`'s role on `t` by the history: its minting node's admin, a role given it, or its role on
     /// `t`'s mint admin (spec/permissions.md §1, the record chain).
     fn role(&self, n: usize, t: &Tid) -> Option<Role> {
         let mut best = self.roles.get(&(*t, n)).copied().flatten();
         let mut at = *t;
-        for _ in 0..=self.made.len() {
-            let Some((maker, under)) = self.made.get(&at) else { break };
-            if *maker == n && under.is_none() {
+        for _ in 0..=self.minted.len() {
+            let Some((by, under)) = self.minted.get(&at) else { break };
+            if *by == n && under.is_none() {
                 return Some(Role::Admin);
             }
             let Some(u) = under else { break };
@@ -197,7 +197,7 @@ impl History {
             if self.removed.contains(&(x, n)) {
                 return false;
             }
-            at = self.made.get(&x).and_then(|m| m.1);
+            at = self.minted.get(&x).and_then(|m| m.1);
         }
         true
     }
@@ -376,7 +376,7 @@ impl Sim {
         let mut m = Mutation::new();
         let t = self.engine(i)?.new_thing(&mut m, admin.unwrap_or(me));
         m.set(t, &workload::REG, &Value::Str("new".into())).map_err(|e| self.fail(e.to_string()))?;
-        self.history.made.insert(t, (i, admin));
+        self.history.minted.insert(t, (i, admin));
         self.commit(i, m)?;
         self.things.push(t);
         Ok(t)
