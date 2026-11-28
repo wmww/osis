@@ -3065,6 +3065,182 @@ fn a_newer_anchor_waits_for_the_held_one_to_be_checked_spec_sync_streams_4() {
     assert!(p.sent_by_b(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)), "a reconnect is no listing from the start");
 }
 
+// spec/sync-streams.md §4 (Anchor: a newer anchor waits, with the counts its Applieds make, for a
+// reply on its connection to check the one held, and ends with that connection), NetStream
+// SN_echowait: b takes x from a (the anchor a holds). On the next connection b takes y with a's
+// replies lost, so y's count waits with b's newer anchor; that connection drops and b is restored
+// from between the two. The next Pull names x's anchor, which the restored store has: a counts b
+// holding x and not y, which it lacks (failed: the waiting anchor was kept and promoted there).
+#[test]
+fn a_count_waiting_on_an_unchecked_anchor_ends_with_its_connection_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    let s = sid(1);
+    p.b.log(s, 50);
+    p.shared_read(s);
+    let x = p.a.log(s, 100);
+    p.run();
+    assert!(knows(&p.a, p.a.src(), s, x), "a counts b holding x");
+    let (backend, root) = osis_base::copying::copying(|| (p.b.backend.test_copy(), p.b.root.test_copy()));
+    p.a.streams.closed(C);
+    p.b.streams.closed(C);
+    let y = p.a.log(s, 101);
+    p.take_again();
+    p.run_with(|ab, m| !ab && matches!(m, Msg::PullReply(_) | Msg::Stream(_)));
+    p.held.clear();
+    assert!(p.b.store.entry(&s, &y).unwrap().is_some(), "b took y");
+    p.a.streams.closed(C);
+    p.b.backend = backend;
+    p.b.root = root;
+    p.b.restart_all(9);
+    assert!(p.b.store.entry(&s, &y).unwrap().is_none(), "the restored store lacks y");
+    p.take_again();
+    p.seen.clear();
+    p.run_with(|ab, m| ab && matches!(m, Msg::PullReply(_) | Msg::Stream(_)));
+    p.held.clear();
+    assert!(p.sent_by_b(42).iter().all(|m| matches!(m, Msg::PullReply(r) if !r.whole)) && !p.sent_by_b(42).is_empty(), "a's Pull named x's anchor, which the restored store has");
+    assert!(knows(&p.a, p.a.src(), s, x), "x counted on the anchor checked");
+    assert!(!knows(&p.a, p.a.src(), s, y), "y's count ended with its connection");
+}
+
+// spec/sync-streams.md §4 (Anchor: an Applied counting any entry carries one): a and b each log x
+// under a wrap of their own; a keeps its own, so holds b's send of x not as sent, and b counts
+// it held from a's Applied, which carries a's anchor (failed: sent only for an entry held as
+// sent, so that count stood on none).
+#[test]
+fn an_applied_counting_an_entry_held_otherwise_carries_the_anchor_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    let s = sid(1);
+    let (x, bytes) = blob(100, Class::Durable);
+    for (side, w) in [(&mut p.a, 1u8), (&mut p.b, 2u8)] {
+        side.hold(s, Holding::Read);
+        let e = Entry { blob: x, wrap: [w; WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
+        assert_eq!(side.store.log(&s, e, Some(bytes.clone()), None).unwrap(), Code::OK);
+    }
+    p.join(s);
+    p.run();
+    let carries = |m: &Msg| match m {
+        Msg::PullReply(r) => r.events.iter().any(|(_, e)| matches!(e, Event::Added { blob_id, .. } if *blob_id == x)),
+        Msg::Stream(st) => st.events.iter().any(|(_, e)| matches!(e, Event::Added { blob_id, .. } if *blob_id == x)),
+        _ => false,
+    };
+    // each side sent x and the other reported it: whichever holds it not as sent (a keeps its own
+    // wrap) still anchors its Applied
+    for from_a in [true, false] {
+        let i = p.seen.iter().position(|(ab, m)| *ab == from_a && carries(m)).expect("x sent");
+        let applied = p.seen[i..].iter().find_map(|(ab, m)| match m {
+            Msg::Applied { anchor, .. } if *ab != from_a => Some(anchor.is_some()),
+            _ => None,
+        });
+        assert_eq!(applied, Some(true), "the Applied reporting x carries its anchor (sent by a: {from_a})");
+    }
+    assert_eq!(p.a.store.entry(&s, &x).unwrap().map(|e| e.wrap), Some([1; WRAP_LEN]), "a holds x not as b sent it");
+    assert!(knows(&p.b, p.b.src(), s, x), "b counts a holding x");
+}
+
+// spec/sync-streams.md §4 (Sends counted: a count stands on the anchor its Applied carries): an
+// Applied reporting x with no anchor counts nothing at a, though b took x (failed: counted on
+// no position of b's log, so a restore of b went unseen).
+#[test]
+fn an_applied_with_no_anchor_counts_nothing_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    let s = sid(1);
+    p.b.log(s, 50);
+    p.shared_read(s);
+    p.run();
+    let x = p.a.log(s, 100);
+    p.run_with(|ab, m| !ab && m.kind() == 44);
+    let mut stripped = 0;
+    for (_, f) in std::mem::take(&mut p.held) {
+        let Msg::Applied { cursor, anchor } = f.msg() else { continue };
+        stripped += usize::from(anchor.is_some());
+        p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor, anchor: None })));
+    }
+    p.run();
+    assert!(stripped > 0 && p.b.store.entry(&s, &x).unwrap().is_some(), "b took x and anchored its Applied");
+    assert!(!knows(&p.a, p.a.src(), s, x), "no anchor, no count");
+}
+
+// spec/sync-streams.md §4 (Reports: a Pull ends the reports of the Streams the server sent after
+// its cursor; Pushes: a Stream after one not applied is not applied): a push lost on the way puts
+// b in a gap; its next Pull reads both entries again. a counts b holding exactly what b holds,
+// and b keeps nothing for what it passed over.
+#[test]
+fn a_gap_is_counted_from_the_reply_that_reads_it_again_spec_sync_streams_4() {
+    for keep in [Some(true), None] {
+        let mut p = Pair::new();
+        p.b.table.held = keep;
+        let s = sid(1);
+        p.shared_read(s);
+        p.run();
+        let x = p.a.log(s, 100);
+        let mut lost = false;
+        p.run_with(|ab, m| {
+            let drop = ab && !lost && matches!(m, Msg::Stream(st) if st.cursor.is_some());
+            lost |= drop;
+            drop
+        });
+        p.held.clear();
+        let y = p.a.log(s, 101);
+        p.run();
+        assert!(lost, "a pushed x");
+        assert!(p.b.streams.caught_up(C, &s));
+        for e in [x, y] {
+            let held = p.b.store.entry(&s, &e).unwrap().is_some();
+            assert_eq!(knows(&p.a, p.a.src(), s, e), held, "a counts b holding it exactly when b holds it (keep {keep:?})");
+        }
+        assert_eq!([x, y].iter().all(|e| p.b.store.entry(&s, e).unwrap().is_some()), keep.is_some(), "b keeps them exactly when its table holds them");
+        assert_eq!(p.b.streams.holding(C), 0, "nothing kept for the gap");
+    }
+}
+
+// hostile requester: refusals told of entries a never sent it grow nothing at a, the same at 2
+// floods as at 20 (what an Applied is judged against is only what a sent).
+#[test]
+fn refusals_of_entries_never_sent_grow_nothing_spec_sync_streams_4() {
+    let flood = |n: u8| {
+        let s = sid(1);
+        let mut p = Pair::sharing(&[s]);
+        p.a.log(s, 100);
+        p.run();
+        for k in 0..n {
+            let events = (0..20u8).map(|i| (s, Event::Refused(junk_id(k, i), Code::DECLINED))).collect();
+            let st = osis_proto::Stream { events, cursor: None, report: false, seq: 0 };
+            p.a.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+        }
+        p.a.streams.holding(C)
+    };
+    assert_eq!(flood(2), flood(20));
+}
+
+// hostile source: Streams b passes over in a gap, each with made-up IDs, leave it holding the same
+// at 2 as at 20 (failed: each one's entries were kept for the next Applied to report).
+#[test]
+fn streams_passed_over_grow_nothing_spec_sync_streams_4() {
+    let flood = |n: u8| {
+        let s = sid(1);
+        let mut p = Pair::sharing(&[s]);
+        p.run();
+        for k in 0..n {
+            let events = (0..20u8).map(|i| (s, Event::Added { blob_id: junk_id(k, i), blob: None, wrap: [1; WRAP_LEN], stamp: None })).collect();
+            let st = osis_proto::Stream { events, cursor: Some(osis_proto::Cursor::new(vec![k; 8]).unwrap()), report: true, seq: 1000 + u64::from(k) };
+            p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+        }
+        p.b.streams.holding(C)
+    };
+    assert_eq!(flood(2), flood(20));
+}
+
+/// A made-up blob ID, distinct per `(k, i)`.
+fn junk_id(k: u8, i: u8) -> BlobId {
+    let mut id = [0xcc; 32];
+    id[0] = k;
+    id[1] = i;
+    BlobId(id)
+}
+
 // spec/sync-streams.md §3 (Durability: the records and the cursors stored in them are durable):
 // a requester restarted (streams started from its store) reconnecting to its source pulls from
 // its stored cursor: no listing from the start, and what the source showed is still known.

@@ -366,11 +366,12 @@ impl Streams {
         self.pulls_sent
     }
 
-    /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
-    /// failed bodies, refusals to tell, what a listing under way keeps).
+    /// Tests only: what a connection holds for its peer (messages in hand, queued and failed
+    /// bodies, refusals to tell, what a listing under way keeps, what the next Applied reports
+    /// either way).
     #[doc(hidden)]
     pub fn holding(&self, conn: ConnId) -> usize {
-        self.pull.get(&conn).map_or(0, pull::Pulling::holding)
+        self.pull.get(&conn).map_or(0, pull::Pulling::holding) + self.serve.get(&conn).map_or(0, serve::Serve::holding)
     }
 
     /// Tests only: the sources whose place is held in memory.

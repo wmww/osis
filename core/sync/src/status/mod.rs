@@ -187,7 +187,7 @@ pub trait Ground: Net {
     fn syncs(&mut self) -> Arc<SyncSet>;
     /// The entries of S here a source keeping S unread would pull: the stamped ones.
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>>;
-    /// Whether that source's stream showed `b` present under S (streams' `knows`).
+    /// Whether that source holds `b` present under S (streams' `knows`).
     fn knows(&self, at: Source, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
     /// `knows` of the record at `at`: by its rows, else on the connection holding it now (that
     /// connection read only where its rows show nothing).
@@ -1066,7 +1066,7 @@ impl Status {
 }
 
 /// Whether own commit `c`'s body under S is held at a source (§2): an entry recorded held, or one
-/// a source's stream showed present, or a reader
+/// a source holds present (`known`), or a reader
 /// reported a position at or past where this node's log first held it (for a member being ended,
 /// only an entry first logged at or below its `until`); else nothing S must hold (by read's
 /// verdict). A source holding it is recorded whatever the verdict: one that is may-hold only as

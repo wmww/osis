@@ -1,6 +1,6 @@
-//! What each source's stream showed (spec/sync-judgement.md §3 `known`), with what else a source
-//! told on its stream: its head per sync ID, full, and the refusals it sent (spec/sync-streams.md
-//! §4 Full, Refused).
+//! What each source holds (spec/sync-judgement.md §3 `known`: its stream showed it, or its
+//! Applied reported a message carrying it), with what else a source told on its stream: its head
+//! per sync ID, full, and the refusals it sent (spec/sync-streams.md §4 Full, Refused).
 //!
 //! A refusal stands only while its ground does: it goes when the entry is offered again to that
 //! source (`Op::Lift`, from serving), when the source's stream shows the entry present, with
@@ -192,7 +192,7 @@ impl Known {
         self.store.with_tx_in(true, |t| source::forget_tags(t, src, |x| [PRESENT, HEAD, KEPT, FULL, REFUSED].contains(&x)))
     }
 
-    /// Whether `src`'s stream showed `b` present under S.
+    /// Whether `src` holds `b` present under S.
     pub fn knows(&self, src: Source, s: &SyncId, b: &BlobId) -> bool {
         self.read(home(src), |t| Ok(source::get(t, src, PRESENT, s, &b.0)?.is_some()))
     }

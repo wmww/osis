@@ -1,4 +1,4 @@
-//! The rows a source keeps of a sync ID (what its stream showed, its stands, the deletes seen
+//! The rows a source keeps of a sync ID (what it holds, `known`, its stands, the deletes seen
 //! there), one mechanism in either part, each row under its owner's tag (`rows::tag`). In the
 //! durable part a record source's are its record's rows (`record_put_row`: gone with the record
 //! and with S, indexed by osis-store); a connection keeps none there. In the memory part any

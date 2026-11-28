@@ -53,7 +53,7 @@ pub struct SrcView {
     pub role_unheld: bool,
 }
 
-/// What a source's stream showed of one commit's entries under S (`known`).
+/// What a source holds of one commit's entries under S (`known`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Seen {
     /// Present there and not removed since.
@@ -218,7 +218,7 @@ pub trait Ground {
     /// Sources of S whose view was written (joined or changed) since the last call.
     fn sources_added(&mut self) -> Vec<(SyncId, Source)>;
     fn seen(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Seen>;
-    /// `known` rows written since the last call (a source's stream showed an entry of the commit,
+    /// `known` rows written since the last call (a source holds an entry of the commit,
     /// or its removal); at the first call (a start) every row, presence and deletes seen alike.
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, BodyId)>>;
     /// Some source's stream shows an entry of `c` under S present.

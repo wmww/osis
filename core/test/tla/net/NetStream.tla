@@ -43,12 +43,16 @@ CONSTANTS
                                     \* the Applied carries the requester's log end, the anchor, which the next
                                     \* Pull to that requester names: a server answers from the start when its
                                     \* history lacks it; the held anchor is replaced only once a reply on the
-                                    \* connection checked it, a newer one waiting till then),
+                                    \* connection checked it, a newer one and the counts it carries waiting
+                                    \* till then, both ending with the connection: a count stands only on an
+                                    \* anchor checked on the connection that counts it),
                                     \* "untold" (control: an applied send counts though the requester holds it
                                     \* not), "uncounted" (control: the filter without counting applied sends),
                                     \* "durable" (control: what the peer counts kept across connections),
                                     \* "unanchored" (control: no anchor), "unchecked" (control: every Applied
-                                    \* replaces the held anchor at once)
+                                    \* replaces the held anchor at once), "carried" (control: a waiting anchor's
+                                    \* counts taken at once, the anchor kept across connections and promoted by
+                                    \* a later connection's check of the held one)
 
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
@@ -60,13 +64,14 @@ NoDig == [on |-> FALSE, set |-> {}]
 Mem0 == [st |-> "out", c |-> NoCur]
 Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in Ls |-> FALSE],
          lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE,
-         pres |-> {}, plist |-> [l \in Ls |-> "none"], anc |-> NoCur, anew |-> NoCur, ancOk |-> FALSE]
+         pres |-> {}, plist |-> [l \in Ls |-> "none"], anc |-> NoCur, anew |-> NoCur, ancOk |-> FALSE, apend |-> {}]
 \* anc: the anchor, a position of the peer's log covering every send of this node it counts the peer
-\* holding; anew: a newer one waiting for a reply on the connection to check anc; ancOk: one has.
+\* holding; anew: a newer one waiting for a reply on the connection to check anc, apend the counts
+\* it carries; ancOk: one has.
 Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
                      pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0, hz |-> 0]
 NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {},
-            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur], named |-> NoCur]
+            lfrom |-> {}, ltrim |-> {}, snap |-> {}, acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]
 
 VARIABLES st, link, dialer, inflight, active, cloned, cu, dirty, ever, written,
           rights, cnt, unforced, lostW, badServe, dig, ctd
@@ -182,7 +187,7 @@ Pull(x) ==
              cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"},
              lfrom |-> IF TrackPres THEN lfrom ELSE {}, ltrim |-> IF TrackPres THEN ltrim ELSE {},
              snap |-> IF TrackPres THEN {e \in s.held : Shared(EL[e])} ELSE {},
-             acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur], named |-> r.anc]]
+             acks |-> [took |-> {}, gone |-> {}, anc |-> NoCur]]]
     /\ st' = [st EXCEPT ![y].rec.last = r.cur,
                         ![x].rec.cur = IF CursorOnApply THEN @ ELSE inflight'[x].cur,
                         ![x].rec.everCur = IF CursorOnApply THEN @ ELSE TRUE]
@@ -220,6 +225,9 @@ Apply(x) ==
         Done(l) == plist1[l] # "none" /\ ~rp.more /\ mem2[l].st = "stream" /\ l \in rp.asked
         Repl(l) == Done(l) /\ (PresReplace = "whole" \/ plist1[l] = "trim")
         pres2 == {e \in pres1 : ~Repl(EL[e])} \cup {e \in rp.snap : Repl(EL[e])}
+        \* this reply checked x's held anchor: the counts waiting with a newer one stand, but what
+        \* the reply shows since (a deletion, a completed listing's holdings) overrides them
+        pend == {e \in r.apend \ {i.e : i \in {i \in rp.items : i.k = "del"}} : ~Repl(EL[e])}
         plist2 == [l \in Ls |-> IF Done(l) \/ mem2[l].st = "out" THEN "none" ELSE plist1[l]]
         \* the server's sends this Applied reports: each Added the requester holds now counts, each
         \* it does not is told (before the Applied) and counts it absent
@@ -227,20 +235,21 @@ Apply(x) ==
         took == sent \cap s2.held
         EvPos(e) == (CHOOSE ev \in s2.log : ev.e = e).pos
         anc == IF Anchored /\ took # {} THEN [lid |-> s2.lid, inc |-> s2.inc, pos |-> s2.end] ELSE NoCur
-        ack == CASE Echo \in {"applied", "durable", "unanchored", "unchecked"} -> [took |-> took, gone |-> sent \ took, anc |-> anc]
+        ack == CASE Echo \in {"applied", "durable", "unanchored", "unchecked", "carried"} -> [took |-> took, gone |-> sent \ took, anc |-> anc]
                  [] Echo = "untold" -> [took |-> sent, gone |-> {}, anc |-> anc]
                  [] OTHER -> [took |-> {}, gone |-> {}, anc |-> NoCur]
         \* the Applied reaches y after y's reply in flight from x (sent before it), else at once
         queued == inflight[y].on
         Acked(p, a) == (p \cup a.took) \ a.gone
-        \* this reply checked x's held anchor: a newer one replaces it, a listing from the start
-        \* spends the one its Pull named (its end replaces presence; one held since stays); then the
-        \* Applied that waited for it (y's)
-        anc1 == IF r.anew # NoCur THEN r.anew ELSE IF rp.whole /\ rp.named = r.anc THEN NoCur ELSE r.anc
+        \* this reply checked x's held anchor: a newer one replaces it, else a listing from the start
+        \* spends it (its end replaces presence); then the Applied that waited for it (y's)
+        anc1 == IF r.anew # NoCur THEN r.anew ELSE IF rp.whole THEN NoCur ELSE r.anc
         anc2 == IF rp.acks.anc # NoCur THEN rp.acks.anc ELSE anc1
         \* y's anchor from this Applied: replaces y's once a reply checked it, else waits
         yr == st[y].rec
         yNow == ack.anc # NoCur /\ (yr.ancOk \/ yr.anc = NoCur \/ Echo = "unchecked")
+        \* its counts wait with it (the control "carried": counted at once)
+        yWait == ack.anc # NoCur /\ ~yNow /\ Echo # "carried"
         ctd2 == IF Echo = "stream" THEN ctd[x]
                 ELSE {c \in ctd[x] : c.e \notin took} \cup {[e |-> e, pos |-> EvPos(e)] : e \in took}
     IN
@@ -259,11 +268,13 @@ Apply(x) ==
                 !.rec.mem = mem2,
                 !.rec.listing = IF rp.more THEN listing2 ELSE [on |-> FALSE, seen |-> {}],
                 !.rec.knew = @ \cup {i.e : i \in rp.items},
-                !.rec.pres = IF TrackPres THEN Acked(pres2, rp.acks) ELSE @,
+                !.rec.pres = IF TrackPres THEN Acked(pres2 \cup pend, rp.acks) ELSE @,
+                !.rec.apend = {},
                 !.rec.plist = IF TrackPres THEN plist2 ELSE @,
                 !.rec.anc = anc2, !.rec.anew = NoCur, !.rec.ancOk = Anchored],
               ![y].rec.last = rp.cur,
-              ![y].rec.pres = IF TrackPres /\ ~queued THEN Acked(@, ack) ELSE @,
+              ![y].rec.pres = IF TrackPres /\ ~queued THEN (IF yWait THEN @ \ ack.gone ELSE Acked(@, ack)) ELSE @,
+              ![y].rec.apend = IF ~queued THEN (IF yWait THEN (@ \cup ack.took) ELSE @) \ ack.gone ELSE @,
               ![y].rec.anc = IF ~queued /\ yNow THEN ack.anc ELSE @,
               ![y].rec.anew = IF ~queued /\ ack.anc # NoCur /\ ~yNow THEN ack.anc ELSE @]
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> ~rp.more /\ ~(Rearm /\ rp.stale) /\ mem2[l].st = "stream" /\ l \in rp.asked]]
@@ -439,8 +450,10 @@ Connect(x, y) ==
     /\ link' = {x, y}
     /\ dialer' = x
     /\ IF same
-       THEN /\ st' = [st EXCEPT ![x].rec.lostp = {}, ![y].rec.lostp = {},
-                                 ![x].rec.ancOk = FALSE, ![y].rec.ancOk = FALSE]
+       THEN /\ st' = [z \in Stores |-> IF z \notin {x, y} THEN st[z]
+                        ELSE [st[z] EXCEPT !.rec.lostp = {}, !.rec.ancOk = FALSE,
+                                           !.rec.anew = IF Echo = "carried" THEN @ ELSE NoCur,
+                                           !.rec.apend = IF Echo = "carried" THEN @ ELSE {}]]
             /\ UNCHANGED cnt
        ELSE /\ st' = [st EXCEPT ![x] = Fresh(@), ![y] = Fresh(@)]
             /\ cnt' = [cnt EXCEPT !.rid = rid]

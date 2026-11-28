@@ -52,12 +52,15 @@ pub(super) struct Serve {
     /// The highest number an Applied named (covering every message before it).
     reported: u64,
     /// The cursors of messages asking a report not yet covered, each sealed afresh so an Applied
-    /// names one message, with its number and the entries its `Added` events carried (counted held
-    /// by the peer once an Applied covers it, `Streams::count_applied`): the newest `REPORTS_KEPT`.
-    asked: VecDeque<(Cursor, u64, Vec<Sent>)>,
-    /// Entries the peer told it does not hold (a refusal event) since its last Applied: the next
-    /// Applied counts none of them held.
-    pub(super) told: BTreeSet<(SyncId, BlobId)>,
+    /// names one message, with its number, the entries its `Added` events carried (counted held
+    /// by the peer once an Applied covers it, `Streams::count_applied`) and, for a Stream, the
+    /// Pulls this side had answered when it went (`pulls`): the newest `REPORTS_KEPT`.
+    asked: VecDeque<Asked>,
+    /// Pulls answered on the connection: the Streams sent since the last one follow its reply.
+    pulls: u64,
+    /// Entries of `asked` the peer told it does not hold (a refusal event) since its last
+    /// Applied: the next Applied counts none of them held.
+    told: BTreeSet<(SyncId, BlobId)>,
     /// What the peer counts this node holding: entries it sent that this node holds as sent, each
     /// with this node's log end and memory mark when it applied them, put here as the Applied
     /// reporting them goes (`Streams::run`). No event of one at or below its marks is served
@@ -99,20 +102,29 @@ impl Serve {
     fn served(&mut self, events: &[(SyncId, Event)], cursor: Cursor) {
         self.sent += 1;
         let added = events.iter().filter_map(|(s, e)| if let Event::Added { blob_id, .. } = e { Some((*s, *blob_id)) } else { None }).collect();
-        self.asked.push_back((cursor, self.sent, added));
+        self.asked.push_back(Asked { cursor, n: self.sent, added, stream: None });
         // a message no Applied can name alone: its blobs may go inline again (`inlined` stays
         // within the newest `REPORTS_KEPT` messages, whether or not the peer reports), and what it
         // sent is counted held nowhere
         if self.asked.len() > REPORTS_KEPT
-            && let Some((_, n, _)) = self.asked.pop_front()
+            && let Some(a) = self.asked.pop_front()
         {
-            self.inlined.retain(|_, x| *x > n);
+            self.inlined.retain(|_, x| *x > a.n);
+            self.keep_told();
         }
         for (s, e) in events {
             self.unapplied.insert(*s, self.sent);
             if let Event::Added { blob_id, blob: Some(_), .. } = e {
                 self.inlined.insert(*blob_id, self.sent);
             }
+        }
+    }
+
+    /// The message `served` last was a Stream, sent after the reply to the last Pull.
+    fn streamed(&mut self) {
+        let pulls = self.pulls;
+        if let Some(a) = self.asked.back_mut() {
+            a.stream = Some(pulls);
         }
     }
 
@@ -128,13 +140,48 @@ impl Serve {
     /// connection's) covers nothing.
     fn reported_by(&mut self, cursor: &[u8]) -> Vec<(SyncId, BlobId)> {
         let told = std::mem::take(&mut self.told);
-        let Some((i, n)) = self.asked.iter().enumerate().find_map(|(i, (c, n, _))| (c.as_slice() == cursor).then_some((i, *n))) else { return Vec::new() };
-        let sent: BTreeSet<(SyncId, BlobId)> = self.asked.drain(..=i).flat_map(|(_, _, a)| a).filter(|x| !told.contains(x)).collect();
+        let Some((i, n)) = self.asked.iter().enumerate().find_map(|(i, a)| (a.cursor.as_slice() == cursor).then_some((i, a.n))) else { return Vec::new() };
+        let sent: BTreeSet<(SyncId, BlobId)> = self.asked.drain(..=i).flat_map(|a| a.added).filter(|x| !told.contains(x)).collect();
         self.reported = self.reported.max(n);
         let r = self.reported;
         self.unapplied.retain(|_, x| *x > r);
         self.inlined.retain(|_, x| *x > r);
         sent.into_iter().collect()
+    }
+
+    /// Tests only: what the next Applied of the peer is judged against beyond `asked`.
+    pub(super) fn holding(&self) -> usize {
+        self.told.len()
+    }
+
+    /// The peer told it does not hold entry `b` of S: kept for the next Applied only where a
+    /// message it may report carried it.
+    pub(super) fn told(&mut self, s: SyncId, b: BlobId) {
+        if self.asked.iter().any(|a| a.added.contains(&(s, b))) {
+            self.told.insert((s, b));
+        }
+    }
+
+    /// Refusals told of entries no message in `asked` carries any more count for nothing.
+    fn keep_told(&mut self) {
+        let asked = &self.asked;
+        self.told.retain(|x| asked.iter().any(|a| a.added.contains(x)));
+    }
+
+    /// A Pull naming `cursor` came: its reply reads again from there, so the Streams sent since
+    /// the last reply after the message `cursor` names (each, where it names none of them) report
+    /// nothing; the requester applying one does not report it (spec/sync-streams.md §4 Reports).
+    fn pulled_at(&mut self, cursor: Option<&[u8]>) {
+        let named = cursor.and_then(|c| self.asked.iter().position(|a| a.cursor.as_slice() == c));
+        let pulls = self.pulls;
+        let mut i = 0;
+        self.asked.retain(|a| {
+            let keep = a.stream != Some(pulls) || named.is_some_and(|x| i <= x);
+            i += 1;
+            keep
+        });
+        self.keep_told();
+        self.pulls += 1;
     }
 
     /// Whether the peer counts this node holding entry `b` of S as of its event at `pos` (its
@@ -151,6 +198,15 @@ impl Serve {
 
 /// An entry an `Added` event carried to the peer: its sync ID and blob.
 pub(super) type Sent = (SyncId, BlobId);
+
+/// A message asking a report (`Serve::asked`).
+#[derive(Clone, Debug)]
+struct Asked {
+    cursor: Cursor,
+    n: u64,
+    added: Vec<Sent>,
+    stream: Option<u64>,
+}
 
 /// Where an event stands: a log position, or an ephemeral entry's memory counter. As a mark
 /// (`Serve::counted`): where this node's log (an ephemeral entry's: its memory part) stood when
@@ -264,6 +320,7 @@ impl Streams {
     }
 
     fn reply(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, p: Pull) -> Result<PullReply> {
+        self.serve.entry(conn).or_default().pulled_at(p.cursor.as_ref().map(|c| c.as_bytes()));
         let members: BTreeMap<SyncId, Option<Position>> = ctx.shared.members(conn).iter().map(|(s, m)| (*s, m.until)).collect();
         self.work.members += members.len() as u64;
         let (_, horizon) = ctx.store.log_bounds()?;
@@ -621,6 +678,7 @@ impl Streams {
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
                 s.followed_to(read.pos);
                 s.served(&events, at);
+                s.streamed();
                 s.eph.extend(page.eph);
                 if !page.full && !read.more {
                     s.mem_mark = mark;
@@ -645,6 +703,7 @@ impl Streams {
             }
             let serve = self.serve.entry(conn).or_default();
             serve.served(&[], at);
+            serve.streamed();
             serve.told_until.insert(*s);
             if let Some(x) = serve.follow.as_mut() {
                 x.seq += 1;
