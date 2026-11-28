@@ -370,7 +370,7 @@ impl Engine {
     /// until `unfollow_link` of that thing. The
     /// link text is untrusted: its sync ID counts only where nothing held records another's
     /// (`sync_ids::actors::followed`).
-    pub fn follow_public(&mut self, link: &osis_blob::Locator) {
+    pub fn follow_locator(&mut self, link: &osis_blob::Locator) {
         self.core.followed_links.insert(link.followed(), link.sync_id, None);
     }
 

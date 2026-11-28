@@ -110,7 +110,7 @@ fn edit_is_own_and_purges_as_the_set_lets_spec_permissions_6() {
         // alice hands bob the channel's locator, which he redeems (a grant to a node thing with no
         // inbox tells nobody: spec/sync-set.md §2 First entry)
         let link = alice.engine(|e| e.locator(&c, Vec::new())).unwrap().unwrap();
-        bob.engine(|e| e.follow_public(&link));
+        bob.engine(|e| e.follow_locator(&link));
         { let mut w = bob.write(); w.hold(bob.node_root().unwrap(), c).unwrap(); w.commit().unwrap(); }
         let hers = post(&alice, c, "hers");
         deliver(&alice, &bob);

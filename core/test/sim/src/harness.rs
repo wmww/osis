@@ -252,13 +252,13 @@ impl Sim {
         }
         let pairs: Vec<(usize, usize, osis_blob::Locator)> = (0..links.len()).flat_map(|j| links.iter().enumerate().filter(move |(i, _)| *i != j).map(move |(i, l)| (j, i, l.clone()))).collect();
         for (j, _, l) in &pairs {
-            s.engine(*j)?.follow_public(l);
+            s.engine(*j)?.follow_locator(l);
         }
         s.sync_all()?;
         for (j, i, l) in &pairs {
             let a = s.account(*j)?;
             let e = s.engine(*j)?;
-            let r = e.redeem_public(l, &a).and_then(|_| e.take_carried());
+            let r = e.redeem_locator(l, &a).and_then(|_| e.take_carried());
             r.map_err(|e| s.fail(format!("node {j} imports node {i}'s contact card: {e}")))?;
             s.engine(*j)?.unfollow_link(&l.target);
             s.drain(*j)?;

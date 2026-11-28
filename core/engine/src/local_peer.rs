@@ -278,11 +278,11 @@ impl Peer {
 
     /// This node's account imports a contact card (spec/sync-inbox.md §5), `link` to a public
     /// profile whose commits it has received: the strong from its account (its node thing where
-    /// it acts for none) that redeeming writes (`Engine::redeem_public`), then what the profile
+    /// it acts for none) that redeeming writes (`Engine::redeem_locator`), then what the profile
     /// carries taken (its cards).
     pub fn import_contact(&mut self, link: &osis_blob::Locator) -> Result<()> {
         let joiner = self.engine.settings_thing()?.unwrap_or_else(|| self.engine.tid());
-        self.engine.redeem_public(link, &joiner)?;
+        self.engine.redeem_locator(link, &joiner)?;
         self.engine.take_carried()?;
         Ok(())
     }
@@ -884,7 +884,7 @@ impl LocalPeer {
         self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
         // `by` hands over A's locator, which `p` redeems for its node root
         let link = self.peers[by].engine.locator(&a, Vec::new())?.ok_or(crate::error::Error::Misuse("the account has no sync ID"))?;
-        p.engine.follow_public(&link);
+        p.engine.follow_locator(&link);
         p.engine.take_pairing(&a)?;
         Ok(a)
     }

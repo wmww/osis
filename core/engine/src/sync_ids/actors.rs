@@ -286,7 +286,7 @@ pub(crate) fn owner_sync_id(tx: &mut Tx<'_>, g: &Tid) -> Result<Option<OwnedSync
 }
 
 /// The things this node follows by a locator or link being redeemed (`Engine::follow_link`,
-/// `follow_public`) or by held grant signals (`Engine::take_fire`): per thing, the sync IDs it is
+/// `follow_locator`) or by held grant signals (`Engine::take_fire`): per thing, the sync IDs it is
 /// followed under and a share link's key L, read per key three ways (by thing; by L, an author
 /// this node writes as; by sync ID), so a reader asking about one thing, actor or sync ID moves
 /// only when that one does. Each key L is kept exactly while some followed link names it, so it

@@ -178,7 +178,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::SetRole { .. }
             | Cmd::Grant { .. }
             | Cmd::Link(LinkCmd::Make { .. })
-            | Cmd::Link(LinkCmd::Public { .. })
+            | Cmd::Link(LinkCmd::Locator { .. })
             | Cmd::Contact(ContactCmd::Show)
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Contact(ContactCmd::Import { .. })
@@ -504,7 +504,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => make_link(ctx, &t, &role, LinkOpts { until: opt_ts(&until)?, single_use }),
-        Cmd::Link(LinkCmd::Public { t }) => {
+        Cmd::Link(LinkCmd::Locator { t }) => {
             let t = ctx.tid(&t)?;
             let l = db.locator(t)?;
             ctx.one("link", l)?;

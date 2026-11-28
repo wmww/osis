@@ -137,7 +137,7 @@ impl Engine {
     /// link reaches the target here (`reaches`): the strong then brings the target into
     /// `joiner`'s sync unit (spec/sync-set.md §2 T's keys open). Who writes it: this node, for a
     /// joiner it writes.
-    pub fn redeem_public(&mut self, link: &osis_blob::Locator, joiner: &Tid) -> Result<Done> {
+    pub fn redeem_locator(&mut self, link: &osis_blob::Locator, joiner: &Tid) -> Result<Done> {
         let (t, d) = (link.target, *joiner);
         if !self.reaches(&t) {
             return Err(Error::Misuse("the link's target is not reached here"));

@@ -183,7 +183,7 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     assert_eq!(public(&lp, 0), Some(Role::Read), "the may-grant grant applies");
     assert!(lp.peers[2].engine.public_reads(&g));
     let link = lp.peers[1].engine.locator(&g, Vec::new()).unwrap().unwrap();
-    lp.peers[2].engine.redeem_public(&link, &tids[2]).unwrap();
+    lp.peers[2].engine.redeem_locator(&link, &tids[2]).unwrap();
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 2, g, "open"), "a stranger reads g by the link");
     assert!(lp.peers[1].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other edge");

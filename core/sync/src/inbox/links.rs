@@ -31,10 +31,10 @@
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 //!
-//! A locator (spec/sync-set.md §4) has no join: `redeem_public` follows it in the engine
-//! (`Engine::follow_public`: the target's sync ID from the text read in the sync set, its public
+//! A locator (spec/sync-set.md §4) has no join: `redeem_locator` follows it in the engine
+//! (`Engine::follow_locator`: the target's sync ID from the text read in the sync set, its public
 //! entry tested); once the locator reaches its target (`Engine::reaches`) it writes the strong to
-//! the target in the joiner's `holds.0` (`Engine::redeem_public`), and forgets it once the node
+//! the target in the joiner's `holds.0` (`Engine::redeem_locator`), and forgets it once the node
 //! closure holds the target: the strong brings it into the joiner's sync unit from then on, once
 //! the target's role entries are held here to carry it (spec/sync-set.md §2 Carriers). It is kept
 //! as a share link's is (a row `I/r/` under its target, not shredded: no secret), so a restart
@@ -98,7 +98,7 @@ impl Pending {
     }
 }
 
-impl PublicPending {
+impl LocatorPending {
     fn encode(&self) -> Result<Vec<u8>> {
         encode_row(&Link::Locator(self.link.clone()), self.since, &self.joiner, None)
     }
@@ -137,9 +137,9 @@ enum Stage {
     GaveUp,
 }
 
-/// A locator being redeemed (`redeem_public`).
+/// A locator being redeemed (`redeem_locator`).
 #[derive(Clone, Debug)]
-struct PublicPending {
+struct LocatorPending {
     link: Locator,
     since: Time,
     joiner: Tid,
@@ -147,8 +147,8 @@ struct PublicPending {
 
 /// What a locator being redeemed waits on.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum PublicStage {
-    /// The public's grant on the target is not held here yet.
+enum LocatorStage {
+    /// The locator does not reach its target here yet (no role on it held, the public's counting).
     Waiting,
     /// It is: the strong can be written.
     Ready,
@@ -162,8 +162,8 @@ enum PublicStage {
 pub(super) struct Redemptions {
     pending: BTreeMap<Tid, Pending>,
     /// Locators being redeemed, by target.
-    public: BTreeMap<Tid, PublicPending>,
-    public_ready: Effects<Tid, PublicStage>,
+    locators: BTreeMap<Tid, LocatorPending>,
+    locators_ready: Effects<Tid, LocatorStage>,
     /// Stamped: the driver follows the dial hints as they move.
     hints: Stamped<Tid, Vec<DialHint>>,
     ready: Effects<Tid, Stage>,
@@ -176,7 +176,7 @@ pub(super) struct Redemptions {
 
 impl Default for Redemptions {
     fn default() -> Self {
-        Redemptions { pending: BTreeMap::new(), public: BTreeMap::new(), public_ready: Effects::new("inbox: locator ready"), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
+        Redemptions { pending: BTreeMap::new(), locators: BTreeMap::new(), locators_ready: Effects::new("inbox: locator ready"), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
     }
 }
 
@@ -187,7 +187,7 @@ impl Redemptions {
             let Some(k) = k.get(ROWS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
             match decode_row(&v) {
                 Some((Link::Share(link), since, joiner, joined)) => self.follow(h, k, Pending { link, since, joiner, joined })?,
-                Some((Link::Locator(link), since, joiner, None)) => self.follow_public(h, PublicPending { link, since, joiner }),
+                Some((Link::Locator(link), since, joiner, None)) => self.follow_locator(h, LocatorPending { link, since, joiner }),
                 _ => {}
             }
         }
@@ -238,62 +238,62 @@ impl Redemptions {
     }
 
     /// Redeems a locator (module doc): `Done` once the node closure holds its target.
-    pub(super) fn redeem_public(&mut self, h: &mut Here<'_>, link: &Locator, joiner: Tid) -> Result<Waiting> {
+    pub(super) fn redeem_locator(&mut self, h: &mut Here<'_>, link: &Locator, joiner: Tid) -> Result<Waiting> {
         let t = link.target;
         if h.engine.closure_holds(&t) {
             return Ok(Waiting::Done);
         }
-        if !self.public.contains_key(&t) {
-            let p = PublicPending { link: link.clone(), since: h.now, joiner };
+        if !self.locators.contains_key(&t) {
+            let p = LocatorPending { link: link.clone(), since: h.now, joiner };
             let row = p.encode()?;
             h.store.with_tx(|x| x.put_local(&row_key(&t), &row, Shred::No))?;
-            self.follow_public(h, p);
+            self.follow_locator(h, p);
         }
         Ok(Waiting::Pending)
     }
 
-    fn follow_public(&mut self, h: &mut Here<'_>, p: PublicPending) {
+    fn follow_locator(&mut self, h: &mut Here<'_>, p: LocatorPending) {
         let t = p.link.target;
-        h.engine.follow_public(&p.link);
+        h.engine.follow_locator(&p.link);
         self.hints.insert(t, p.link.peers.clone());
-        self.public.insert(t, p);
-        self.public_ready.want(t);
+        self.locators.insert(t, p);
+        self.locators_ready.want(t);
     }
 
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
-        for t in self.public_ready.due() {
-            let Some(p) = self.public.get(&t).cloned() else {
-                self.public_ready.unwant(&t);
+        for t in self.locators_ready.due() {
+            let Some(p) = self.locators.get(&t).cloned() else {
+                self.locators_ready.unwant(&t);
                 continue;
             };
             let engine = &mut *h.engine;
             let until = Time(p.since.0.saturating_add(h.policy.follow_link_ms()));
             let stage = || match () {
-                _ if engine.closure_holds(&t) && engine.reaches(&t) => PublicStage::Held,
-                _ if engine.reaches(&t) => PublicStage::Ready,
+                _ if engine.closure_holds(&t) && engine.reaches(&t) => LocatorStage::Held,
+                _ if engine.reaches(&t) => LocatorStage::Ready,
                 // the node's own settings thing (pairing) is followed until held: no time ends it
-                _ if engine.settings_named().ok().flatten() != Some(t) && engine.reached(until) => PublicStage::GaveUp,
-                _ => PublicStage::Waiting,
+                _ if engine.settings_named().ok().flatten() != Some(t) && engine.reached(until) => LocatorStage::GaveUp,
+                _ => LocatorStage::Waiting,
             };
-            let Some((_, stage)) = self.public_ready.settle(&t, stage) else { continue };
+            let Some((_, stage)) = self.locators_ready.settle(&t, stage) else { continue };
             match stage {
-                PublicStage::Waiting => continue,
+                LocatorStage::Waiting => continue,
                 // followed on until the strong brings the target in (`Held`): the strong carries
                 // it only once its role entries are held here (spec/sync-set.md §2 Carriers); a
                 // failed write is tried again at the next change
-                PublicStage::Ready => {
-                    acted |= h.engine.redeem_public(&p.link, &p.joiner).is_ok();
+                LocatorStage::Ready => {
+                    acted |= h.engine.redeem_locator(&p.link, &p.joiner).is_ok();
                     continue;
                 }
                 _ => {}
             }
-            self.public_ready.unwant(&t);
-            self.public.remove(&t);
+            self.locators_ready.unwant(&t);
+            self.locators.remove(&t);
             self.hints.remove(&t);
             // the independent it follows, unless another locator being redeemed follows it
             let f = p.link.followed();
-            if !self.public.values().any(|o| o.link.followed() == f) {
+            if !self.locators.values().any(|o| o.link.followed() == f) {
                 h.engine.unfollow_link(&f);
             }
             h.store.with_tx(|x| x.remove_local(&row_key(&t), Shred::No))?;
@@ -372,7 +372,7 @@ impl Redemptions {
 
     /// Whether link K, or a locator of target `k`, is being redeemed here.
     pub(super) fn redeeming(&self, k: &Tid) -> bool {
-        self.pending.contains_key(k) || self.public.contains_key(k)
+        self.pending.contains_key(k) || self.locators.contains_key(k)
     }
 
     /// The peers of the links being redeemed (spec/wire.md §10: first-contact hints) and of

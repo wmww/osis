@@ -186,7 +186,7 @@ fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: Time, order: &[To
     let follow = |p: &mut osis_engine::local_peer::Peer| {
         for t in &held {
             if let Ok(Some(l)) = p.engine.locator(t, Vec::new()) {
-                p.engine.follow_public(&l);
+                p.engine.follow_locator(&l);
             }
         }
     };

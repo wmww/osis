@@ -537,7 +537,7 @@ pub enum LinkCmd {
     },
     /// A locator of T, which the public reads (`grant T public read`); prints it, then waits
     /// as `make` does
-    Public { t: String },
+    Locator { t: String },
     /// Join what LINK names; prints the thing
     Redeem { link: String },
     /// The account's working links (of thing T)
