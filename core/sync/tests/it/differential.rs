@@ -18,9 +18,24 @@ pub(crate) fn holds(seed: u64, steps: &[Step], replay: String, twice: bool) -> W
     holds_on(seed, accounts, n, steps, replay, twice)
 }
 
-/// `holds` on a world of `n` nodes of `accounts` accounts.
+/// `holds` on a world of `n` nodes of `accounts` accounts, a failure shrunk under
+/// `OSIS_SYNC_SHRINK=1` (`shrinking`), the shrunk script then played on seed 0's world too
+/// (printed: whether it fails the same way there).
 fn holds_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
-    // the script lives through the check: a failing check prints it and shrinks
+    let mut out = None;
+    let on_zero = |steps: &[Step]| drop(checked(0, accounts, n, steps, String::new(), false));
+    let elsewhere: &[osis_base::testenv::Elsewhere<Step>] = &[("seed 0's world", &on_zero)];
+    shrinking(
+        || out = Some(checked(seed, accounts, n, steps, replay.clone(), twice)),
+        |steps, again| drop(checked(seed, accounts, n, steps, replay.clone(), again && twice)),
+        if seed == 0 { &[] } else { elsewhere },
+    );
+    out.expect("a run that returns has its world")
+}
+
+/// One play of `holds_on`, unshrunk.
+fn checked(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
+    // the script lives through the check: a failing check prints it
     let (mut w, _script) = played_with(seed, accounts, n, steps, replay, twice);
     check(&mut w);
     w
@@ -81,8 +96,7 @@ fn histories_hold_their_closure_plain() {
 }
 
 /// `holds` for each seed of `OSIS_SYNC_START`/`OSIS_SYNC_SEEDS` (default: the size's range) on
-/// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`, the shrunk script
-/// then played on seed 0's world too (printed: whether it fails the same way there). A shrunk script
+/// the history `steps_of(seed)`, each failure shrunk under `OSIS_SYNC_SHRINK=1`. A shrunk script
 /// replays over many worlds, or shrinks further from where a seed timeout cut it, in a scratch
 /// test: `differential::worlds("scratch", |_| vec![New(2), ..])` (notes/sync-test-harness.md,
 /// Replaying a script).
@@ -91,16 +105,7 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
     seeds.run(name, |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let h = steps_of(seed);
         let replay = format!("differential::holds({seed}, &script, String::new(), false)");
-        let twice = seed.is_multiple_of(TWICE_EVERY);
-        shrinking(
-            || {
-                holds(seed, &h, replay.clone(), twice);
-            },
-            |steps, again| {
-                holds(seed, steps, replay.clone(), again && twice);
-            },
-            if seed == 0 { &[] } else { &[("seed 0's world", &|steps: &[Step]| drop(holds(0, steps, String::new(), false)))] },
-        );
+        holds(seed, &h, replay, seed.is_multiple_of(TWICE_EVERY));
     });
 }
 

@@ -811,6 +811,21 @@ mod tests {
         let s = shrink_failure("node 40 reads unlike the reference", steps.into_iter().filter(|x| *x != 30).collect(), replay, |_| Vec::new()).expect("shrinks");
         assert_eq!(s.steps, vec![7]);
     }
+
+    // a failing script offers its shrink variable only where it shrinks (spec: none, test infrastructure)
+    #[test]
+    fn a_script_offers_to_shrink_only_inside_shrinking() {
+        let shown = || {
+            let mut script = Script::new("k", "OSIS_SYNC_SHRINK", "replay()".into());
+            script.push(1u8, String::new());
+            script.to_string()
+        };
+        assert!(shown().starts_with("the run as a script (replay()):"), "{}", shown());
+        let mut inside = String::new();
+        shrinking::<u8>("OSIS_SYNC_SHRINK", || inside = shown(), |_, _| {}, |_| Vec::new(), &[]);
+        assert!(inside.starts_with("the run as a script (replay(); OSIS_SYNC_SHRINK=1 shrinks it):"), "{inside}");
+        assert!(!shown().contains("shrinks it"), "the offer outlives its shrinking");
+    }
 }
 
 thread_local! {
@@ -818,12 +833,14 @@ thread_local! {
     static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The steps of the last run that panicked on this thread (`Script`).
     static FAILED: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = std::cell::RefCell::new(None);
+    /// This thread runs inside `shrinking`: a failing script's message offers its variable.
+    static SHRINKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A random run's steps as a script, each with what it did: printed as Rust, with the call that
 /// replays it, when the run panics (notes/test-harnesses.md, Env vars and seeds). `kind` is the
 /// step type's path (`use {kind}::*` makes the printed steps compile); `shrink_var` the variable
-/// `shrinking` reads.
+/// `shrinking` reads, offered only when the run is inside `shrinking`.
 pub struct Script<A: std::fmt::Debug + Clone + 'static> {
     kind: &'static str,
     shrink_var: &'static str,
@@ -852,7 +869,10 @@ impl<A: std::fmt::Debug + Clone + 'static> Script<A> {
 /// The script as printed on a panic: each step as Rust with its note, and the replay call.
 impl<A: std::fmt::Debug + Clone + 'static> std::fmt::Display for Script<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "the run as a script ({}; {}=1 shrinks it):\nlet script = {{\n    use {}::*;\n    vec![", self.replay, self.shrink_var, self.kind)?;
+        let shrinks = SHRINKS.get().then(|| format!("{}=1 shrinks it", self.shrink_var));
+        let about: Vec<&str> = [Some(self.replay.as_str()), shrinks.as_deref()].into_iter().flatten().filter(|x| !x.is_empty()).collect();
+        let about = if about.is_empty() { String::new() } else { format!(" ({})", about.join("; ")) };
+        writeln!(f, "the run as a script{about}:\nlet script = {{\n    use {}::*;\n    vec![", self.kind)?;
         for (a, note) in &self.steps {
             writeln!(f, "        {a:?},{}", if note.is_empty() { String::new() } else { format!(" // {note}") })?;
         }
@@ -999,6 +1019,13 @@ pub type Elsewhere<'a, A> = (&'a str, &'a dyn Fn(&[A]));
 /// (one after the run's script dropped) prints "not shrunk: no script recorded".
 pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>, elsewhere: &[Elsewhere<'_, A>]) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    struct Inside(bool);
+    impl Drop for Inside {
+        fn drop(&mut self) {
+            SHRINKS.set(self.0);
+        }
+    }
+    let _inside = Inside(SHRINKS.replace(true));
     if !u64_var(shrink_var).is_some_and(|n| n != 0) {
         return run();
     }
