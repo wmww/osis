@@ -254,7 +254,7 @@ fn a_chain_hop_only_evidence_shows_is_no_chain_spec_sync_set_2() {
     let mut w = crate::harness::contacts();
     let a = w.node(1).account.expect("an account");
     let h0 = make(&mut w, "h0");
-    let tell = |w: &mut World, t: Tid, to: Tid, r: Role| drop(w.write(0, |e| e.grant(&t, &to, &edge(r)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap());
+    let tell = |w: &mut World, t: Tid, to: Tid, r: Role| w.write(0, |e| e.grant(&t, &to, &edge(r)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
     tell(&mut w, h0, a, Role::Sync);
     grant(&mut w, h0, Tid::PUBLIC, Some(Role::Read));
     let made_in = |w: &mut World, v: &str| {
