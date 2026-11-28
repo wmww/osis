@@ -14,7 +14,7 @@ Commit / snapshot with pages 21 / 22 MB. Write 2.2 GB, 135 s; a node holding the
 
 ## Left whole at a reader
 - `covered` of a body paged below a map entry: one group, the body whole (`Fragment::positions_at` takes the snapshot's whole record at an entry, so a group of its pages meets every other group's writes there). Splitting it needs `positions_at` to descend into a record's content.
-- Tree roots of a state with a collection paged inside another's elements (`osis_crdt::each_piece` with keys: `None`): read whole. A key's records on two pages of the outer map each hold their own inner pages, so an inner page read as the whole reads it needs the key's other records and their inner pages' records of its keys, recursively.
+- Tree roots of a state with a collection paged inside another's elements (`osis_crdt::each_piece` with `keys` gives `Ok(None)`): read whole. A key's records on two pages of the outer map each hold their own inner pages, so an inner page read as the whole reads it needs the key's other records and their inner pages' records of its keys, recursively.
 
 ## Also not streamed
 - Role-class bodies stay whole (rosters of thousands, not millions). Not streamed: paged positions inside a `Slots` slot, a sequence element's content or a page; paged sequences at apply; a reset over nested paged collections.

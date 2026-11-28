@@ -17,5 +17,4 @@
 - **No call deadline**: the session's stall timer counts any bytes, so a trickling hostile node holds the calling thread; a silent link waits for QUIC's idle and the stall timeouts. A deadline must not fail an honest large reply on a slow link.
 - **Routed things through a daemon**: a call as the node itself on a thing read at another node is `Unsupported` through the daemon (the worker must not wait on a node); `source` needs the daemon stopped. Needs a worker per connection or an async row.
 - **A move away can read behind**: after `unit_source(.., UnitSource::Node(..))` a read may show a value older than an acknowledged write until the source pulls (local writes are waited for at a peer, not the source). Closing it needs a "does the node hold this commit" check.
-- **Who answers rule 4** (notes/client-port.md §8): a hostile source node first in the list answers for every thing unknown here routed to it.
-- notes/arbitrary-values-table.md lacks rows for notes/client-port.md's Picked numbers.
+- **Who answers** (notes/client-port.md §8 Sources, Trust): a hostile node first in a thin client's list answers for every thing unknown here routed to it.

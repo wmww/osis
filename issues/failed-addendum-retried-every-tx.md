@@ -1,6 +1,6 @@
-# Answers waiting on delete keys are recomputed every transaction
-> Summary: `addenda::write_owed` recomputes every due answer at the end of every durable transaction; one waiting for a thing's minting or delete keys (`write::MayWrite::Later`), or one whose write failed (`OwnWriteFailed`), is rebuilt in full only to wait or fail again. Per-transaction cost grows with the waiting answers, not with what changed.
+# A failed addendum is decided again every transaction
+> Summary: `addenda::decide_due` wants every removal whose judgement or addendum write failed (`OwnWriteFailed`) again at the next call, so `write_owed` re-decides it in full at the end of every durable transaction until it succeeds. Per-transaction cost grows with the failing removals, not with what changed.
 > Priority: low
 > Tags: engine, perm
 
-Purge-on-replace covers already wait right: `Indexes::cover_waits`, woken from the transaction's journals by `retention::replace::wake_covers`. Fix: one wait for every own write. Key a waiting answer under the record chain of the thing that was `Later` (generalise `cover_waits` to a waiter enum) and skip it until `wake_covers` wakes it; a failed answer waits for the next change to what it reads. Not persisted: an open tries each due answer once. A rotation waiting on a pending epoch or a missing seed needs its own wake or stays retried.
+A decide that waits (a thing outside the node closure, minting or keys not arrived) is stamped by its reads and decided again only when one moves (`decide`); a failure has no read to wait on. Fix: a failed decide waits for the next change to what it read, as a waiting one does. Not persisted: an open decides each followed removal once.

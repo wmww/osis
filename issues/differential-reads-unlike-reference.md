@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: sync, tests
 
-Replay: `OSIS_SYNC_START=149236181493 OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain` (panics at `core/sync/tests/it/harness/history.rs:1161`). Shrink with `OSIS_SYNC_SHRINK=1`. The same first-panic class at full size and other seeds: issues/differential-full-size-classes.md (reads unlike the reference); check a shrunk script against its scripts first.
+Replay: `OSIS_SYNC_START=149236181493 OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain` (panics in the end checks of `core/sync/tests/it/harness/history.rs`). Shrink with `OSIS_SYNC_SHRINK=1`. The same first-panic class at full size and other seeds: issues/differential-full-size-classes.md (reads unlike the reference); check a shrunk script against its scripts first.
