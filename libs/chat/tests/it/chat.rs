@@ -188,35 +188,11 @@ fn texts(db: &Osis, c: Tid) -> Vec<String> {
     since(db, c, None, 100).unwrap().messages.iter().map(|k| text(&k.at(c, MSG).unwrap().body)).collect()
 }
 
-// spec/sync-set.md §4: a chat minted through the library is
-// held by its mint admin's account, so it reaches that account's other node, and one joined by its link
-// syncs both ways, with no write besides create, the join and the posts.
-#[test]
-fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
-    let c0 = clock();
-    let net = ManualNet::new(c0.clone());
-    let (alice, alice2, account) = paired(&net, &c0, 10);
-    let bob = on(&net, 20, &c0);
-    let c = create(&alice, &Options { name: "room".into(), ..Options::default() }, account).unwrap();
-    drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
-    assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the account's other node");
-    let link = alice.make_link(c, Role::Write, account, LinkOpts::default()).unwrap();
-    assert_eq!(drive(&net, bob.redeem(&link, bob.node())).unwrap(), c);
-    post(&bob, c, "hi from bob");
-    drive(&net, bob.wait_synced(SyncScope::Thing(c))).unwrap();
-    net.run();
-    assert_eq!(texts(&alice, c), ["hi from bob"]);
-    post(&alice, c, "hi from alice");
-    drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
-    net.run();
-    assert_eq!(texts(&bob, c), ["hi from bob", "hi from alice"]);
-}
-
-
-// notes/dogfood.md (the shared node), spec/sync-set.md §2 Own things, spec/permissions.md §7
-// Redeem: a node of its own account, granted sync on a chat and its link's K by `relay`, keeps
-// both unread by holding them from its node root (`osis hold`); a member joins by the link and
-// syncs both ways with the admin through that node alone, the two never meeting.
+// notes/dogfood.md (the shared node), spec/sync-set.md §2 Own things and §4, spec/permissions.md §7
+// Redeem: a chat minted through the library is held by its mint admin's account, so it reaches
+// that account's other node. A node of its own account, granted sync on the chat and its link's K
+// by `relay`, keeps both unread by holding them from its node root (`osis hold`); a member joins
+// by the link and syncs both ways with the admin through that node alone, the two never meeting.
 #[test]
 fn a_member_joins_and_syncs_through_a_relay_holding_from_its_node_root_spec_sync_set_2() {
     let c0 = clock();
@@ -225,10 +201,11 @@ fn a_member_joins_and_syncs_through_a_relay_holding_from_its_node_root_spec_sync
     let host_acc = osis_account::Account::make(&host).unwrap();
     let addr = host.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let card = host_acc.realm().contact_card(&host).unwrap();
-    let alice = dialing(&net, 10, &c0, std::slice::from_ref(&addr));
-    let account = osis_account::Account::make(&alice).unwrap();
+    let (alice, alice2, account) = paired(&net, &c0, 10, std::slice::from_ref(&addr));
     drive(&net, account.realm().import_contact(&alice, &card)).unwrap();
     let c = create(&alice, &Options { name: "room".into(), ..Options::default() }, account.thing()).unwrap();
+    drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
+    assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the account's other node");
     let link = alice.make_link(c, Role::Write, account.thing(), LinkOpts::default()).unwrap();
     let k = alice.links().unwrap().into_iter().find(|l| l.target == c).unwrap().id.thing();
     assert_eq!(relay(&alice, c, host_acc.thing()).unwrap(), [c, k]);

@@ -39,10 +39,10 @@ pub fn dialing(net: &ManualNet, seed: u64, c: &Arc<ManualClock>, dial: &[osis::A
     osis::internals::create(o).unwrap()
 }
 
-/// Two paired nodes of one account on `net`, the second dialing the first (listening), and the
-/// account.
-pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64) -> (Osis, Osis, osis::Tid) {
-    let a = on(net, seed, c);
+/// Two paired nodes of one account on `net`, the first dialing `dial`, the second dialing the
+/// first (listening), and the account.
+pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64, dial: &[osis::Address]) -> (Osis, Osis, osis_account::Account) {
+    let a = dialing(net, seed, c, dial);
     let acc = osis_account::Account::make(&a).unwrap();
     let addr = a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let mut o = osis::internals::Opening::at(Store::Memory(MemStore::new()));
@@ -53,7 +53,7 @@ pub fn paired(net: &ManualNet, c: &Arc<ManualClock>, seed: u64) -> (Osis, Osis, 
     let offering = acc.offer_pairing(&a).unwrap();
     let join = osis_account::pair(o.store, offering.offer(), o.cfg).unwrap();
     let (_, reply) = offering.accept(&a, join.request()).unwrap();
-    (a, drive(net, join.finish(&reply)).unwrap().0, acc.thing())
+    (a, drive(net, join.finish(&reply)).unwrap().0, acc)
 }
 
 /// Runs `f` to its end, running `net` between polls.

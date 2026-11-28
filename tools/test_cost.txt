@@ -12,7 +12,7 @@ osis-base/cbor 25
 osis-base/osis_base 3.9
 osis-bench/it 6.1
 osis-blob/osis_blob 20
-osis-chat/it 8
+osis-chat/it 19
 osis-chat/osis_chat 0.0013
 osis-cli/it 140
 osis-cli/osis_cli 0.098
