@@ -90,7 +90,7 @@ A **holder** holds a **role** on a thing. Holders may be other things, keys or "
 - **`write`**: allows editing/firing signals.
 - **`admin`**: allows editing permissions and other admin-only data.
 
-In }addition to its role, a holder may be given `may_grant`, which allows that holder to grant other holders up to the same role as itself. Roles may be used indirectly—a holder on a thing which itself has a role on another thing may act on the latter with the minimum role of the chain.
+In addition to its role, a holder may be given `may_grant`, which allows that holder to grant other holders up to the same role as itself. Roles may be used indirectly—a holder on a thing which itself has a role on another thing may act on the latter with the minimum role of the chain.
 
 ### Sync
 Connected nodes sync changes to the things they have in common. Nodes with the `sync` role on a thing sync only metadata and encrypted data, without getting the keys to decrypt it. Things sync along with the subset of their closure they hold at least `read` on, so a node can receive a new thing when a strong reference is added from a thing it already syncs.
