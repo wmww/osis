@@ -38,7 +38,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 
 **Small items**:
 - `osis` wrappers that copy a core rule's fields by hand (as `RetentionSetting::enable_inbox_signals` copied `take_inbox_signals` and dropped one, which no sync test could see): find each, make it delegate to the core rule, so there is one source.
-- A `LocalPeer` helper that follows held grant signals as the sync layer does, so a cli or sync failure that needs a followed signal moves to an engine test cheaply. Built on the claims design (spec/sync-ids.md §3): a followed signal's holder gets into S by its claim, so a helper on notices would follow what that design deletes.
 - A deterministic test of `close` on `Runtime::Tokio` (notes/api.md Handle and lifecycle: after `close` returns no driver poll touches a timer of a shut-down runtime). The one test, osis `runtime::close_then_runtime_shutdown_polls_no_dead_timer`, is a by-hand race caught about a third of runs; `num_alive_tasks() == 0` after `close` is wrong (the task is released after the guard drops). Needs a seam: a hook holding the driver inside an engine call while `close` runs, released after shutdown began.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
 - held-model's comparison leaves out every aspect when a role commit carries parts outside the model (notes/test-properties.md, held-model comparison): a carve-out to close by modelling those role commits.
