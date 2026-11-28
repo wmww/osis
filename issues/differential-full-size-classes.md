@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 2 of 100 seeds fail (15, 45); classes: a reader reading unlike the reference (15), a store left at an older step (45); a stub the model holds that the node does not (small size); entries waiting for a read secret, not parked (small size).
+> Summary: the sync differential at full size: 2 of 100 seeds fail (15, 45); classes: a reader reading unlike the reference (15), a store left at an older step (45); a stub the model holds that the node does not, a thing the model keeps unread that the node does not hold (small size); entries waiting for a read secret, not parked (small size).
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -8,6 +8,7 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | Class | Seeds (full size) |
 |---|---|
 | A stub the model holds that the node does not | none at full size; small size `OSIS_SYNC_START=62853083561` |
+| A thing the model keeps unread that the node does not hold | none at full size; small size `OSIS_SYNC_START=109415603779` |
 | A reader reads unlike the reference | 15 ("node 2 reads thing 0 unlike the reference") |
 | A store kept unread at an older step than its readers' head | 45 |
 | Entries waiting for a read secret, not parked | none at full size; small size `OSIS_SYNC_START=940149075780` |
@@ -16,6 +17,9 @@ None is shrunk on the current tree. Shrink from the seed with the property's shr
 
 ## A stub the model holds that the node does not
 Small size `OSIS_SYNC_START=62853083561` ("node 0's sync set holds thing 0 as None, the model Some(Stub)"). Not diagnosed.
+
+## A thing the model keeps unread that the node does not hold
+Small size `OSIS_SYNC_START=109415603779` ("node 0's sync set holds thing 0 as None, the model Some(Unread)"), failing on main before the record weaks reached the model too. Not diagnosed.
 
 ## A reader reads unlike the reference (15)
 Not diagnosed. An earlier shrink (a disk failure on a node paired with the reader) passes on the current tree: shrink again.
