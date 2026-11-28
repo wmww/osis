@@ -4,7 +4,8 @@
 # tools/gate.sh (prints a summary, exits $GATE_RC) and cargo (logs its arguments, exits $CARGO_RC).
 # gate: a conflict in notes/handoff.md alone takes main's side, any other stops before the gate as
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
-# copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
+# copy and the gate record, and keeps the worktree holding the branch at the landed commit (a next
+# fix there is refused until gated, then lands; released, the branch claims again at origin/main); refuses after a failed gate unless --fixed or
 # its kept summary, read again against main's known failures and cost lines, passes (both sides
 # having changed one test's known lines: the branch's removals and main's additions); when
 # main moved, rebases and runs clippy and the tests of the packages both sides changed only (again
@@ -87,13 +88,27 @@ check "gate: on origin/main" "$(git -C "$w" merge-base --is-ancestor origin/main
 check "gate: summary printed" "$(grep -c '^== gate exit 0' "$d/out")" "1"
 check "gate: log recorded" "$(tail -1 .git/gate-logs/t1/gate-1.log)" "gate=0"
 check "gate: log path printed" "$(grep -c "^log: $d/a/.git/gate-logs/t1/gate-1.log" "$d/out")" "1"
-# land, main unmoved: pushed, pushed copy deleted, released, branch and logs gone
+# land, main unmoved: pushed, pushed copy and logs gone, the worktree still holding t1 there
 head=$(git -C "$w" rev-parse HEAD)
 "$mb" land t1 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "land: exit, main" "$rc $(tip)" "0 $head"
 check "land: pushed copy deleted" "$(git ls-remote "$d/origin.git" coord-t1 | wc -l)" "0"
-check "land: released, branch deleted, logs gone" "$(ls .wtclaim* 2> /dev/null | wc -l) $(git branch --list t1 | wc -l) $(ls .git/gate-logs)" "0 0 "
+check "land: held, on t1 at main, logs gone" "$(wt list | grep -c "^$w t1 ") $(git -C "$w" symbolic-ref --short HEAD) $(git -C "$w" rev-parse HEAD) $(ls .git/gate-logs)" "1 t1 $head "
 check "land: no cargo run" "$(cat "$CARGO_LOG" 2> /dev/null | wc -l)" "0"
+# a second fix in the same worktree: refused ungated, gated there, then landed
+echo fix > "$w/core/x/h" && git -C "$w" add core/x/h && git -C "$w" commit -qm fix1
+"$mb" land t1 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "second fix ungated: refused" "$rc $(tip) $(grep -c 'no gate recorded' "$d/err")" "1 $head 1"
+"$mb" gate t1 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "second fix: gated in the same worktree" "$rc $(grep -c "held by $w" "$d/err")" "0 1"
+"$mb" land t1 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "second fix: landed" "$rc $(tip)" "0 $(git -C "$w" rev-parse HEAD)"
+# released, the kept branch claims again at origin/main
+wt release "$w"
+git checkout -q --detach origin/main && echo m > notes/after && git add notes/after && git commit -qm after-t1 && git push -q origin HEAD:main && git fetch -q
+w1=$(tools/claim t1 2> "$d/err")
+check "claimed again: at origin/main" "$(git -C "$w1" rev-parse HEAD) $(grep -c 'fast-forwarded t1 to origin/main' "$d/err")" "$(tip) 1"
+wt release "$w1"
 git fetch -q
 
 # gate: policy failing stops before the gate; another conflict stops with its files
@@ -113,7 +128,7 @@ before=$(tip)
 "$mb" land t5 > /dev/null 2>&1 && rc=0 || rc=$?
 check "failed gate: land refused" "$rc $(tip)" "1 $before"
 "$mb" land t5 --fixed > /dev/null 2>&1 && rc=0 || rc=$?
-check "failed gate, --fixed: landed" "$rc $(git branch --list t5 | wc -l)" "0 0"
+check "failed gate, --fixed: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t5"
 git fetch -q
 
 # land after a failed gate whose NEW failure main listed since: its summary read again lands it
@@ -181,12 +196,12 @@ git fetch -q
 # main changed since the first (y)
 git clone -q "$d/origin.git" "$d/c" 2> /dev/null
 git -C "$d/c" config user.email t@t && git -C "$d/c" config user.name t
-branch t5 core/x/f core/y/f
-"$mb" gate t5 > /dev/null 2>&1
+branch t12 core/x/f core/y/f
+"$mb" gate t12 > /dev/null 2>&1
 main core/x/g
 CARGO_HOOK="cd $d/c && git pull -q && sed -i 5s/.*/moved/ core/y/g && git commit -qam moved && git push -q origin HEAD:main" \
-    "$mb" land t5 > /dev/null 2> "$d/err" && rc=0 || rc=$?
-check "moved during checks: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 t5 moved "
+    "$mb" land t12 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "moved during checks: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 t12 moved "
 check "moved during checks: x, then y" "$(grep '^test' "$CARGO_LOG" | tr "\n" " ")" "test -p x test -p y "
 rm -f "$CARGO_LOG" "$CARGO_LOG.hooked"
 git fetch -q
@@ -217,17 +232,17 @@ rm -f "$CARGO_LOG"
 git fetch -q
 
 # the land's rebase stops on a conflict; finished by hand, the next land checks and lands it
-branch t8 core/y/f core/x/f
-"$mb" gate t8 > /dev/null 2>&1
-w=$(git worktree list | awk '$3 == "[t8]" { print $1 }')
+branch t13 core/y/f core/x/f
+"$mb" gate t13 > /dev/null 2>&1
+w=$(git worktree list | awk '$3 == "[t13]" { print $1 }')
 # a commit after the checked HEAD (a fix) rides along
 echo fix > "$w/core/x/g" && git -C "$w" add core/x/g && git -C "$w" commit -qm fix8
 git checkout -q --detach origin/main && sed -i 1s/.*/other8/ core/y/f && git commit -qam other8 && git push -q origin HEAD:main && git fetch -q
-"$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+"$mb" land t13 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "land conflict: stopped, files named" "$rc $(grep -c 'conflicts in: core/y/f' "$d/err")" "1 1"
 git -C "$w" checkout -q --theirs core/y/f && git -C "$w" add core/y/f && git -C "$w" -c core.editor=true rebase --continue > /dev/null 2>&1
-"$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
-check "land conflict finished by hand: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 fix8 t8 "
+"$mb" land t13 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "land conflict finished by hand: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -2 main | tr "\n" " ")" "0 fix8 t13 "
 check "land conflict finished by hand: checks ran" "$(grep -c 'clippy --all-targets' "$CARGO_LOG")" "1"
 
 # a passing gate's KNOWN-BUT-PASSED, STALE-RATE and STALE-COST lines: applied in a commit landed with

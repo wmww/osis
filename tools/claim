@@ -4,8 +4,9 @@ The task loop). Fetches origin; `wt claim BRANCH origin/main`; checks `wt list` 
 path claimed; then brings the branch to its pushed copy: REF, or else the one remote branch named
 `origin/<coordinator>-BRANCH` if exactly one exists (a worker's push), fast-forwarding, or resetting
 a local branch that is no ancestor of it (`wt claim` checks out a local branch as it is, ignoring the
-base: a reviewer got a stale pre-rebase copy twice). With no pushed copy, a branch lacking
-origin/main is reported (a claim of an old local branch). Sets the repo's known-failures merge
+base: a reviewer got a stale pre-rebase copy twice). With no pushed copy, a local branch origin/main
+contains (one landed and released earlier: landing keeps the branch) fast-forwards to origin/main,
+and one lacking origin/main is reported (a claim of an old local branch). Sets the repo's known-failures merge
 driver (tools/known_failures_merge.py) on the way, ends a `git bisect` an earlier task left in
 the worktree, and bounds the fuzz target (`fuzz_target`). Prints the worktree's path, last, on stdout:
 `W=$(tools/claim BRANCH)`.
@@ -116,6 +117,9 @@ def main(argv):
                 where = f"each is still on {', '.join(kept)}" if kept else "they stay in `git reflog`"
                 git("reset", "-q", "--hard", ref, cwd=path)
                 print(f"claim: reset {branch} from {head[:9]} to {ref} ({to[:9]}); of the local commits it dropped, {where}:\n{lost}", file=sys.stderr)
+    elif head != git("rev-parse", "origin/main") and run("git", "merge-base", "--is-ancestor", head, "origin/main", cwd=path, check=False).returncode == 0:
+        git("merge", "-q", "--ff-only", "origin/main", cwd=path)
+        print(f"claim: fast-forwarded {branch} to origin/main (it had no commit origin/main lacks)", file=sys.stderr)
     elif run("git", "merge-base", "--is-ancestor", "origin/main", "HEAD", cwd=path, check=False).returncode:
         behind = git("rev-list", "--count", "HEAD..origin/main", cwd=path)
         print(f"claim: {branch} is an existing local branch {behind} commits behind origin/main and has no pushed copy: "

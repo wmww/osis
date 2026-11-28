@@ -26,7 +26,9 @@ The task loop), every step checked and reported, run from any checkout of the re
       ones), its STALE-RATE lines (a `rate:` line whose REPRO passed) removed, and its STALE-COST lines lowered or dropped in tools/test_cost.txt (a line main changed
       since kept); `tools/land
       --delete` the one pushed copy origin/*-NAME (plain `tools/land` with none); checks origin/main
-      is HEAD; `wt release` of W; `git branch -D NAME`; removes LOGS/NAME. Exit 0 landed, 1 not.
+      is HEAD; removes LOGS/NAME, so a later commit on NAME is gated before it lands. W keeps NAME
+      checked out at the landed commit, its build warm for the next fix: `wt release` stays the
+      holder's last step. Exit 0 landed, 1 not.
 
 LOGS is gate-logs/ in the repo's common git dir: one place per branch from any worktree, read by
 the next step. A failed check after a land's rebase is recorded like a failed gate."""
@@ -419,16 +421,9 @@ def land(name, fixed):
         stop(f"landed, but tools/land exited {land_rc} after the push (above): its pushed copy may remain; "
              f"{w} still holds {name}", 1)
     say(f"landed: origin/main is {git('log', '--oneline', '-1', cwd=w)}")
-    if shown(claim.wt(), "release", w, cwd=w):
-        stop(f"`wt release {w}` failed (above): {name} kept", 1)
-    top = git("rev-parse", "--show-toplevel", cwd=TOOLS)
-    # -D: the branch is on origin/main (checked above), which a lagging local main may not show
-    r = run("git", "branch", "-D", name, cwd=top, check=False)
-    if r.returncode:
-        stop(f"git branch -D {name}: {(r.stderr or r.stdout).strip()}", 1)
     shutil.rmtree(d)
-    say(f"released {w}, deleted the local branch {name} and {d}")
-
+    say(f"removed {d}; {w} keeps {name} at the landed commit: commit the next fix there, "
+        f"or `wt release` it as your last step")
 
 def main(argv):
     if argv[:1] == ["gate"] and (len(argv) < 2 or argv[1].startswith("-")):

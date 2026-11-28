@@ -1,7 +1,8 @@
 #!/bin/sh
 # Tests tools/claim against a temp repo with a bare origin and a fake `wt` (claim: a git worktree
 # of BRANCH, made from BASE when new; list: path and branch): a new branch starts at origin/main, a
-# stale local branch is reset to its pushed copy (naming the refs still holding what it dropped), an ancestor fast-forwards, a dirty worktree moves
+# stale local branch is reset to its pushed copy (naming the refs still holding what it dropped), an ancestor fast-forwards, a local
+# branch without a pushed copy that origin/main contains (landed earlier) fast-forwards to origin/main, a dirty worktree moves
 # nothing, a leftover bisect is ended, the known-failures merge driver is set, and the fuzz target loses
 # its release profiles, or everything when its build key changed. Exit 1 on a mismatch.
 set -eu
@@ -56,6 +57,10 @@ git branch dirty origin/main~1
 git push -q origin "$(git rev-parse origin/main)":refs/heads/coord-dirty
 FAKE_DIRTY=1 "$claim" dirty > /dev/null 2>&1 && rc=0 || rc=$?
 check "dirty: refused, nothing moved" "$rc $(git -C "$d/a/.wts/w3" rev-parse HEAD)" "1 $(git rev-parse origin/main~1)"
+# a landed branch kept locally, no pushed copy: fast-forwarded to origin/main
+git branch landed origin/main~1
+w4=$("$claim" landed 2> "$d/err")
+check "landed branch fast-forwarded to origin/main" "$(git -C "$w4" rev-parse HEAD) $(grep -c 'fast-forwarded landed to origin/main' "$d/err")" "$(git rev-parse origin/main) 1"
 # an earlier task's bisect left in the worktree is ended
 w5=$(FAKE_BISECT=1 "$claim" bisected 2> /dev/null)
 check "bisect ended" "$(git -C "$w5" bisect log > /dev/null 2>&1 && echo bisecting || echo none) $(git -C "$w5" rev-parse HEAD)" "none $(git rev-parse origin/main)"
