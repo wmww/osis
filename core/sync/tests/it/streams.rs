@@ -2392,8 +2392,8 @@ fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
 }
 
 // spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
-// applied), spec/sync-streams.md §4 (Reports: an Applied's `stored`; a message with a cursor asks
-// a report while one served is not reported applied with `stored`): b reports a's first reply
+// applied), spec/sync-streams.md §4 (Reports: an Applied's `stored`, and a message with a cursor
+// asks a report while one served is not reported applied with `stored`): b reports a's first reply
 // with `stored` false (T's join from the start under way, so its cursor is not stored); the next
 // reply asks a report though it carries no event, and its Applied reports the position b stored.
 #[test]
@@ -2491,8 +2491,8 @@ fn a_member_at_the_stream_opened_after_the_first_pull_joins_spec_sync_streams_4(
 }
 
 // spec/sync-streams.md §4 (Reports: a server sends no message asking a report while
-// `REPORT_WINDOW` it sent are not reported applied; an Applied reports applied the message it
-// names and every one before it), spec/sync-status.md §1: b's Applieds are held back while a logs
+// `REPORT_WINDOW` it sent are not reported applied, and an Applied reports applied the message
+// it names and every one before it), spec/sync-status.md §1: b's Applieds are held back while a logs
 // more than the window of entries; a pushes the window and waits. Once they arrive, in order, a
 // pushes the rest and counts b caught up (failed: a pushed on and forgot the oldest cursors).
 #[test]
@@ -3238,7 +3238,7 @@ fn a_long_listing_is_counted_held_whole_spec_sync_streams_4() {
 }
 
 // spec/sync-streams.md §4 (Sends counted: a requester tells 14 only where it told no refusal
-// since its last Applied; what it told is what the server leaves uncounted): b keeps S unread and
+// since its last Applied, and the server leaves uncounted what it told): b keeps S unread and
 // holds a's push of y in hand awaiting its body; a sends x under a bad stamp, which b refuses
 // (code 1) as it comes. y's body comes and both pushes apply before one Applied: b tells nothing
 // more of x (failed: b forgot its refusal at y's apply, and told x not held, 14, at x's).
