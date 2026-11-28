@@ -34,3 +34,7 @@ Rehearsed with the script at 56d961ea8 on one box (three stores, loopback, `OSIS
 - Kick (`osis chat kick $C ACCOUNT`): the kicked retains a read-only copy (the chat's default) unless `--erase`. Kicking someone who joined by link ends that link: `chat link` again for the next.
 - `status` right after opening says NotConnected for every thing: a snapshot before the first connection, not a failure; the command's exit code is what counts.
 - Without `chat`, a generic thing works too: one thing per message (`osis create --admin $G name.0 '"me: subject"' body.0 '"markdown"'`), referenced from `$G`'s `holds.0`.
+
+## Smoke runs on scratch stores
+- Keep `XDG_RUNTIME_DIR` short (the default works): a daemon whose runtime dir sits deep in the scratchpad serves no socket ("too long a path for a socket"); sockets are named by store hash.
+- Run CLI commands in a shell that has not sourced a guibox session's env: it moves `XDG_RUNTIME_DIR`, so the CLI misses its daemons' sockets and fails `store in use`.
