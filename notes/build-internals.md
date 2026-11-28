@@ -4,7 +4,7 @@
 ## Profile
 - Dev profile for all work (Cargo.toml): workspace crates `opt-level = 1`, `debug = "line-tables-only"`, incremental, `lto = "off"` (Tess's call); dependencies and osis-crypto `opt-level = 2`, no debuginfo; dependencies also without debug assertions and overflow checks (the default tests 2% fewer instructions, osis-cli's 7%, a store-heavy CLI test 30%: std's checked generics instantiated in redb; opt-level 3 for dependencies saved under 1% more); build-time code (`[profile.dev.build-override]`) at `codegen-units = 16`, which keeps build-time units apart (Feature unification). No `split-debuginfo`: its `.dwo` files pile up (GBs per worktree).
 - `.cargo/config.toml` zlib-compresses debug sections at link (Rust's symbolizer cannot read zstd) and sets the test env (notes/build.md, Footguns).
-- The GUI's `[patch]` entries (libs/kit/patches/, vendored, not members) are in the root manifest; the GUI depends on `osis`, `osis-schema` and `osis-chat` only. One `deny.toml`.
+- The GUI's `[patch]` entries (libs/kit/patches/, vendored, not members) are in the root manifest; the GUI depends on `osis`, `osis-schema`, `osis-account` and `osis-chat` only. One `deny.toml`.
 - **Clippy says `Compiling`** for crates with build scripts after an edit reaching them: clippy builds build scripts with clippy-driver, as units apart from `cargo build`'s. A few CPU-s once per edit.
 
 ## Worktrees

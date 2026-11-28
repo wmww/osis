@@ -15,7 +15,7 @@ S1 cost defects of many sync IDs; S2 external signals, owed; S3 removal gaps on 
 Each stage is built on main, old code deleted first (notes/coordination.md, Keep it simple and Rewriting an area).
 
 ### S1. Cost defects of many sync IDs
-Any time; nothing waits on it. Built: an idle reconnect's judgements, bytes, members moved and store rows are flat (idle.rs); a new reader logs no copy of what its sources hold and a blob is fetched once whatever sync IDs announce it (first.rs). Left: a Fetch naming several sync IDs (it changes the wire: Fetch groups blob IDs by sync ID; built once, it exposed a caught-up race: a Pull names a cursor received, not stored), step verifications and store rows per member, and what issues/many-sync-ids-cost.md To fix lists (opens' filter reload, `Store::next_wake`'s rows per input, the first reconnect after first contact). Checked by osis-sync default tests counting at n and 10n.
+Any time; nothing waits on it. Built: an idle reconnect's judgements, bytes, members moved and store rows are flat (idle.rs); a new reader logs no copy of what its sources hold and a blob is fetched once whatever sync IDs announce it (first.rs). Left: what issues/many-sync-ids-cost.md Left lists (a commit with a copy per unit, work per round with sync IDs still read, opens' filter reload, `Store::next_wake`'s rows per input, step verifications and store rows per member at a first sync, the first reconnect after first contact). Checked by osis-sync default tests counting at n and 10n.
 
 ### S2. External signals: what is owed
 Built (spec/permissions.md §5.2 External fires; spec/commits.md §5 The setting; spec/sync-inbox.md §1-§2).
@@ -23,7 +23,7 @@ Built (spec/permissions.md §5.2 External fires; spec/commits.md §5 The setting
 
 ### S3. Removal gaps on today's rules
 Each is a gap of the ordinary rules, fixed for every holder.
-- *Addenda* (spec/permissions.md §5.2 Addenda): built in perm and engine (`flows::addenda`). Left: held-model, the §5.5 reading of admin-only content against a rotation.
+- *Addenda* (spec/permissions.md §5.2 Addenda): built in perm and engine (`flows::addenda`). Left: held-model, the reading of admin-only content (spec/permissions.md §5.2) against a rotation.
 - *A standing dispute*: an epoch covering a departure the node's walk does not apply is the other side's (spec/crypto.md §4; notes/account-membership-design.md §1, `takes`). Engine rotation, the rotation property, the TLA rotation models where they hold the withdraw rule (which .tla: not established).
 - *The removal's result in the API*: what the removed party had added, removed or lowered; what arrived unnamed and was discarded. `osis`, CLI, app (notes/app.md).
 - **A list naming X's lowering of the remover voids the removal**: the remover leaves out what the removal would not apply with, in the order received (notes/account-membership-design.md §4, The list); spec/permissions.md §5.1 Frontier gains the condition, and the engine's list building follows.
@@ -52,7 +52,7 @@ The list stays in the removal, as built (notes/write-path-design.md §2, E4); pe
 - **Pieces**: (1) spec; (2) the required-set rule for a removal's copy and the keyset seed; (3) counting: bytes a unit stores and a reader fetches per removal at n and 10n listed commits, and that copies leave.
 
 ### Z. Clean-up
-Issues closed or re-read. Renames owed (issues/deprecated-terms.md): `actor` in identifiers (holder actor), each use read; the TLA vocabulary with a TLC rerun; the spec's rule words (rights, demotion), unscheduled; the reference-graph words stay with their own rebuild. Later designs that build on the redesign: readers hidden from each other (issues/readers-see-readers.md); hidden mode stays a design.
+Issues closed or re-read. Renames owed: issues/deprecated-terms.md, Still in the repo. Later designs that build on the redesign: readers hidden from each other (issues/readers-see-readers.md); hidden mode stays a design.
 
 ## Risks
 - **The path-judged walk does not hold up outside the modelled worlds** (sessions, bodies). Descent, `until`, self-removal by path end, removals of more than one hop, may-grant grants and finalizes (with a lowering judged on any fall), demotion to write, several grant writes per commit, purge authors and covers by copies hold in the model; a write that does not apply can decide a fight among admins unshown, with honest writers too (notes/path-model-findings.md 34 to 36: accepted, counted; notes/disputes.md). A void check reads each setter once (notes/a1-spec/README.md Open 2); the walk's cost shapes are counted at n and 10n (notes/perm-paths.md, Counts).

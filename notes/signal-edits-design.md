@@ -1,26 +1,19 @@
 # Signal edits: design
-> Summary: Signal edits as built (Tess's direction: full replace only, reuse what osis has): an edit is a whole fire naming the fire it replaces, honored only for the same verified author; chat and the app use it. Spec terms, what is reused and rejected, API shape and why, costs, engine notes, the open requirements question.
+> Summary: Signal edits as built (Tess's direction: full replace only, reuse what osis has): an edit is a whole fire naming the fire it replaces, honored only for the same verified author (rule in spec/commits.md §5 Signals); chat and the app use it. What follows from the rule, what is reused and rejected, API shape and why, costs, engine notes, Tess's decisions.
 
 **Verdict:** an edit is a whole fire that names the fire it replaces, and the fire's commit is its address. The register's rule is reused, but not the register state.
 
-## Design (spec terms)
-- **Claim:** header aspect entry gains optional `replaces: commit_id`, durable signals only. A relay-only commit carrying it is a bad part.
-- **Honored**, judged from headers alone, when the named commit O:
-  - is listed on the same `(t, ak)` and valid (a purge tombstone counts);
-  - has no `replaces` itself (flat, no chains);
-  - has the same verified purge author;
-  - sorts before the version by `(ts, ID)`.
-- **Otherwise** it is a fire of its own, at its own place. A forged edit is just the forger's own message.
-- **Read:** an original's part reads as its newest listed honored version by `CommitPos`, valid versions only (a node's own invalid part is marked and reads as itself). Stamp, place and order stay the original's, and honored versions are not listed separately.
+## Design
+The rule is spec/commits.md §5 Signals (`replaces` with the fire's floor, honored from headers alone, the read, the writer's rules, `final`); what follows from it:
 - **One rule covers the cases:**
   - edit turned invalid or expired: unlisted, so the previous version shows;
   - purged newest version: a listed tombstone, so nothing older comes back;
   - O invalid: not honored, so a valid edit is a fire of its own at its own place, and an edit invalid with it is unlisted;
   - O re-validated: its versions fold under it again.
-- **Expiry:** a writer gives an edit O's `expires`; no rule checks it. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
+- **Expiry:** a writer gives an edit O's `expires`; no rule checks it, so O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
 - **Purge-by:** each version carries its own purge-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. A request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. A request goes under `purge.0`, which carries no expiry; in a commit that expires the engine leaves `purge.0` out and the request rides the commit's own deltas on the thing, refused (`Invalid`) when it names anything but commits expiring no later or the commit writes nothing there. A disappearing message's edit purging its old text is so one commit.
-- **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, notes/engine-retention-history.md Tess's decisions, 5).
+- **Edits off** (`final`) binds the writer alone (Tess, notes/engine-retention-history.md Tess's decisions, 5).
 - **What stays visible:**
   - A purge takes only the commits it names. A version racing a purge of O, or written after it, still shows (no more than a new message could do); a deletion meant to hold names the versions too, or purges by author on the aspect.
   - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same. Permanent deltas keep lasting headers, so chat is unaffected.
@@ -35,7 +28,7 @@
 - purge-by and expiry per delta;
 - the listing rule and `on_fire`.
 
-**New:** the header field, two index sets, the fold in listings, `replace`, `commit`, `versions`, and `final`.
+**New:** the aspect list's `replaces`, two index sets, the fold in listings, `replace`, `commit`, `versions`, and `final`.
 
 **Rejected:**
 - *A signal as a map or register state* (`winners`, `carried`). Joining would make validity flips rebuild state, and signals are unjoined so a kick rebuilds nothing. `winners` has nothing to judge.
@@ -77,14 +70,14 @@ Totals are at n and 10n messages, with v versions on a message.
 | Quote | History since it | O(log n), one body |
 | Kick | Per surviving message and version | Same (the frontier is per commit) |
 
-Index: `originals` for paging (honored versions removed, so edits add no walk) and `versions` keyed `(t, ak, O, purge author)`, valid only, so forged claims are never read. Both move on validity flips inside the existing rejudge, and O's arrival promotes matching versions.
+Index: `originals` for paging (honored versions removed, so edits add no walk) and `versions` keyed `(t, ak, O, purge author)`, valid only, so forged edits are never read. Both move on validity flips inside the existing rejudge, and O's arrival promotes matching versions.
 
 
 ## Engine
-The model is `core/test/held-model/src/edits.rs`; the engine `core/engine/src/engine/edits.rs` (`originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
+The model is `core/test/held-model/src/edits.rs`; the engine `core/engine/src/engine/edits.rs` (`originals` persisted, `versions` derived from views and validity; `settle` re-places the versions of each changed original and each changed version at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
 - Listing is judged from headers (spec/commits.md §7): an original whose body is not here yet is listed (not fetched) and its versions fold under it; the read takes the newest version whose body is here (or purged). Engine and model alike.
 - An original leaving the listing by time (expiry, keep bound, tombstone end) frees its versions when its timer runs. The node runs due timers before every API call (`expire_due`), as for expiry, so no call sees the gap; only a raw engine read between the bound and `tick` does.
-- A claim sorting before its original is model-tested only: an engine test needs two nodes of one account with skewed clocks.
+- A version sorting before its original is model-tested only: an engine test needs two nodes of one account with skewed clocks.
 
 ## Tess's decisions
 - spec/requirements.md: a signal entry's author can replace it, and readers see the newest version in the original's place.

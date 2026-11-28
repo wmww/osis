@@ -4,7 +4,7 @@
 CLAUDE.md (Building and testing) holds the rules every agent follows; this note adds the mechanics and traps behind them. A cost far past What things should cost means something is broken.
 
 ## Layout
-- `core/`: the library crates, in unprefixed directories with prefixed package names (`core/engine` is osis-engine); `core/test/`: test infrastructure (sim, vectors, fuzz, crdt-model, roles-model, held-model, tla). `libs/`: what some but not all users of osis want (`libs/chat` osis-chat, core; `libs/kit` osis-kit, GUI). `app/`: the GUI app (osis-app; `app/android` osis-android). `schema/`: the first-party schema files. `cli/`: the CLI. Further projects are top-level directories depending only on the `osis` crate.
+- `core/`: the library crates, in unprefixed directories with prefixed package names (`core/engine` is osis-engine); `core/test/`: test infrastructure (sim, vectors, fuzz, crdt-model, roles-model, held-model, tla). `libs/`: what some but not all users of osis want (`libs/chat` osis-chat and `libs/account` osis-account, core; `libs/kit` osis-kit, GUI). `app/`: the GUI app (osis-app; `app/android` osis-android). `schema/`: the first-party schema files. `cli/`: the CLI. Further projects are top-level directories depending only on the `osis` crate.
 - One workspace (one `Cargo.lock`, one `target/`). Core depends on nothing in the GUI.
 
 ## Worktrees

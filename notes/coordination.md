@@ -12,7 +12,7 @@ Large changes have repeatedly bogged down in process, in the problems of their i
 - **Main may be broken** for as long as a big change takes: nobody depends on it (dogfood runs a pinned build, notes/dogfood.md).
 - **Delete and disable freely.** Old code goes first. A test the change breaks is deleted if it tests what is going, else ignored with a label naming the piece that brings it back, and left. Nothing of an intermediate state is fixed, tidied, reviewed or gated unless it blocks the next piece.
 - **Build the end state directly.** What exists only to get from one state to the next (an adapter, a compatibility path, a second copy beside the first, a plan of stages each kept working) is not built. An end state that cannot be built directly is a design question for Tess, not a staging plan.
-- **One review and one gate per big change, at its end.** Outside a big change in progress, every job is reviewed and gated (Tess): the default once the final gate over the sync rewrite and accounts is through (notes/handoff.md, The route).
+- **One review and one gate per big change, at its end.** Outside a big change in progress, every job is reviewed and gated (Tess).
 - **When process costs more than the change, cut the process.** A check, tool, failing test or rule of this note that is not about the change and is eating a session is skipped or deleted, and the report says so.
 
 ## Job mix (Tess)
@@ -34,7 +34,7 @@ How to run them:
 
 ## The task loop
 - **A job is one agent**: it claims a worktree (`W=$(tools/claim <name>)`, from the main checkout), does the work, runs the tests and clippy of the crates it changed, lands (`tools/land`: policy, then push to main) and runs `wt release` last. Notes, issues and spec alone need only policy.
-- **A reviewer** is for a change to a rule others build on, a security fix, and a big change at its end: a fresh agent reads the diff for what a hostile or removed party controls, writes a targeted test of the invariant that changed, then gates in the worker's worktree (`tools/merge-branch gate`, then `land`; notes/gate.md). One gate per reviewed change; nothing else is gated.
+- **A reviewer** for every job (a big change: once, at its end; notes, issues and spec alone: none): a fresh agent reads the diff for what a hostile or removed party controls, writes a targeted test of the invariant that changed, then gates in the worker's worktree (`tools/merge-branch gate`, then `land`; notes/gate.md). One gate per reviewed change; nothing else is gated.
 - **Known failures** (formats: notes/gate.md, The summary): a gate with only KNOWN failures lands when each reads as its issue describes. A NEW failure never lands as gated: the change fixes it, or it is shown failing on main too (`tools/bin-at`) and gets its issue and line there first (committed onto origin/main from a detached checkout; the gated branch stays as it is, since land rereads the summary against main's list and rebases it). A property failing on main is a job beside the primary work (notes/priorities.md, Failing on main), begun with a hand-written minimal reproducer.
 - **Stopgaps (Tess)**: nothing complex or out of the way. The smallest rule that closes the hole; every code site it touches carries `// Interim (issues/<name>.md): <what replaces it>`, and the replacing build removes every marked site.
 - **Hung agents**: one quiet far past its task's usual length is asked or stopped.

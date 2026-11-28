@@ -1,5 +1,5 @@
 # What a write states, and what a reader holds to judge it
-> Summary: Design for writes stating their path (in spec and built): signing keys (a key signs as the one thing it holds a grant on, and that grant is a grant like any), what a path is and how each hop is checked, may-grant as a flag, the purge author a write names, the walk (each lowering judged once), what a remover lists and leaves out, the side a node takes in a fight (the lowering it held first, and its own); evidence in the sync unit as the closure over the paths its held commits state, a removal's list inside the removal, lazy delivery; the public thing; external signals and who may grant to a thing; core without accounts (the last admin as a writer's check); what a model must check before building; what is open.
+> Summary: Design for writes stating their path (in spec and built): signing keys (a key signs as the one thing it holds a grant on, and that grant is a grant like any), what a path is and how each hop is checked, may-grant as a flag, the purge author a write names, the walk (each lowering judged once), what a remover lists and leaves out, the side a node takes in a fight (the lowering it held first, and its own); evidence in the sync unit as the closure over the paths its held commits state, a removal's list inside the removal, lazy delivery; public things; external signals and who may grant to a thing; core without accounts (the last admin as a writer's check); what a model must check before building; what is open.
 
 **Principle: a write states how it has its right, and is judged by that statement alone; what a reader needs to check the statement is in the unit it reads, as a function of the writes that unit holds.** Core knows signing keys, things, roles, a write's stated path and named purge author, and each session's configured defaults for those; it has no concept of an account, a profile or a home (Tess). Each section states the one rule it follows from that; a rule that does not follow is marked **Smell**.
 
@@ -64,7 +64,7 @@ A grant's value is a role, an `until` and a **may-grant flag** (decided: a flag,
 
 ### The purge author
 Who may purge an edit is fixed when it is written (spec/requirements.md Deletion); where the class includes its author, the write says which of its actors that is. Core picks no position on the path (decided).
-- **How a write names it** (modelled, built: notes/path-form.md): each stated path carries an index i into [S, A1, ..., Ak]: 0 the thing signed as, j the thing Aj. One index per path. A write wanting two purge authors on one thing is two commits.
+- **How a write names it** (modelled, built: spec/wire.md §4 `Paths`, notes/path-form.md): a commit names one purge author, by an index i into [S, A1, ..., Ak] (0 the thing signed as, j the thing Aj) in the one-path form, or by tid in the split form. A write wanting two purge authors is two commits.
 - The index is always present and has no default on the wire. A session's default is local configuration, written by the layer that understands what the session acts through, never by core.
 - **What a purger must hold**: a request holds the `author` right over a delta iff the request's own path for that thing contains the delta's purge author (as the thing it is signed as or as a listed thing) and gives write on the thing, judged as a content write along that path at the request's key (modelled: `purges`, control `-purge-any-path`). So an edit authored as an organization is purged by any member writing through it, one authored as an account by any of its nodes, one authored as a node root by that node alone. A node removed from A and not from A2 still purges every edit authored as A2 on what A2 writes; what was authored as A it purges only by a request A's remover received and listed (modelled: story moves 38-40).
 - **"Purge everything by this author"** names a thing and matches the deltas whose named purge author is exactly that thing, never every delta whose path contains it (modelled: control `-purge-contains`).
@@ -165,7 +165,7 @@ The grant as restored; lists by commit ID with own covers (a list naming a cover
 Validity of a write is a point query per hop of its path instead of a maximum over paths; the walk applies a grant-class part in O(hops); a lowering finds what it puts in question by an index hop → parts. `roles_on` and effective reach stay for keys, sync units and `holders`. The walk: osis-perm `paths` (notes/perm-paths.md).
 
 ### Where the path sits
-Header: `signer` is the tid of the thing signed as, with the key that signed (the wire form is the spec brief's: the key or its hash); `path` in one of two forms: one path with its purge-author index, or the split form with each thing's path sealed under that thing's path key (built: notes/path-form.md).
+spec/wire.md §4: `Signer` (the tid signed as, with the signing key where it is not the record's) and `Paths` (one `Path` with its purge-author index, or the split form with each thing's path sealed under its path key; notes/path-form.md).
 
 ## 2. Evidence in the sync unit
 **Rule: what a reader needs to judge a held commit is in the same unit, a function of what the unit holds now; nothing is logged for its own sake and nothing is kept for a write that left.**
@@ -202,14 +202,14 @@ issues/readers-see-readers.md wants an option under which reader-level grants op
 ## 3. Public things
 **Rule: a thing is public by an ordinary grant to the public, a holder that is no thing.** Specified, with the card, its decisions, model and pieces: notes/public-and-cards-brief.md.
 - **The public** (spec/permissions.md §1): named by the zero tid, nobody signs as it, holds a role on it or lists it on a path; boxed in the open form; its claim's key is the public's claim key, with W in clear (spec/sync-ids.md §3). Every other rule reads its grant as any grant (rotations, departures, removal by the thing's admins).
-- **Every thing's keys open what the public reads** by its grant on the thing's independent (spec/sync-set.md §2), so a strong brings a public thing into the referrer's unit (founded by X's stub, spec/sync-set.md §2 Carriers).
+- **Every thing's keys open what the public reads** by its grant on the thing's independent (spec/sync-set.md §2), so a strong brings a public thing into the referrer's unit.
 - **The deposit budget of a public thing is open to everyone**: the reader budget the requirements call best effort (spec/requirements.md, Data a node cannot read); keeping the public from depositing would mean moving the seed, not a check in one place (Tess: acceptable).
 - **To say in the API**: a public thing's dependents are public; a thing that grants a public thing read is readable by everyone through it (carried in others' units only by its own public grant); a holder with may-grant at read may publish.
 
 ### Profiles and contact-only information (the schema's)
 - A **profile** is a schema concept: a public thing with a name and a picture. A writer puts a strong reference to its own profile in the thing it writes in (decided); the write placing it states its actors, so any reader checks whose profile it is without reading the actor. Each commit on the profile is an entry and stamp under every unit referencing it; one profile blob under every unit its owner writes in links those units at a node keeping them unread (issues/sync-units-linked-at-rest.md).
 - Rejected: granting the referring thing read on the profile (its roster would list every thing its owner writes in); a link's secret in the reference; proving whose profile it is from the profile's side.
-- **Contact-only information** (decided): the dial list is in a thing of its own, read by those its owner shares with; where it sits is the schema's. The dial aspect is core's: a node dials what it reads in `dial.0` on any thing it holds.
+- **Contact-only information** (decided): the dial list is in a thing of its own, read by those its owner shares with; where it sits is the schema's. The dial aspect is core's: a node dials what it reads in `dial.0` on any thing it holds. The account library publishes its dial entries on A and on the public profile (libs/account `publish_dial_on`), not in a contact-only thing.
 
 ### The card: where a thing's keys and inbox are published
 To grant to a thing A it holds no role on, a party needs A's keysets and, for delivery, A's inbox's read key, sync ID and deposit seed. A **card** (card aspect `:<A>:card.0`, spec/sync-inbox.md §1) carries A's and its inbox's current `keys.0` commits, written on any thing along a path through A; who reads that thing can grant to A. A holder's keys under each target it holds a role on (spec/permissions.md §4) are the only other place its KEM keys go.
@@ -223,8 +223,8 @@ A grant naming holder A reaches A's nodes only if someone sends a signal (a seal
 ### The rule
 - **The setting**: a thing's admin-only `retention^.0` entries naming external signals (spec/commits.md §5 The setting). A thing's admins **enable** an external signal by an entry of its own naming it; none is taken otherwise.
 - **External fires** (built: spec/permissions.md §5.2 External fires; modelled: held-model `ExternalFires::Enabled`): a fire of external signal `s` on N valid by its author's authority is valid whatever the setting; any other is valid iff N's **current setting** enables `s`. Current, not "in force at the fire's key": a fire's `ts` is its writer's word.
-- **Externally grantable**: A is externally grantable while a card of A stands and its inbox (the card's, else A) enables `grant@~0`; the granter's node refuses a grant to a thing it may not write and holds no card of (spec/permissions.md §2 Granting to a thing).
-- **What enabling publishes**: a card of A (§3), with KEM keys in A's keysets (spec/crypto.md §3 Published KEM keys). Disabling removes the cards and rotates the deposit seed, with the deposit-only step that follows (checked: spec/permissions.md §3 Sync ID role keys).
+- **Externally grantable**: A is externally grantable while a card of A stands and its inbox (the card's, else A) enables `grant@~0`; the granter's node refuses a grant to a thing it may not write and holds no current `keys.0` of (spec/permissions.md §2 Granting to a thing).
+- **What a card and a setting publish**: KEM keys in A's keysets (spec/crypto.md §3 Published KEM keys): every role while a card of A stands, read while A's setting enables an external signal.
 - **What a signal gives**: the grant is valid on X by X's timeline whoever the holder is; the signal only tells A's nodes of it, held while A's setting enables and keeps it (`INBOX_LIFETIME` on an account's inbox), proving nothing. Disabling the signal ends the signals held and breaks no grant.
 - **A role change needs** admin on the target (or may-grant, to add a new holder: §1); a holder may always drop or lower its own grant (decided). Whether the holder's nodes hear of it from outside is the holder's setting.
 - **No grant waits on the grantee's side**: a grant that is written is valid on X at once; only delivery of a signal is pending, shown as such.
@@ -240,32 +240,19 @@ With the account an ordinary independent thing A, it has a roster (its members),
 
 ### The last admin
 **Rule: a thing goes adminless only by a write that says so, and saying so is the writer's check** (decided: no rule every node judges).
-- **A1.** Before signing a grant write that removes a direct admin grant of T, lowers it below admin or gives it an `until`, the writer's node reads its own walk: where no other **standing admin grant** of T would remain (a direct admin grant on T, the record grant and a key's grant included, with no `until`, whoever its holder), it refuses with an error unless the caller said the thing may go adminless (built: notes/permissions.md, The last admin).
-- **A2.** No reader judges any of it: a grant write applies by its path alone (§1). Two sole admins leaving at once leave the thing adminless, as a deliberate leave would. Two admins removing each other leave one: the earlier-stamped removal applies and the later finds its author without authority (the admin dispute).
-- **A3.** A timed admin grant is no standing admin for the check (decided): it is a removal already written.
-- **A4.** A key's admin grant is a standing admin grant like any (Keys, K5): a thing whose only admin is its key (a node root) is ordinary, and a write removing that grant removes the last admin.
-- **A5.** The check may go if it is ever in the way (Tess: not a big deal).
-- **What the every-node rule did besides**, and what does it without one: it kept a remover's own path against an end date the removed party put on it (§1 L3 does); nothing else rested on it (*modelled*: notes/path-model-findings.md 45, 46).
+- The check, the adminless mark and the standing admin are spec/permissions.md §1 The last admin (built: notes/permissions.md, The last admin). No reader judges any of it: a grant write applies by its path alone (§1), so two sole admins leaving at once leave the thing adminless, as a deliberate leave would. A key's admin grant is a standing admin grant like any (Keys, K5): a thing whose only admin is its key (a node root) is ordinary.
+- The check may go if it is ever in the way (Tess: not a big deal).
+- **Rejected: a last-admin rule every node judges.** The one thing it did besides, keeping a remover's own path against an end date the removed party put on it, §1 L3 does (*modelled*: notes/path-model-findings.md 45, 46).
 - **An adminless thing**: admin grants and admin-only aspects change no more, so its settings, enabled external signals and cards are frozen; nobody issues a step of its sync ID; holders keep reading and writing as granted; writers still rotate the roles at or below write, self-removals and finalizes below admin still apply, and a holder with may-grant still adds holders. Nothing recovers it (issues/recovery-design.md).
 
-### What assumes an account today, and how it is said without one
-Checked in the named files; the right-hand side argued.
-
-| today | without the concept |
-|---|---|
-| `author()`: the node thing, the author of a node handle's writes and the holder of its roles (core/osis/src/handle.rs) | a session's configured default path and purge author; `role_on` and `holders` answer for a stated path |
-| `Write::act_as`: one actor in place of `author()` (core/osis/src/write.rs) | a write states its path and purge author in place of the session's defaults |
-| siblings to sync with (engine `dial_peers`, core/engine/src/sync/dial.rs; spec/sync-set.md §1) | no sibling rule: a node dials what the dial aspect of any thing it holds lists (§3) |
-| inbox delivery by the account's inbox (`keys.0` field `inbox`, `Engine::inbox_of`) | any thing's inbox, named by its admins in its `keys.0`, carried by its cards (`:<A>:card.0`) |
-| `profile`, `profile_of`, `contact_card`, `import_contact` (osis-account, libs/account) | the schema library: a profile is a public thing; a contact card is a link to the contact-only thing with a reference to the profile |
-| thin clients acting as a thing minted with the account (core/osis/src/clients.rs) | stays core's, a node's policy: a client session's configured path |
-| connection proofs of an account (spec/permissions.md §4 Stranded, spec/sync-opens.md §2) | a proof of a key of a thing, with the path it claims as evidence |
-| CLI `me`, `pair`, `create --admin me`, `contact` (cli/src) | `me` prints the session's path; `--admin` defaults to the path's last thing; `pair` and `contact` call the library |
-
-**In the account library** (osis-account, libs/account): making an account, pairing, the account's nodes and their removal, the profile, contact cards and their import; "me" for a person is the account there. **In core**: `Osis::create` makes a node only, `author()` is what a handle writes as (the node thing, or a client's own thing). **Reshaped in place, still**: `Write::act_as`. **New in core**: making a key, showing it once, acting with one on a fresh key store; a session's default path and purge author; enabling an external signal and placing a card; the public's tid; a removal's result (what the removed party had added, removed or lowered, what the list left out, what arrived unnamed and was discarded). Each passes notes/api-design.md when built.
+### What still acts as one actor
+- `author()` (core/osis/src/handle.rs): what a handle writes as and holds roles as (the node thing, or a client's own thing); `Write::act_as` (core/osis/src/write.rs) writes as another actor. Without the concept these are a session's configured default path and purge author, and a write stating its own (not built).
+- Thin clients act as a thing of their own (core/osis/src/clients.rs): a node's policy, staying core's.
+- Dialing by any thing's `dial.0` (spec/sync-set.md §1), any thing's inbox and cards (spec/sync-inbox.md §1), connection proofs of things (spec/sync-opens.md §2) and the account calls in osis-account (notes/public-and-cards-brief.md, The account library) are built.
+- **Not built in core**: making a signing key, showing it once, acting with one on a fresh key store; a session's default path and purge author; a removal's result (what the removed party had added, removed or lowered, what the list left out, what arrived unnamed and was discarded). Each passes notes/api-design.md when built.
 
 ## 6. What a model must check before building
-Modelled, each rule's clause letters being what the model's code follows: in roles-model `paths` no last-admin rule (§5 A2), L3, first received (§1 F1 to F5), may-grant as a flag (G1 to G5), keys (K1 to K5), an end as a grant (notes/path-model-findings.md 45 to 56); in held-model the list in the removal (§2 E4, control `Lists::Unit`), lazy delivery with the gap counted (D1 to D3), keysets carrying whole demotions, D4 as a variant, grant writes on a key hop as evidence (notes/evidence-model-findings.md 38 to 42). Public things in a unit: held-model `closure::public` (notes/public-and-cards-brief.md, Models); grants from outside (§4) not modelled.
+Modelled, each rule's clause letters being what the model's code follows: in roles-model `paths` no last-admin rule (§5), L3, first received (§1 F1 to F5), may-grant as a flag (G1 to G5), keys (K1 to K5), an end as a grant (notes/path-model-findings.md 45 to 56); in held-model the list in the removal (§2 E4, control `Lists::Unit`), lazy delivery with the gap counted (D1 to D3), keysets carrying whole demotions, D4 as a variant, grant writes on a key hop as evidence (notes/evidence-model-findings.md 38 to 42). Public things in a unit: held-model `closure::public` (notes/public-and-cards-brief.md, Models); grants from outside (§4) not modelled.
 
 ## Open
 1. Recovery: a key that takes a thing back from its admins (issues/recovery-design.md; parked).
@@ -273,6 +260,5 @@ Modelled, each rule's clause letters being what the model's code follows: in rol
 3. Where a thing minted with a key keeps its secrets, and the stranded request of a key store holding only the key (Keys, K6): notes/accounts-switch-brief.md, Open.
 4. What detecting a dispute costs (notes/path-model-findings.md Open 0): F1 and F2 give default sides with no trial walk; F5 reads a choice's reading per counter-removal held; showing a dispute to a node with no order is still a walk per candidate.
 5. Whether a role commit with a grant write always writes one thing; evidence copies show its header, so a multi-thing role commit would show every thing it touched (spec/commits.md §2 to check).
-6. Names: how the header names the key.
-7. The deposit budget of a public thing (§3) if filling it turns out to matter.
-8. **An idle write with no right deciding a removal** (notes/path-model-findings.md 49; the every-node last-admin rule did not close it): `tiny` worlds find an idle write of a party that held its right in no reading deciding whether a later lowering keeps its verdict, against "no gain by a party that never legitimately held the right" (What holds where).
+6. The deposit budget of a public thing (§3) if filling it turns out to matter.
+7. **An idle write with no right deciding a removal** (notes/path-model-findings.md 49; the every-node last-admin rule did not close it): `tiny` worlds find an idle write of a party that held its right in no reading deciding whether a later lowering keeps its verdict, against "no gain by a party that never legitimately held the right" (What holds where).

@@ -87,7 +87,7 @@ A node takes content only of things in its node closure (spec/commits.md §4 Out
 - **Hand deliveries** pick the same (each documented where defined): `common::packages_for` (`package_for` for one commit), `LocalPeer::packages_to`/`packages_to_peer` (on a copy), `common::packages_for_peer`, `common::packages_reading`, `common::give_carried`, `flows::send_carried`. In a per-seed or per-order loop use the copy-free forms.
 - An observer is an account granted read and holding the thing (`common::reader`, `LocalPeer::fresh_reader`, `fresh_net`, `share`); a role-less node keeps none of a thing's content, so comparing what it reads compares nothing. A fresh reader's seed must not be a net peer's (`net(n, s)` seeds `s*1000+i`): the same seed is the same account.
 - A test's receive of forged or partial input goes through `common::unless_refused`, never `let _ =`.
-- `Engine::package` hand deliveries are still whole: what they bring outside the closure waits for good (issues/engine-harness-whole-packages.md).
+- `Engine::package` hand deliveries are whole: what they bring outside the closure waits for good (issues/engine-harness-whole-packages.md).
 
 ## Confidentiality over `LocalPeer`
 `Package`/`deliver`/`sync` hand over plaintext commits, so a peer that lost access still reads what it is sent. "Who can read" claims use the sealed mode (`LocalPeer::sealed`, `deliver_sealed`; flows.rs `sealed_write`, `spread_sealed`). Plaintext is right for setup and for what an engine does with what arrives.
