@@ -2551,6 +2551,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // derived indexes from states (secrets: persisted, read again on a rebuild once its
     // re-judge settled the node's roles they are judged by, below)
     let aspects = tx.txn.all_aspects()?;
+    // a fast open's placed steps: verified where they were placed (`Core::steps_loaded`)
+    let mut steps = if fast { crate::engine::index::load_steps(tx)? } else { BTreeMap::new() };
     for (tid, ak) in aspects {
         match ak.as_str() {
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
@@ -2578,11 +2580,22 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     if !ids.is_empty() {
                         tx.core.ix.sync_recorded_ids.insert(tid, ids);
                     }
-                    tx.core.steps_recorded(&tid, Some(&f));
+                    match fast {
+                        true => {
+                            if let Some(r) = steps.remove(&tid) {
+                                tx.core.steps_loaded(tid, r);
+                            }
+                        }
+                        false => tx.core.steps_recorded(&tid, Some(&f)),
+                    }
                 }
             }
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }
+    }
+    // a row with no `sync.0` state is taken as kept, so the index check sees it
+    for (tid, r) in steps {
+        tx.core.steps_loaded(tid, r);
     }
     if fast {
         // every delta's validity is persisted: nothing to re-judge

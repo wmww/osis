@@ -40,6 +40,9 @@ const KEYSETS_INVALID: &[u8] = b"node/invalid-keysets";
 const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
+/// Per independent thing, the steps its `sync.0` places (`Indexes::steps`): a fast open takes
+/// them as verified where they were placed, reading no step signature again.
+const STEPS: &[u8] = b"node/steps";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -312,6 +315,34 @@ impl Rec for std::sync::Arc<osis_schema::core_types::RetentionSetting> {
     }
     fn from(v: &Value) -> Option<Self> {
         Codec::from_value(v).ok().map(std::sync::Arc::new)
+    }
+}
+/// Each placed step as `[step ID, sync ID, [prev]?, sync key, write key, delete key, depth, since]`.
+impl Rec for Arc<crate::sync_ids::steps::Recorded> {
+    fn to(&self) -> Value {
+        let step = |(id, p): (&osis_blob::StepId, &crate::sync_ids::steps::Placed)| {
+            let prev = Value::List(p.prev.iter().map(|x| Value::bytes(&x.0)).collect());
+            Value::List(vec![Value::bytes(&id.0), Value::bytes(&p.sync_id.0), prev, Value::bytes(&p.sync), Value::bytes(&p.write), Value::bytes(&p.delete), Value::uint(p.depth.into()), p.since.to()])
+        };
+        Value::List(self.steps.iter().map(step).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let key = |v: &Value| <[u8; 32] as Rec>::from(v);
+        let step = |v: &Value| {
+            let Value::List(f) = v else { return None };
+            let [id, sync_id, prev, sync, write, delete, depth, since] = f.as_slice() else { return None };
+            let prev = match <Vec<[u8; 32]> as Rec>::from(prev)?.as_slice() {
+                [] => None,
+                [p] => Some(osis_blob::StepId(*p)),
+                _ => return None,
+            };
+            let (Value::Bytes(sync_id), Value::Int(depth)) = (sync_id, depth) else { return None };
+            let sync_id = osis_base::SyncId(sync_id.as_slice().try_into().ok()?);
+            let p = crate::sync_ids::steps::Placed { sync_id, prev, sync: key(sync)?, write: key(write)?, delete: key(delete)?, depth: u32::try_from(*depth).ok()?, since: <Ts as Rec>::from(since)? };
+            Some((osis_blob::StepId(key(id)?), p))
+        };
+        Some(Arc::new(crate::sync_ids::steps::Recorded::placed(x.iter().map(step).collect::<Option<_>>()?)))
     }
 }
 impl Rec for () {
@@ -871,6 +902,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
+    put_map(txn, STEPS, &c.ix.steps, all)?;
     write_secrets(tx, all)?;
     Ok(())
 }
@@ -1053,6 +1085,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.ix.snapshots.insert(k, dec(&v)?);
     }
     Ok(())
+}
+
+/// The persisted placed steps (`STEPS`), which a fast open takes in place of deriving them from
+/// the `sync.0` states (`Core::steps_loaded`).
+pub(crate) fn load_steps(tx: &mut Tx<'_>) -> Result<BTreeMap<Tid, Arc<crate::sync_ids::steps::Recorded>>> {
+    scan::<Tid>(tx, STEPS)?.into_iter().map(|(k, v)| Ok((k, dec(&v)?))).collect()
 }
 
 #[cfg(test)]

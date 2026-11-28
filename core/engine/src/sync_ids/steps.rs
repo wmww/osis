@@ -2,7 +2,9 @@
 //! against them (spec/crypto.md §7 Header list, Checked keys): per independent thing, each step
 //! on a verified path from the genesis step of a sync ID its `sync.0` records, with the stamp from
 //! which the whole path is recorded. An index derived from the state (`Tx::derive`), so from the
-//! thing's held valid `sync.0` writes alone, and held in no store: a function of what is held.
+//! thing's held valid `sync.0` writes alone: a function of what is held. Persisted with the
+//! index (`index::STEPS`): a step's signatures are verified where it is placed, and a fast open
+//! takes the placed steps from there; a rebuild derives them again.
 //!
 //! Invariant (what the check rests on): a level-1 or level-3 key a header lists is taken as right
 //! only where it is a key this index places: the delete key (level 1) or write key (level 3) of a
@@ -97,7 +99,7 @@ impl Recorded {
     /// signatures are not verified again (a step's ID commits to its bytes and its parent's ID).
     pub(crate) fn of(f: &Fragment, before: Option<&Recorded>) -> Recorded {
         let ids = f.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
-        let mut out = Recorded::default();
+        let mut out: BTreeMap<StepId, Placed> = BTreeMap::new();
         for (sync_id, entry) in &ids {
             // the steps that parse under their own ID, with the stamp of the write recording each
             let mut steps: BTreeMap<StepId, (Step, Ts)> = BTreeMap::new();
@@ -121,22 +123,34 @@ impl Recorded {
             }
             while let Some(id) = todo.pop() {
                 let Some((s, ts)) = steps.get(&id) else { continue };
-                let parent = s.prev.and_then(|p| Some((steps.get(&p)?, out.steps.get(&p)?)));
+                let parent = s.prev.and_then(|p| Some((steps.get(&p)?, out.get(&p)?)));
                 let known = before.is_some_and(|b| b.steps.get(&id).is_some_and(|x| x.sync_id == *sync_id));
+                let verified = |r: std::result::Result<(), osis_blob::Error>| {
+                    osis_base::costs::count("step signatures verified", 1);
+                    r.is_ok()
+                };
                 let (depth, since) = match (s.prev, parent) {
-                    (None, _) if known || s.verify_genesis().is_ok() => (0, *ts),
-                    (Some(_), Some(((p, _), at))) if known || s.verify_child(p).is_ok() => (at.depth.saturating_add(1), (*ts).max(at.since)),
+                    (None, _) if known || verified(s.verify_genesis()) => (0, *ts),
+                    (Some(_), Some(((p, _), at))) if known || verified(s.verify_child(p)) => (at.depth.saturating_add(1), (*ts).max(at.since)),
                     _ => continue,
                 };
-                let placed = Placed { sync_id: *sync_id, prev: s.prev, sync: s.keys.sync.to_bytes(), write: s.keys.write.to_bytes(), delete: s.keys.delete.to_bytes(), depth, since };
-                for k in [(DELETE_ADMIN, placed.delete), (DELETE_WRITER, placed.write)] {
-                    out.keys.entry(k).and_modify(|t| *t = (*t).min(since)).or_insert(since);
-                }
-                out.steps.insert(id, placed);
+                out.insert(id, Placed { sync_id: *sync_id, prev: s.prev, sync: s.keys.sync.to_bytes(), write: s.keys.write.to_bytes(), delete: s.keys.delete.to_bytes(), depth, since });
                 todo.extend(children.remove(&id).unwrap_or_default());
             }
         }
-        out
+        Recorded::placed(out)
+    }
+
+    /// The record of steps `steps`, each placed (as `of` places them, or as the persisted
+    /// index keeps them: `index::STEPS`).
+    pub(crate) fn placed(steps: BTreeMap<StepId, Placed>) -> Recorded {
+        let mut keys: BTreeMap<(u8, [u8; 32]), Ts> = BTreeMap::new();
+        for p in steps.values() {
+            for k in [(DELETE_ADMIN, p.delete), (DELETE_WRITER, p.write)] {
+                keys.entry(k).and_modify(|t| *t = (*t).min(p.since)).or_insert(p.since);
+            }
+        }
+        Recorded { steps, keys }
     }
 
     /// Whether a step bears `key` at `level` (1 its delete key, 3 its write key) with its path
@@ -196,6 +210,14 @@ impl Core {
         for c in again {
             self.rekey(&c);
         }
+    }
+
+    /// A fast open's `steps_recorded`: `t`'s placed steps as the persisted index keeps them
+    /// (`index::STEPS`), each verified where it was placed; nothing is judged again (the key
+    /// verdicts are persisted too).
+    pub(crate) fn steps_loaded(&mut self, t: Tid, r: Arc<Recorded>) {
+        self.ix.steps.insert(t, r);
+        self.waits.steps_moved.insert(t);
     }
 
     /// The things for which header `h` lists a wrong key: each with a delta listing a level-1 or
@@ -554,5 +576,44 @@ mod tests {
         let e = &mut lp.peers[1].engine;
         assert_eq!((e.get(&g, &x).unwrap(), e.get(&h, &x).unwrap()), (Some(osis_base::Value::Int(1)), Some(osis_base::Value::Int(2))), "opened again alike");
         assert!(!e.pends(&c));
+    }
+
+    // spec/crypto.md §7 (Checked keys: each step verifying under its parent's delete key): an
+    // admin's valid `sync.0` write recording a step whose signature fails places nothing, at
+    // the writer and a reader, live, opened again and rebuilt; an open takes the placed steps
+    // from the persisted index and verifies no signature, a rebuild verifies them.
+    #[test]
+    fn a_step_failing_its_signature_is_placed_by_no_load_and_an_open_verifies_none_spec_crypto_7() {
+        let (mut lp, g, _) = world();
+        let head = lp.peers[0].engine.core.listed_step(&g).unwrap();
+        let state = lp.peers[0].engine.get(&g, &osis_base::Ak::new("sync.0").unwrap()).unwrap().unwrap();
+        let ids = ct::SYNC.decode(&state).unwrap();
+        let (id, rec) = ids[&head.sync_id].steps.iter().find(|(_, r)| osis_blob::Step::parse(&r.step).is_ok_and(|s| s.keys.delete.to_bytes() == head.delete)).unwrap();
+        let parent = osis_blob::Step::parse(&rec.step).unwrap();
+        let mut forged = parent.clone();
+        forged.prev = Some(StepId(*id));
+        forged.sig = osis_crypto::Signature([1; 64]);
+        assert!(forged.verify_child(&parent).is_err());
+        let mut m = Mutation::new();
+        let path = vec![PathSeg::Key(head.sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(forged.id().0.to_vec()))];
+        m.op(g, &ct::SYNC, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(osis_blob::step_record(&forged).to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let placed = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.steps.get(&g).unwrap().clone();
+        let verified = || osis_base::costs::take().iter().filter(|(k, _, _)| *k == "step signatures verified").map(|(_, _, n)| *n).sum::<u64>();
+        for i in 0..2 {
+            let state = lp.peers[i].engine.get(&g, &osis_base::Ak::new("sync.0").unwrap()).unwrap().unwrap();
+            assert!(ct::SYNC.decode(&state).unwrap()[&head.sync_id].steps.contains_key(&forged.id().0), "peer {i} records the forged step");
+            let live = placed(&lp, i);
+            assert!(!live.steps.contains_key(&forged.id()), "peer {i} places the forged step");
+            assert_eq!(lp.peers[i].engine.core.listed_step(&g), Some(head.clone()));
+            verified();
+            lp.peers[i].restart(7).unwrap();
+            assert_eq!(verified(), 0, "peer {i}: an open verifies no step");
+            assert_eq!(placed(&lp, i), live, "peer {i} opened again places the same steps");
+            lp.peers[i].engine.rebuild_index().unwrap();
+            assert!(verified() >= live.steps.len() as u64, "peer {i}: a rebuild verifies every step");
+            assert_eq!(placed(&lp, i), live, "peer {i} rebuilt places the same steps");
+        }
     }
 }

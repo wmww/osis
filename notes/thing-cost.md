@@ -12,12 +12,12 @@ Engine, the minting node (the node minting A) and its account's second node (`ac
 |---|---|---|
 | commits | 1 (content: record, value, A's `holds.0`) | 2 (rotation: `created.0`, `keys.0`, `secrets.0`, `sync.0` with the genesis step and the first; content: value, A's `holds.0`) |
 | commit as stored, opened (`Engine::package`) | 531 B (header 289 B) | 4597 B (4170 + 427) |
-| stored, minting node | 1183 B | 9.7 KB |
-| stored, second node | 1207 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 9.9 KB |
+| stored, minting node | 1183 B | 10.1 KB |
+| stored, second node | 1207 B (128 B of it the epochs its parts opened under, `ou/`, what passing them on needs) | 10.2 KB |
 | minting node work | 1 sign | 4 signs, 2 sync-step verifies, no KEM |
 | second node work | 1 commit verify | 2 commit verifies, 2 sync-step verifies, no KEM |
 
-Independent, stored rows at the minting node: commit records `c/` 4769 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 704; `k/` (opened epochs) 1489; `node/metas` 79, `node/sealed` 448, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 617, `node/metas` 39, refs 178, states 136 (by body), `t/` 74, counters 104.
+Independent, stored rows at the minting node: commit records `c/` 4769 (the two commits whole); aspect states 66-69 B each (`keys.0`, `secrets.0`, `sync.0`, `created.0`, content: each its one body, States stored as their body); `node/keysets` 704; `k/` (opened epochs) 1489; `node/metas` 79, `node/sealed` 448, `node/epoch intro` 408, `node/boxes to` 400, `node/steps` 381 (its two placed steps, about 190 B each), refs 354, `node/perm` 33, `g/` 50; small local rows about 190. Dependent: `c/` 617, `node/metas` 39, refs 178, states 136 (by body), `t/` 74, counters 104.
 
 The independent thing holds nothing and takes no external signal, so it publishes no KEM key (spec/crypto.md §3 Published KEM keys). A holder's keysets carry one per role (1216 B each) and its step keys' read key one more (the issuer derives it from the read secret, never copies it from the keyset): 6080 B more downloaded and stored at every holder (16.0 KB stored, 10.3 KB downloaded, 5 ML-KEM keygens at the minting node). `thing_cost::an_independent_thing_nobody_seals_to_carries_no_kem_key` holds the figures alike at n and 10n.
 
