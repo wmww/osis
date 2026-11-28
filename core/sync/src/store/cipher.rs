@@ -194,6 +194,7 @@ impl osis_store::CipherStore for Inner {
             room_fx: self.room_fx.clone(),
             room_gone: self.room_gone.clone(),
             clock: self.clock.clone(),
+            refused: self.refused.clone(),
         })
     }
 }

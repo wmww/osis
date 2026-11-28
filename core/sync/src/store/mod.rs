@@ -283,6 +283,18 @@ pub(crate) struct Inner {
     room_gone: BTreeSet<SyncId>,
     /// `now` as read by `room_fits` (an expiry it waits for is a wake, `next_wake`).
     clock: Clock,
+    /// Held entries of read sync IDs refused for room since the last `take_refused`, their
+    /// room marks owed (`refused_held`).
+    refused: Vec<RoomRefusal>,
+}
+
+/// A held ephemeral entry of read S refused for room (`Store::refused_held`): what holding its
+/// commit may cost, and the entry's expiry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomRefusal {
+    pub s: SyncId,
+    pub need: u64,
+    pub expires: Option<Time>,
 }
 
 /// What a cap refused of a sync ID kept unread (spec/sync-streams.md §4 Full, row `R/`): the
@@ -501,7 +513,7 @@ impl Store {
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let ram = osis_store::Store::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, ram, rng, open: None, now: Time(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default() };
+        let mut inner = Inner { store, ram, rng, open: None, now: Time(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default(), refused: Vec::new() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -1221,6 +1233,29 @@ impl Store {
         let mut g = self.lock();
         let expires = Prefix::parse(bytes).ok().and_then(|p| p.expiry());
         g.wait_room(s, Cap::Memory, need, expires, from)
+    }
+
+    /// Held entry `b` of read S, whose commit waited and was then refused for room: holding it
+    /// may cost `need`, more than S's memory cap leaves (spec/sync-compaction.md §2 Caps: checked
+    /// each time it is applied). It is not held: dropped with no tombstone, and its refusal
+    /// queued for the sources passing it (`take_refused`, `mark_refused`), as one refused when
+    /// pulled (`refused_room`).
+    pub fn refused_held(&mut self, s: &SyncId, b: &BlobId, need: u64) -> Result<()> {
+        let Some(e) = self.entry(s, b)? else { return Ok(()) };
+        self.unlog_entry(s, b)?;
+        self.lock().refused.push(RoomRefusal { s: *s, need, expires: e.expires });
+        Ok(())
+    }
+
+    /// The refusals `refused_held` queued since the last call.
+    pub fn take_refused(&mut self) -> Vec<RoomRefusal> {
+        std::mem::take(&mut self.lock().refused)
+    }
+
+    /// Refusal `r`: S full by its memory cap, a room mark at each of `from` (the sources whose
+    /// place passes the entry), as `refused_room`.
+    pub fn mark_refused(&mut self, r: &RoomRefusal, from: &[Source]) -> Result<()> {
+        self.lock().wait_room(&r.s, Cap::Memory, r.need, r.expires, from)
     }
 
     /// A Deposit item (spec/sync-inbox.md §3), taken by one rule at every node holding its sync

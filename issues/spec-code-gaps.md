@@ -21,7 +21,6 @@ Judgement in brackets. Line numbers drift; grep the quoted words.
 - §5.2 "A part on a core aspect is invalid" (ephemeral parts): no check; a core-form ephemeral AK may not be reachable. [Unsure: delete the clause if unreachable.]
 
 ## spec/crypto.md, spec/sync-compaction.md
-- compaction §2 Caps: a waiting memory commit applied past its room (`store::follow::apply_waiting`, `Ingested::TooLarge`) is thrown out and its carrier entries released with no room mark, so it is not fetched again once there is room, as a pulled entry refused for room is (`Opening::NoRoom`, `Store::refused_room`). [Small: mark S full by its memory cap at the carrier's source; the test needs a real engine's waiting memory commit.]
 - compaction §2 Superseded parts: code adds two conditions no spec states (no superseder while the setting keeps history; none of a `Seq` or `Bag` fragment, `retention/memory.rs`). [Small: state them, or drop them if not needed.]
 - crypto §1 "Batch and single verification MUST agree": no batch verification exists. [Keep for other implementations, or drop.]
 - sync-hostile §1 "One test pass in flight per peer": "test pass" is defined nowhere. [Reword to opens' term.]

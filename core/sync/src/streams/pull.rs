@@ -1216,7 +1216,19 @@ impl Streams {
     /// The sources whose place passes an entry of S once it settles: every connection's holding
     /// S, and `conn`'s (`take_body` settles it at each).
     fn settling_at(&self, s: SyncId, conn: ConnId) -> Vec<Source> {
-        let srcs: BTreeSet<Source> = self.holders.get(&s).into_iter().flatten().chain(std::iter::once(&conn)).filter_map(|c| self.pull.get(c).map(|p| p.src)).collect();
+        let mut srcs = self.holding_sources(s);
+        if let Some(p) = self.pull.get(&conn)
+            && !srcs.contains(&p.src)
+        {
+            srcs.push(p.src);
+            srcs.sort();
+        }
+        srcs
+    }
+
+    /// The sources of the connections S is shared on.
+    pub(super) fn holding_sources(&self, s: SyncId) -> Vec<Source> {
+        let srcs: BTreeSet<Source> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| p.src)).collect();
         srcs.into_iter().collect()
     }
 

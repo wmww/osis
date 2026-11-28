@@ -2441,6 +2441,56 @@ fn a_reader_fetches_an_entry_refused_for_room_once_room_comes_spec_sync_compacti
     assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "not fetched again with room");
 }
 
+// spec/sync-compaction.md §2 (Caps: checked each time a commit is applied, so also when it
+// applies after waiting, and an entry refused so is not held and is fetched again once there is
+// room), spec/sync-streams.md §4 (Full): node 2 reads T, and node 0's ephemeral
+// write on it, stamped past node 2's drift bound, waits there; S's memory cap at node 2 then
+// falls below what it costs, so applied once its time comes it is refused: no entry of it held,
+// S full. Once the cap rises it is fetched again and reads. Fails with the refused entry kept as
+// held, never fetched again.
+#[test]
+fn a_waiting_ephemeral_commit_refused_for_room_is_fetched_again_spec_sync_compaction_2() {
+    use crate::harness::World;
+    use crate::harness::history::{Gives, three};
+    use osis_base::{Ak, Value, Weak};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    use osis_schema::core_types as ct;
+    let (mut w, t, s) = three(Gives::Reads, 1);
+    let notes = Ak::new("doc:notes+.0").unwrap();
+    let at = [PathSeg::Key(Value::Int(1))];
+    let value = Value::Str("x".repeat(200));
+    // node 2's memory cap, by its entry in its account's `caps^.0` (none: the default)
+    let memory_cap = |w: &mut World, bytes: Option<u64>| {
+        let (a, n) = (w.node(2).account.unwrap(), w.engine(2).tid());
+        w.write(2, |e| {
+            let caps = ct::Caps { policy: bytes.map(|b| ("memory_bytes".to_string(), b)).into_iter().collect(), things: Default::default() };
+            let mut m = osis_engine::Mutation::new();
+            m.op(a, &ct::CAPS, PathOp { path: vec![PathSeg::Key(Weak(n).to_value())], op: Op::Set(caps.to_value()) }).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+    };
+    // runs look 10 s ahead: none reaches the commit's time until the clock is moved
+    w.horizon_ms = 10_000;
+    w.skew(0, osis_base::format::MAX_DRIFT_MS as i64 + 60_000);
+    let id = w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        m.op(t, &notes, PathOp { path: at.to_vec(), op: Op::Set(value.clone()) }).unwrap();
+        e.write(m).unwrap().unwrap().id
+    });
+    w.run();
+    assert!(w.engine(2).memory_pending(&id), "waits at node 2 for its ts");
+    memory_cap(&mut w, Some(1));
+    w.advance(120_000);
+    w.run();
+    assert!(!w.engine(2).memory_pending(&id) && w.engine(2).get_at(&t, &notes, &at).unwrap().is_none(), "refused for room");
+    assert!(w.store(2).waits_room(&s), "S full by its memory cap");
+    w.horizon_ms = crate::harness::HORIZON_MS;
+    memory_cap(&mut w, None);
+    assert_eq!(w.engine(2).get_at(&t, &notes, &at).unwrap(), Some(value), "fetched again once there is room");
+}
+
 // spec/sync-status.md §1 (every ephemeral event of S in its memory part listed): an ephemeral
 // write not yet pushed (no room) keeps S from caught up.
 #[test]

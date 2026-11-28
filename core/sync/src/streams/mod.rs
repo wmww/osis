@@ -541,6 +541,10 @@ impl Streams {
         let r = self.known.settle();
         self.failed(r);
         let mut acted = self.send_relays(ctx)?;
+        // held entries refused for room since: a room mark at each source holding S
+        for r in ctx.store.take_refused() {
+            ctx.store.mark_refused(&r, &self.holding_sources(r.s))?;
+        }
         let roomy = ctx.store.room_grew()?;
         acted |= !roomy.is_empty();
         self.untell_full(&roomy);

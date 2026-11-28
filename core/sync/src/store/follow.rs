@@ -193,19 +193,33 @@ fn open_held(engine: &mut Engine, store: &mut Store, s: &SyncId, b: &BlobId, wra
 /// Waiting memory commit `c`, woken by what it awaited, applied within the room of a read sync
 /// ID an entry of it is under, its carrier's own count included (spec/sync-compaction.md §2
 /// Caps: checked again each time it is applied). One still waiting stays; one past the room is
-/// thrown out with nothing of it kept, its carriers released as their blobs go unnamed.
-fn apply_waiting(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<bool> {
+/// thrown out, and no entry of it is held: each read sync ID naming a blob of it is full by its
+/// memory cap (`Store::refused_held`), so it is fetched again once there is room.
+fn apply_waiting(engine: &mut Engine, store: &mut Store, c: &CommitId) -> Result<bool> {
     if !engine.memory_pending(c) {
         return Ok(false);
     }
-    for b in engine.commit_blobs(c)?.iter() {
+    let blobs = engine.commit_blobs(c)?.to_vec();
+    for b in &blobs {
         for s in store.naming(b)? {
             if store.holding(&s) != Some(Holding::Read) {
                 continue;
             }
             let own = store.counted(&s, b)?;
-            let applied = engine.apply_waiting_memory(c, store.memory_room(&s)?.saturating_add(own))?;
-            return Ok(matches!(applied, Some(osis_engine::Ingested::Applied(_))));
+            return match engine.apply_waiting_memory(c, store.memory_room(&s)?.saturating_add(own))? {
+                Some(osis_engine::Ingested::Applied(_)) => Ok(true),
+                Some(osis_engine::Ingested::TooLarge(_, need)) => {
+                    for b in &blobs {
+                        for s in store.naming(b)? {
+                            if store.holding(&s) == Some(Holding::Read) {
+                                store.refused_held(&s, b, need)?;
+                            }
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Ok(false),
+            };
         }
     }
     Ok(false)
