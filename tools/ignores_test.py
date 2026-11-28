@@ -32,8 +32,8 @@ if got != ({"a_spec_x_1": "ok", "b": "FAILED", "d": "missing"}, ["n::b_large ok"
     print(f"FAIL verdicts: {got}")
     ok = False
 # the tree's own: every find names a crate and a fn
-for crate, path, line, fn, reason in ignores.find("sync rewrite: "):
-    if not (crate and fn and reason.startswith("sync rewrite: ")):
+for crate, path, line, fn, reason in ignores.find("by hand: "):
+    if not (crate and fn and reason.startswith("by hand: ")):
         print(f"FAIL find: {crate} {path}:{line} {fn}")
         ok = False
 print(f"ignores_test: {'ok' if ok else 'FAILED'}")

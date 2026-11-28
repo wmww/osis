@@ -1,5 +1,5 @@
 # Sync rewrite: what it owes
-> Summary: What the sync rewrite still owes, the 7 tests it ignores by cause, and its rulings for the review. What it built is in the area notes: notes/node-closure.md (grants with the thing granted), notes/evidence-derivation.md and notes/sync-facade.md (copies per (commit, thing), the kept derivation), notes/delete-keys.md (the delete-key check), notes/sync.md.
+> Summary: What the sync rewrite still owes and its rulings for the review. What it built is in the area notes: notes/node-closure.md (grants with the thing granted), notes/evidence-derivation.md and notes/sync-facade.md (copies per (commit, thing), the kept derivation), notes/delete-keys.md (the delete-key check), notes/sync.md.
 
 Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-inbox.md §2 and §5, spec/sync-judgement.md, spec/crypto.md §7. When each item is taken up: notes/handoff.md, The route.
 
@@ -7,16 +7,8 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 - **A copy's parts as exactly what S names**: a copy on one thing holding more parts than S names now (keys alone after the roles were named) stays S's log of it.
 - **Acting only after a complete pass.**
 - **Storage under a fork under F6** (issues/disputes-storage-under-f6.md).
-- **Each ignore below**, probed for its own cause first (notes/handoff.md, Not to build on the way: no fix sized by its label).
 - **A reproducer of the wanted-blob handover** (issues/fixture-seed-luck.md).
 - **Untested**: whether a node keeping the target unread needs its own grant's edge write for the lost-access rule; what osis-sync's promotion does with a sealed fire that opens pending for drift (`Opened::Commit(_, Pending(_, Reason::Drift))`: the spec says it waits as any commit; whether it is stamped before it applies is open).
-
-## Ignored tests
-`#[ignore = "sync rewrite: <cause>"]`; `rg -n 'sync rewrite: ' core/ libs/` lists them. Run by name: `cargo test -p <crate> --test it -- --ignored --exact <names>` (a module filter with `--ignored` also runs the by-hand properties). A cause here is a label: probed only where it says so.
-- **copies per (commit, thing)** (6 osis-sync, 1 public `osis`), none diagnosed past its first failing assertion; the osis-sync ones fail with the derivation fed per commit, so none for its cost:
-  - `first::a_first_sync_of_n_sync_ids_takes_the_same_round_trips` (113 deliveries at n members, 131 at 5n), `growth::a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n` (reader to store 3,172 B at n, 21,181 B at 10n), `idle::an_idle_reconnect_sends_reads_and_judges_the_same_at_10n` (with a reader, "opens: members judged" 14 to 28 at n, 64 at 10n): they count what goes on the wire per sync ID or per head move..
-  - `inbox::a_store_on_a_losing_sibling_step_is_moved_on`, `inbox::a_store_on_a_losing_sibling_under_a_new_admin_secret_is_moved_on` (both: node 1 is registered no step).
-  - Public `osis` `thing_cost::what_a_thing_costs_as_the_app_mints_it` (a dependent thing's minting node rows over the 2,000 B budget; not replayed).
 
 ## For review
 Rulings the rewrite made that the review should check:

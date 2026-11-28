@@ -463,27 +463,25 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
 // readers' opens by the old sync key, and each reader opens S again by the new one: both sides
 // rejoin from where they stopped, so what a reader and the store send each other per head move
 // does not grow with the n entries of S (no listing from the start either way), at n and 10n.
-// Node 0 makes thing 0, node 1's account syncs it (kept unread), nodes 2 and 3 read it; each
-// removal of node 3's account rotates read and sync (node 1's head moves); counted between node 1
-// and node 2 (a reader, no writer), each way, after n entries and again after 10n.
+// Node 0 makes thing 0, node 1's account syncs it (kept unread), nodes 2 and 3 read it; two
+// copies of that world get n and 10n entries, then node 3's account is removed (a rotation of
+// read and sync: node 1's head moves); counted between node 1 and node 2 (a reader, no writer),
+// each way.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     let mut w = world_of(0, 4, 4);
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let mut written = 0;
-    let mut head_move = |w: &mut World, n: usize| {
-        for i in written..n {
+    let head_move = |w: &mut World, n: usize| {
+        for i in 0..n {
             w.write(0, |e| {
                 let mut m = Mutation::new();
                 m.set(t, &Ak::new(format!("u:e{i}.0")).unwrap(), &Value::Int(i as i64)).unwrap();
                 e.commit(m).unwrap();
             });
         }
-        written = n;
-        let _ = play(w, &[Grant(0, 0, 3, Gives::Reads), Run], String::new());
+        w.run();
         assert!(w.store(1).entries(&s).unwrap().len() >= n, "the store holds every entry");
         let steps = |w: &World| w.store(1).path(&s).unwrap().map_or(0, |p| p.steps.len());
         let sent = |w: &World| (w.net.between.get(&(1, 2)).copied().unwrap_or(0), w.net.between.get(&(2, 1)).copied().unwrap_or(0));
@@ -493,12 +491,13 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
         let after = sent(w);
         (after.0 - before.0, after.1 - before.1)
     };
-    let (a, b) = (head_move(&mut w, 3), head_move(&mut w, 30));
-    assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n\n{}", w.net.census());
+    let mut large = w.copy();
+    let (a, b) = (head_move(&mut w, 3), head_move(&mut large, 30));
+    assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n\n{}", large.net.census());
     // at quiet every byte sent is in a whole frame the census counts
-    for (&(x, y), &bytes) in &w.net.between {
-        let framed: u64 = w.net.frames.iter().filter(|((a, b, _), _)| (*a, *b) == (x, y)).map(|(_, t)| t.1).sum();
-        assert_eq!(framed, bytes, "n{x} -> n{y}: the census against the bytes sent\n{}", w.net.census());
+    for (&(x, y), &bytes) in &large.net.between {
+        let framed: u64 = large.net.frames.iter().filter(|((a, b, _), _)| (*a, *b) == (x, y)).map(|(_, t)| t.1).sum();
+        assert_eq!(framed, bytes, "n{x} -> n{y}: the census against the bytes sent\n{}", large.net.census());
     }
 }
 

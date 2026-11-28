@@ -30,8 +30,8 @@
 //! rested on it at once, and a thing proven again readies its offers there.
 //!
 //! Work follows change: each connection keeps the offers ready for it; an offer added is placed
-//! at the connections it may go to (O(connections)), a connection whose digests agreed gets every
-//! offer (O(offers)), a connection's counted actors moving readies the offers to those it gained
+//! at the connections it may go to (O(connections)), a connection whose digests agreed gets the
+//! sealed fires (O(fires)), a connection's counted actors moving readies the offers to those it gained
 //! (O(their offers)), a member opening gets the offers of its S (a range), a peer's filter arriving
 //! gets the inbox offers (O(offers), tested against it); a settle sends only on connections with
 //! something ready, a back-off due or a refusal waiting for a filter, and reads each connection's
@@ -251,13 +251,16 @@ impl Offers {
         self.conns.insert(conn, Conn { filter: net.filter_generation(conn), ..Conn::default() });
     }
 
-    /// Member S opened on a connection: its offers may go there now.
+    /// Member S opened on a connection (or came with the record it took): its offers may go
+    /// there now, those to stores only where it is a store's.
     pub fn joined(&mut self, conn: ConnId, s: &SyncId, net: &impl Net) {
         if !self.conns.contains_key(&conn) {
             self.connected(conn, net);
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        let ks: Vec<Key> = self.items.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]))).map(|(k, _)| *k).collect();
+        let store = net.member(conn, s).is_some_and(|m| m.class == SourceClass::Store);
+        let range = self.items.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32])));
+        let ks: Vec<Key> = range.filter(|(_, t)| store || matches!(t, Target::Fire { .. })).map(|(k, _)| *k).collect();
         osis_base::costs::count("inbox: offer placed", ks.len() as u64);
         for k in ks {
             if !backed_off(&self.wakes, conn, c, &k) && !c.parked.contains_key(&k) {
@@ -315,7 +318,8 @@ impl Offers {
                 self.active.insert(conn);
             }
         }
-        // the digests agreed: every offer may go there
+        // the digests agreed: what is ready may go there, and every sealed fire (a filter shown
+        // before may name its deposit key); an offer of S is readied as S opens there (`joined`)
         for conn in self.agreed.due() {
             let Some(c) = self.conns.get_mut(&conn) else {
                 self.agreed.unwant(&conn);
@@ -334,10 +338,11 @@ impl Offers {
             if src.is_none() {
                 continue;
             }
-            let fresh: Vec<Key> = self.items.keys().filter(|k| !backed_off(&self.wakes, conn, c, k) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
+            let fires = self.items.iter().filter(|(_, t)| matches!(t, Target::Fire { .. })).map(|(k, _)| k);
+            let fresh: Vec<Key> = fires.filter(|k| !backed_off(&self.wakes, conn, c, k) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
             osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
-            if !fresh.is_empty() {
-                c.ready.extend(fresh);
+            c.ready.extend(fresh);
+            if !c.ready.is_empty() {
                 self.active.insert(conn);
             }
         }

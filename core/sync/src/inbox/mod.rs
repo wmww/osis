@@ -250,6 +250,7 @@ impl Inbox {
                 let src = Source::Record(rid);
                 for (s, class) in net.members(conn) {
                     osis_base::costs::count("inbox: members moved", 1);
+                    self.offers.joined(conn, &s, net);
                     if class == SourceClass::Store {
                         self.register.joined(src, s);
                     }
@@ -280,7 +281,7 @@ impl Inbox {
         let mut here = Here::of(cx, None);
         match link {
             osis_blob::Link::Share(l) => self.links.redeem(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
-            osis_blob::Link::Locator(l) => self.links.redeem_public(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
+            osis_blob::Link::Locator(l) => self.links.redeem_locator(&mut here, l, joiner).unwrap_or(Waiting::Never("the link could not be kept")),
         }
     }
 

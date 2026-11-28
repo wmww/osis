@@ -1,9 +1,9 @@
 //! What one thing costs through the API (notes/thing-cost.md; spec/requirements.md Cost,
-//! spec/sync-set.md §2 Cost), made as the app makes them: a
-//! dependent thing minted with the app's home as admin (held by it, kept a day), and an
-//! independent thing minted with the account as admin and held by home (as `osis-chat`'s `create` makes a
-//! chat). The minting node and the account's second node: commits, store rows by family, the sync
-//! store's bytes, bytes the second node downloads, KEM and signature operations.
+//! spec/sync-set.md §2 Cost), made as the app makes them: a thing minted with the app's home as
+//! admin (held by it, kept a day), and one minted with the account as admin and held by home (as
+//! `osis-chat`'s `create` makes a chat). The minting node and the account's second node: commits,
+//! store rows by family, the sync store's bytes, bytes the second node downloads, KEM and
+//! signature operations.
 
 use crate::common::*;
 use osis::internals::{Internals as _, MemStoreMeasures as _, costs};
@@ -57,12 +57,12 @@ struct Cost {
     reader_ops: BTreeMap<&'static str, u64>,
 }
 
-fn make(a: &Node, b: &Node, home: Tid, independent: bool, label: &str, show: bool) -> Cost {
+fn make(a: &Node, b: &Node, home: Tid, by_account: bool, label: &str, show: bool) -> Cost {
     let (c0, r0, p0, q0) = (a.census(), b.census(), a.sync_bytes(), b.sync_bytes());
     let before: std::collections::BTreeSet<_> = a.db.engine(|e| e.commit_ids()).into_iter().collect();
     costs::take();
     let mut w = a.db.write();
-    let t = if independent { w.create(a.db.author(), None).unwrap() } else { w.create(home, None).unwrap() };
+    let t = if by_account { w.create(a.db.author(), None).unwrap() } else { w.create(home, None).unwrap() };
     keep_all(&mut w, t);
     w.hold(home, t).unwrap();
     w.commit().unwrap();
@@ -104,9 +104,10 @@ fn make(a: &Node, b: &Node, home: Tid, independent: bool, label: &str, show: boo
     cost
 }
 
-// The breakdown table of notes/thing-cost.md, through the API; `THING_COST=1` prints it.
+// The breakdown table of notes/thing-cost.md, through the API; `THING_COST=1` prints it. Either
+// way a thing is minted, it costs one commit or more (with the compactions of home's `holds.0`
+// every few makes) and the same order of rows and download.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn what_a_thing_costs_as_the_app_mints_it() {
     let (sa, sb) = (MemStore::new(), MemStore::new());
     let (a, b, _) = crate::common::shared_in(sa.clone(), sb.clone());
@@ -118,13 +119,13 @@ fn what_a_thing_costs_as_the_app_mints_it() {
     w.commit().unwrap();
     deliver(&a.db, &b.db);
     let show = std::env::var_os("THING_COST").is_some();
-    make(&a, &b, home, false, "dependent warm-up", false);
-    make(&a, &b, home, true, "independent warm-up", false);
+    make(&a, &b, home, false, "home warm-up", false);
+    make(&a, &b, home, true, "account warm-up", false);
     // compactions of home's `holds.0` come every few makes:
     // averaged over `n`
     let n = 10;
-    let per = |independent: bool, label: &str| {
-        let all: Vec<Cost> = (0..n).map(|i| make(&a, &b, home, independent, label, show && i == 0)).collect();
+    let per = |by_account: bool, label: &str| {
+        let all: Vec<Cost> = (0..n).map(|i| make(&a, &b, home, by_account, label, show && i == 0)).collect();
         let avg = |f: &dyn Fn(&Cost) -> i64| all.iter().map(f).sum::<i64>() / n as i64;
         let ops = |f: &dyn Fn(&Cost) -> &BTreeMap<&'static str, u64>| {
             let mut m = BTreeMap::<&'static str, u64>::new();
@@ -148,10 +149,10 @@ fn what_a_thing_costs_as_the_app_mints_it() {
         );
         all
     };
-    let dependent = per(false, "dependent (minted with home)");
-    let independent = per(true, "independent (minted with the account, held by home)");
     let sum = |all: &[Cost], f: &dyn Fn(&Cost) -> i64| all.iter().map(f).sum::<i64>();
-    assert!(dependent.iter().all(|c| c.commits >= 1) && independent.iter().all(|c| c.commits >= 2), "an independent thing held outside the root's unit: its rotation carrying its record, the strong holding it");
-    assert!(sum(&dependent, &|c| c.minting_rows) < 2_000 * n as i64 && sum(&dependent, &|c| c.download as i64) < 1_300 * n as i64);
-    assert!(sum(&independent, &|c| c.minting_rows) < 17_000 * n as i64 && sum(&independent, &|c| c.download as i64) < 11_200 * n as i64);
+    for (all, label) in [(per(false, "minted with home"), "home"), (per(true, "minted with the account, held by home"), "account")] {
+        assert!(all.iter().all(|c| c.commits >= 1), "minted with {label}: a commit");
+        let (rows, download) = (sum(&all, &|c| c.minting_rows), sum(&all, &|c| c.download as i64));
+        assert!(rows < 2_000 * n as i64 && download < 1_300 * n as i64, "minted with {label}: minting node rows {rows} B, download {download} B over {n}");
+    }
 }

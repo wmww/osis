@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""tools/ignores.py [--run LOGDIR] [PREFIX]: the tests ignored with a reason starting PREFIX
-(default `sync rewrite: `), from the source (nothing builds): per reason, each test's crate,
+"""tools/ignores.py [--run LOGDIR] PREFIX: the tests ignored with a reason starting PREFIX
+(`by hand: `, `accounts`), from the source (nothing builds): per reason, each test's crate,
 file:line and fn name. `--run LOGDIR`: then run them, one `cargo test -p CRATE --no-fail-fast --
 --ignored NAME...` per crate (output to LOGDIR/CRATE.log), and print each test's verdict, `missing`
 for a test that ran in no binary. Exit 1 when any failed or is missing.
@@ -49,7 +49,9 @@ def main(argv):
         if len(argv) < 2:
             sys.exit(__doc__)
         run, argv = argv[1], argv[2:]
-    prefix = argv[0] if argv else "sync rewrite: "
+    if not argv:
+        sys.exit(__doc__)
+    prefix = argv[0]
     tests = find(prefix)
     if not tests:
         sys.exit(f"ignores: no test ignored with a reason starting {prefix!r}")

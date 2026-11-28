@@ -7,7 +7,6 @@ use crate::session::Proven;
 use crate::types::{Credential, Cursor, Cx, Holding, Position};
 use crate::unread::{Unread, UnreadCredentials};
 use osis_base::SyncId;
-use osis_crypto::Epoch;
 use osis_engine::sync::ReadCredentials;
 use osis_proto::{Code, DepositItem};
 use osis_base::memo::Effects;
@@ -118,7 +117,8 @@ pub trait Holds {
     fn named(&mut self, proven: &Proven) -> Named;
     /// An ended member's `until` (spec/sync-opens.md §6): at a node keeping S unread the position
     /// of its head's event; at a reader the highest position at which an entry in S of a rotation
-    /// superseding `by`'s sync epoch was first logged, else the node log's end.
+    /// superseding `by`'s sync epoch, or of a role commit the recorded step past `by`'s sync key
+    /// waits on, was first logged, else the node log's end.
     fn until(&mut self, s: &SyncId, by: &Credential) -> Position;
     /// The cursor naming `pos` of this node's log, for a Lost.
     fn cursor_at(&mut self, pos: Position) -> Option<Cursor>;
@@ -181,8 +181,9 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
 
 /// An ended member's `until` (spec/sync-opens.md §6): kept unread, the position of S's head
 /// event; read and opened by an older step's sync proof, the highest position at which an entry
-/// in S of a rotation superseding that step's sync epoch was first logged; else (or none such)
-/// the log's end.
+/// in S of a rotation superseding that step's sync epoch, or of a role commit the recorded step
+/// past that sync key waits on, was first logged (a store takes that step only holding those);
+/// else (or none such) the log's end.
 pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::types::Result<Position> {
     let end = cx.store.log_bounds()?.0;
     match (cx.store.synced(s), by) {
@@ -190,25 +191,30 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
         (Some((_, Holding::Read | Holding::Stub)), Credential::SyncProof(k)) => {
             let rc = cx.engine.read_credentials(s)?;
             let e = rc.as_ref().and_then(|rc| rc.keys.values().find(|h| h.sync.as_ref().is_some_and(|x| x.verifying_key().to_bytes() == *k)).and_then(|h| h.epochs[0]));
-            match e {
-                Some(e) => Ok(superseded_at(cx, s, &e)?.unwrap_or(end)),
-                None => Ok(end),
+            let mut commits = match e {
+                Some(e) => cx.engine.rotations_superseding(s, &e)?,
+                None => Vec::new(),
+            };
+            commits.extend(step_past_needs(cx, s, k)?);
+            let mut at = None;
+            for c in commits {
+                for b in cx.engine.commit_blobs(&c)?.iter() {
+                    at = at.max(cx.store.first_logged(s, b)?);
+                }
             }
+            Ok(at.unwrap_or(end))
         }
         _ => Ok(end),
     }
 }
 
-/// The highest position at which an entry in S of a rotation superseding sync epoch `e` was
-/// first logged.
-fn superseded_at(cx: &mut Cx, s: &SyncId, e: &Epoch) -> crate::types::Result<Option<Position>> {
-    let mut at = None;
-    for c in cx.engine.rotations_superseding(s, e)? {
-        for b in cx.engine.commit_blobs(&c)?.iter() {
-            at = at.max(cx.store.first_logged(s, b)?);
-        }
-    }
-    Ok(at)
+/// The role commits the recorded step of S moving past sync key `k` waits on (`Engine::step_needs`):
+/// the first recorded step not bearing `k` after the last bearing it.
+fn step_past_needs(cx: &mut Cx, s: &SyncId, k: &[u8; 32]) -> crate::types::Result<Vec<osis_base::CommitId>> {
+    let Some(path) = cx.store.path(s)? else { return Ok(Vec::new()) };
+    let Some(last) = path.steps.iter().rposition(|st| st.keys.sync.to_bytes() == *k) else { return Ok(Vec::new()) };
+    let Some(past) = path.steps.get(last + 1) else { return Ok(Vec::new()) };
+    Ok(cx.engine.step_needs(s, &past.id())?.to_vec())
 }
 
 impl Holds for NodeHolds<'_, '_> {

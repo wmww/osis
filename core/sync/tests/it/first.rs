@@ -120,16 +120,17 @@ fn a_new_reader_logs_no_copy_of_what_its_source_holds_spec_sync_judgement_3() {
 // requester fetches every body announced without bytes), spec/wire.md §11.2 (Fetch: blob IDs
 // grouped by sync ID): the members' opens go in one Offer, their joins in one Pull, their bodies
 // in Fetches of up to `MAX_FETCH_IDS` whatever sync IDs they are under, so a first sync's round
-// trips do not grow per member: 113 deliveries at n, 121 at 5n and at 10n (`probe_first`); one
-// Fetch per sync ID cost 3 to 6 deliveries per member (137 at 5n, 153 at 10n).
+// trips do not grow per member: 159 deliveries at 2 members, 157 at 5 and 10, 161 at 20
+// (`probe_first`). Counted from 2 members: with one, no blob is carried under two members' sync IDs, so
+// none waits on its fetch under another (Bodies: not asked while asked under another sync ID),
+// and the first sync takes two Fetch round trips fewer (133 deliveries).
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_first_sync_of_n_sync_ids_takes_the_same_round_trips_spec_sync_streams_4() {
-    const MEMBERS: u64 = (LARGE - N) as u64;
-    let (small, large) = (cost(N), cost(LARGE));
-    assert!(large.deliveries <= small.deliveries + 2 * MEMBERS, "{} deliveries at n members, {} at 5n", small.deliveries, large.deliveries);
+    const MEMBERS: u64 = (LARGE - 2) as u64;
+    let (small, large) = (cost(2), cost(LARGE));
+    assert!(large.deliveries <= small.deliveries + 2 * MEMBERS, "{} deliveries at 2 members, {} at {LARGE}", small.deliveries, large.deliveries);
     let (a, b) = (small.sent(2, 0, "Fetch").0, large.sent(2, 0, "Fetch").0);
-    assert!(b <= a + 1, "the reader sent {a} Fetches at n members, {b} at 5n");
+    assert!(b <= a + 1, "the reader sent {a} Fetches at 2 members, {b} at {LARGE}");
 }
 
 /// The blobs fetched more than once under one holding (`Cost::fetched`), with how each fetch held.

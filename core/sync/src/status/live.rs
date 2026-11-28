@@ -109,7 +109,9 @@ impl Ground for Live<'_, '_> {
         self.streams.knows(at, Some(conn), s, b)
     }
     fn knows_now(&self, at: Source, s: &SyncId, b: &BlobId) -> bool {
-        self.streams.knows(at, self.opens.conn_of(at), s, b)
+        // the connection is read only for an entry the record's rows do not show
+        let known = self.streams.known();
+        known.knows(at, s, b) || self.opens.conn_of(at).is_some_and(|c| Source::Conn(c) != at && known.knows(Source::Conn(c), s, b))
     }
     fn reported(&self, conn: ConnId, s: &SyncId) -> Option<Position> {
         self.opens.reported_at(conn, s).map(|(p, _)| *p)

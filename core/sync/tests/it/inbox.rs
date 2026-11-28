@@ -905,16 +905,13 @@ fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
     }
 }
 
-// spec/sync-ids.md §6 (register: a branch): two admin nodes of one account (0 and 2) step S for
-// one rotation, so the store of a sync grantee of another account (node 1, keeping S unread)
-// stands on a sibling the recorded path does not take; a later step lists past the other
-// sibling only. A reader registers the branch there, so the grantee follows its grant by the
-// steps registered with it: removed again, it holds nothing of S. Built by hand: node 0's
-// removal reaches node 2 before node 0's step does (a hand delivery while 0 and 2 are apart), so
-// node 2 steps for the same epochs; node 2 grants and removes again before it hears of node 0's
-// step, so the recorded path runs through its own.
+// spec/sync-ids.md §6 (register: a branch): two admin nodes of one account (0 and 2), apart,
+// each rotate S's sync secret and step S, so the store of a sync grantee of another account
+// (node 1, keeping S unread, boxed by both) stands on a sibling (A) the recorded path does not
+// take; node 2's later step (C, removing node 1) lists past the other sibling (B) only. A reader
+// registers the branch there, so the grantee follows its grant by the steps registered with it:
+// moved past its keys, it holds nothing of S.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
     losing_sibling(false);
 }
@@ -925,18 +922,17 @@ fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
 // node 0, holding that key, endorses the recorded head, and a reader registers the branch with
 // the endorsement.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_store_on_a_losing_sibling_under_a_new_admin_secret_is_moved_on_spec_sync_ids_6() {
     losing_sibling(true);
 }
 
-/// The losing-sibling world, node 0's rotation of the admin secret too when `admin`; its setup up
-/// to nodes 0 and 1 apart from node 2 built once per process (`fixture_with`).
-fn losing_sibling(admin: bool) {
+/// The losing-sibling setup: node 2 has made thing t (sync ID S) and node 1's account holds sync
+/// on it, node 1 keeping S unread; then nodes 0 and 1 are apart from node 2. Built once per
+/// process (`fixture_with`).
+fn sibling_world() -> (crate::harness::World, (osis_base::Tid, osis_base::SyncId)) {
     use crate::harness::history::{Holder, world_of};
     use crate::harness::script::{Give, New, Run, Strong, Syncs, Write};
-    use osis_engine::flows::edges::Demotion;
-    let (mut w, (t, s)) = crate::harness::fixture_with("inbox losing sibling", || {
+    crate::harness::fixture_with("inbox losing sibling", || {
         let mut w = world_of(0, 2, 3);
         let _ = crate::harness::play(&mut w, &[New(2), Run, Strong(1, None, 0), Write(2, 0), Give(0, 0, Holder::Node(1), Syncs), Run], String::new());
         let t = w.history.things[0].0;
@@ -947,36 +943,48 @@ fn losing_sibling(admin: bool) {
         w.partition(1, 2);
         w.flush();
         (w, (t, s))
-    });
-    let removal = Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
-    // node 0 removes node 1 (a rotation of sync), steps (A) and registers A at node 1
-    let rotation = w.write(0, |e| {
-        let before: BTreeSet<_> = e.commit_ids().into_iter().collect();
+    })
+}
+
+// spec/sync-opens.md §6 (ended: its `until` at a reader), spec/sync-ids.md §6 (Steps: a step
+// waits on the rotations of the epochs it registers): node 0 removes node 1's sync grant and
+// rotates the admin secret before it steps, so one step registers both and the admin rotation is
+// logged past the removal. Node 1, ended there, is still served what that step waits on: it is
+// registered the step, moved past its keys, and holds nothing of S.
+#[test]
+fn a_removed_store_is_moved_past_a_step_rotating_more_than_its_removal_spec_sync_opens_6() {
+    let (mut w, (t, s)) = sibling_world();
+    let removal = osis_engine::flows::edges::Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
+    w.write(0, |e| {
         e.demote(&t, &removal).unwrap();
-        if admin {
-            e.rotate_leaving_out(&t, &[osis_base::Role::Admin], &[]).unwrap().expect("an admin rotation");
-        }
-        let new: Vec<_> = e.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
-        new.iter().map(|c| e.package(c).unwrap().unwrap()).collect::<Vec<_>>()
+        e.rotate_leaving_out(&t, &[osis_base::Role::Admin], &[]).unwrap().expect("an admin rotation");
     });
+    w.run();
+    let head = w.store(0).head(&s).unwrap().map(|h| h.id());
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), head, "node 1 is registered node 0's step");
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "removed, node 1 holds nothing of S");
+}
+
+/// The losing-sibling world, node 0's rotation of the admin secret too when `admin`.
+fn losing_sibling(admin: bool) {
+    use osis_base::Role;
+    let (mut w, (t, s)) = sibling_world();
+    // node 0 rotates sync, steps (A) and registers A at node 1
+    let roles: &[Role] = if admin { &[Role::Sync, Role::Admin] } else { &[Role::Sync] };
+    w.write(0, |e| e.rotate_leaving_out(&t, roles, &[]).unwrap().expect("a rotation"));
     w.run();
     let a = w.store(1).head(&s).unwrap().map(|h| h.id());
     assert_eq!(a, w.store(0).head(&s).unwrap().map(|h| h.id()), "node 1 is registered node 0's step");
-    // node 2 holds the rotation without node 0's step: it steps for the same epochs (B)
-    w.write(2, |e| {
-        for pk in &rotation {
-            e.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-        e.reexamine().unwrap();
-    });
+    // node 2, apart, rotates sync too: it steps a sibling (B)
+    w.write(2, |e| e.rotate_leaving_out(&t, &[Role::Sync], &[]).unwrap().expect("a rotation"));
     w.run();
     let b = w.store(2).head(&s).unwrap().map(|h| h.id());
     assert!(b.is_some() && b != a, "node 2 stepped a sibling");
     let delete = |w: &mut crate::harness::World, i: usize| w.store(i).head(&s).unwrap().map(|h| h.keys.delete);
     let fork = w.store(1).path(&s).unwrap().and_then(|p| p.steps.iter().rev().nth(1).map(|st| st.keys.delete));
     assert_eq!(fork != delete(&mut w, 1), admin, "node 1's head bears a new delete key alone by an admin rotation");
-    // node 2 grants node 1 sync again (at A's epoch too) and removes it (C, a child of B)
-    let _ = crate::harness::play(&mut w, &[Give(2, 0, Holder::Node(1), Syncs)], String::new());
+    // node 2 removes node 1 (C, a child of B)
+    let removal = osis_engine::flows::edges::Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
     w.write(2, |e| e.demote(&t, &removal).unwrap());
     w.run();
     w.heal();
@@ -984,7 +992,7 @@ fn losing_sibling(admin: bool) {
     let head = w.store(0).head(&s).unwrap().map(|h| h.id());
     assert_eq!(head, w.store(2).head(&s).unwrap().map(|h| h.id()), "the readers record one head");
     assert_ne!(head, b, "past B");
-    let _ = crate::harness::play(&mut w, &[Write(2, 0), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[crate::harness::script::Write(2, 0), crate::harness::script::Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "removed, node 1 holds nothing of S");
     assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), head, "node 1 is moved to the recorded head");
 }

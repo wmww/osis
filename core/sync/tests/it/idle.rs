@@ -59,7 +59,6 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 // node handles, not per sync ID (about 15 each: `Store::next_wake`'s scans 8, the driver's store
 // step 5, flush 1), and an idle reconnect at 10n handles about as many inputs as at n.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn an_idle_reconnect_sends_reads_and_judges_the_same_at_10n_spec_sync_streams_4() {
     const READER: &[&str] = &["opens: members judged", "status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered", "status: members moved", "inbox: members moved", "inbox: offer judged"];
     const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved", "inbox: members moved", "inbox: offer judged"];
@@ -82,7 +81,9 @@ fn an_idle_reconnect_sends_reads_and_judges_the_same_at_10n_spec_sync_streams_4(
         }
         let (a, b) = (sum(ca, &["store rows read <- opens"]), sum(cb, &["store rows read <- opens"]));
         assert!(b < a + MEMBERS, "with {who}: opens reads {a} rows at n, {b} at 10n: a row or more per member");
-        let (a, b) = (sum(ca, &["store rows read"]), sum(cb, &["store rows read"]));
+        // the nodes' rows, not the harness's checks between steps
+        let nodes = |c: &[(&'static str, u64)]| sum(c, &["store rows read @node 0", "store rows read @node 1", "store rows read @node 2"]);
+        let (a, b) = (nodes(ca), nodes(cb));
         assert!(b <= a + MEMBERS + 4 * 16, "with {who}: {a} rows at n, {b} at 10n");
     }
 }
