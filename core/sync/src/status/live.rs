@@ -7,7 +7,7 @@ use crate::store::Source;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Position, RecordId, Result};
 use crate::unread::Unread;
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Time};
 use osis_store::Shred;
 use osis_engine::sync::SyncSet;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,21 +78,21 @@ impl Ground for Live<'_, '_> {
     fn mono(&self) -> osis_base::Mono {
         self.cx.mono
     }
-    fn now(&self) -> WallMs {
+    fn now(&self) -> Time {
         self.cx.now
     }
-    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>> {
+    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, Time>> {
         let rows = self.cx.store.with_read(|t| t.scan_local(BEGUN, b"", usize::MAX))?;
         let mut out = BTreeMap::new();
         for (k, v) in rows {
             let s = k.get(BEGUN.len()..).and_then(|x| x.try_into().ok()).map(SyncId);
-            let at = v.as_slice().try_into().ok().map(u64::from_be_bytes).map(WallMs);
+            let at = v.as_slice().try_into().ok().map(u64::from_be_bytes).map(Time);
             let (Some(s), Some(at)) = (s, at) else { return Err(crate::types::Error::Store(osis_store::Error::Corrupt("status pass start row"))) };
             out.insert(s, at);
         }
         Ok(out)
     }
-    fn set_pass_begun(&mut self, s: &SyncId, at: Option<WallMs>) -> Result<()> {
+    fn set_pass_begun(&mut self, s: &SyncId, at: Option<Time>) -> Result<()> {
         let key = [BEGUN, &s.0].concat();
         self.cx.store.with_tx(|t| match at {
             Some(at) => t.put_local(&key, &at.0.to_be_bytes(), Shred::No),

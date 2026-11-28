@@ -27,7 +27,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::Mutation;
-use osis_base::{Ak, CommitId, SyncId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, SyncId, Role, Tid, Value, Time};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
@@ -133,7 +133,7 @@ pub(crate) fn now_ts(core: &Core) -> osis_base::Ts {
 
 /// Wall ms `now` as a `ts`.
 pub(crate) fn ts_at(now: u64) -> osis_base::Ts {
-    osis_base::Ts::make(WallMs(now), 0).unwrap_or_default()
+    osis_base::Ts::make(Time(now), 0).unwrap_or_default()
 }
 
 impl Core {
@@ -161,7 +161,7 @@ impl Core {
 
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
     /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
-    pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+    pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<Time>)> {
         let ts = now_ts(self);
         match self.timelines().on(actor) {
             Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),

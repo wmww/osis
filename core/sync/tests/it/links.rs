@@ -121,7 +121,7 @@ fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
 fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
-    let until = osis_base::WallMs(w.now().0 + 60_000);
+    let until = osis_base::Time(w.now().0 + 60_000);
     let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.run();
@@ -157,7 +157,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
 fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
-    let until = osis_base::WallMs(w.now().0 + 60_000);
+    let until = osis_base::Time(w.now().0 + 60_000);
     let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.advance(1000);

@@ -2,14 +2,14 @@
 //! Shared test helpers: a test schema with one aspect per encoding, grants, delivery.
 
 use osis_commit::Kind;
-use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::{LocalPeer, Package};
 use osis_engine::{Engine, Mutation};
 use osis_schema::core_types as ct;
 use osis_schema::{Aspect, Codec, StaticSchema};
 
-pub const T0: WallMs = WallMs(1_700_000_000_000);
+pub const T0: Time = Time(1_700_000_000_000);
 
 pub static TEST: StaticSchema = StaticSchema::new(
     "test.osis",
@@ -341,7 +341,7 @@ pub fn fresh_net(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> LocalPe
 }
 
 /// A copy of observer `p` (`reader`) at wall time `at`: one fresh node.
-pub fn fresh_copy(p: &mut osis_engine::local_peer::Peer, at: WallMs) -> osis_engine::local_peer::Peer {
+pub fn fresh_copy(p: &mut osis_engine::local_peer::Peer, at: Time) -> osis_engine::local_peer::Peer {
     let q = p.copy().unwrap();
     q.clock.set(at);
     q

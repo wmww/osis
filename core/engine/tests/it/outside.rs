@@ -291,7 +291,7 @@ fn waiting_on_w(expiring: bool, aside: bool) -> (LocalPeer, Tid, Tid, CommitId, 
     if expiring {
         // one expiry per commit (spec/commits.md §6)
         for (t, k) in parts {
-            m.expires(t, k, osis_base::WallMs(exp)).unwrap();
+            m.expires(t, k, osis_base::Time(exp)).unwrap();
         }
     }
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();

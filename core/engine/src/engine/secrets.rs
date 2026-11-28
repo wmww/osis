@@ -1001,7 +1001,7 @@ mod tests {
     // at an epoch whose key the state holds but whose secret is not held keeps neither.
     #[test]
     fn whole_read_keeps_only_what_live_entries_say() {
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         // a thing the node reads (its mint admin): boxes give it secrets (`rotation::may_take`)
         let e = &mut lp.peers[0].engine;
         let mut m = crate::Mutation::new();
@@ -1035,7 +1035,7 @@ mod tests {
         let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 32]).unwrap()) };
         let mut st = osis_crdt::Fragment::default();
         for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {
-            let ts = osis_base::Ts::make(osis_base::WallMs(u64::from(n) * 1000), 0).unwrap();
+            let ts = osis_base::Ts::make(osis_base::Time(u64::from(n) * 1000), 0).unwrap();
             let mut builder = DeltaBuilder::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: Tid::from_bytes([n; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
             builder.apply(&PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(vec![b; 8])) }, &view).unwrap();
             st.join(builder.finish().unwrap().0);

@@ -199,7 +199,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k999"))], op: osis_crdt::Op::Set(s(&big(marker))) }).unwrap();
-    m.expires(t, &BIG, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    m.expires(t, &BIG, osis_base::Time(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     filler(&mut lp, 0, 6);
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
@@ -229,7 +229,7 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
         let mut m = Mutation::new();
         m.op(t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(s(v)) }).unwrap();
         if let Some(e) = exp {
-            m.expires(t, &a, osis_base::WallMs(e)).unwrap();
+            m.expires(t, &a, osis_base::Time(e)).unwrap();
         }
         lp.peers[0].commit(m).unwrap()
     };
@@ -352,7 +352,7 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     let t = new_shared(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let marker = "LATEEXP-MARK-3e9f";
-    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let at = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s(&big(marker))).unwrap();
     m.set(t, &REG, &s("plain")).unwrap();
@@ -386,7 +386,7 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("brief")).unwrap();
-    m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    m.expires(t, &BRIEF, osis_base::Time(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.packages_for(0, 1).unwrap().into_iter().find(|p| p.id == c).unwrap();
     lp.advance(120_000);
@@ -545,7 +545,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let (t, y, q) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0), new_shared(&mut lp, 0));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
-    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let exp = osis_base::Time(lp.peers[0].engine.now().0 + 60_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("SECRET-R5b")).unwrap();
     m.expires(t, &REG, exp).unwrap();
@@ -585,7 +585,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     put(&mut lp, 0, t, &REG, &s("old"));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
-    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let exp = osis_base::Time(lp.peers[0].engine.now().0 + 60_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("a")).unwrap();
     m.set(t, &BRIEF, &s("b")).unwrap();
@@ -661,7 +661,7 @@ fn past_expiry_and_purge_alike(which: Cases) {
     assert_eq!(rec.len(), 1);
     lp.advance(5);
     let start = lp.peers[0].engine.now().0;
-    let exp = osis_base::WallMs(start + 60_000);
+    let exp = osis_base::Time(start + 60_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("SECRET-R5c")).unwrap();
     m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
@@ -1095,7 +1095,7 @@ fn put_entry(lp: &mut LocalPeer, t: Tid, key: &str, expires: Option<u64>) -> osi
     let mut m = Mutation::new();
     m.op(t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(item("v", 1)) }).unwrap();
     if let Some(e) = expires {
-        m.expires(t, &MAP, osis_base::WallMs(e)).unwrap();
+        m.expires(t, &MAP, osis_base::Time(e)).unwrap();
     }
     lp.peers[0].commit(m).unwrap().unwrap()
 }
@@ -1309,7 +1309,7 @@ fn reaction_goes_with_its_expiring_message_spec_crdt_4_7() {
     let t_end = lp.peers[0].engine.now().0 + 60_000;
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e"))], op: Op::Set(item("E-MARK", 1)) }).unwrap();
-    m.expires(t, &MAP, osis_base::WallMs(t_end)).unwrap();
+    m.expires(t, &MAP, osis_base::Time(t_end)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
@@ -1339,7 +1339,7 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
         let mut m = Mutation::new();
         m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("v", 1)) }).unwrap();
         if let Some(e) = end {
-            m.expires(t, &MAP, osis_base::WallMs(e)).unwrap();
+            m.expires(t, &MAP, osis_base::Time(e)).unwrap();
         }
         lp.peers[0].commit(m).unwrap().unwrap();
     }
@@ -1533,7 +1533,7 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     lp.peers[0].clock.advance(ahead);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("SECRET-D4c7")).unwrap();
-    m.expires(t, &REG, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    m.expires(t, &REG, osis_base::Time(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
     assert!(matches!(lp.deliver(1, &pc).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
@@ -1633,7 +1633,7 @@ fn waiting_snapshots_decoded(n: usize) -> [u64; 4] {
     let expiring = decoded(|| {
         let mut m = Mutation::new();
         m.set(t, &REG, &s("brief")).unwrap();
-        m.expires(t, &REG, osis_base::WallMs(lp.peers[1].engine.now().0 + 1_000)).unwrap();
+        m.expires(t, &REG, osis_base::Time(lp.peers[1].engine.now().0 + 1_000)).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.peers[1].reexamine().unwrap();
     });

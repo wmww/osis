@@ -43,7 +43,7 @@ use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result, SourceClass, Waiting};
-use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Tid, Time};
 use osis_engine::Engine;
 use osis_blob::{DialHint, StepId};
 use osis_proto::Msg;
@@ -159,7 +159,7 @@ pub(crate) struct Here<'a> {
     pub status: Option<&'a crate::status::Status>,
     pub store: &'a mut Store,
     /// The wall clock (a link's follow time is dated by it: it outlives a restart).
-    pub now: WallMs,
+    pub now: Time,
     /// The monotonic clock the back-offs run on.
     pub mono: Mono,
     pub policy: &'a crate::types::Policy,

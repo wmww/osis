@@ -718,7 +718,7 @@ fn expiry_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let d = w.node(0).account.unwrap();
     let t = w.write(0, |e| {
-        let at = osis_base::WallMs(e.now().0 + 1_000);
+        let at = osis_base::Time(e.now().0 + 1_000);
         let mut m = Mutation::new();
         let t = m.create(e.thing_record(d, Some(at)));
         m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();

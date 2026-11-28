@@ -185,7 +185,7 @@ fn snapshot_writer_memory_is_flat() {
 fn expiring_snapshot_peak(n: usize) -> [u64; 4] {
     let (mut lp, t) = big_map(n, false);
     let b = lp.peers[0].backend.clone();
-    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let at = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     for (k, op) in [(n / 2, Op::Set(s("x"))), (n / 3, Op::Remove(s(&format!("k{:06}", n / 3)))), (n + 1, Op::Set(s("y")))] {
         let mut m = Mutation::new();
         let path = if matches!(op, Op::Remove(_)) { vec![] } else { entry(k, false) };
@@ -1490,7 +1490,7 @@ fn expiries(n: usize) -> ([Work; 2], Vec<usize>) {
     }
     for i in 0..n {
         let mut m = Mutation::new();
-        m.expires(t, &k, osis_base::WallMs(now0 + HOUR + 500 + 1_000 * i as u64)).unwrap();
+        m.expires(t, &k, osis_base::Time(now0 + HOUR + 500 + 1_000 * i as u64)).unwrap();
         set_key(&mut m, t, &k, vec![PathSeg::Key(s(&format!("k{i:06}")))], long(i));
         ids.push(lp.peers[0].commit(m).unwrap().unwrap());
     }
@@ -1609,7 +1609,7 @@ fn lost_forget(n: usize) -> (u64, u64) {
     let mut m = Mutation::new();
     m.set(mine, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() }).unwrap();
     e.commit(m).unwrap().unwrap();
-    let tomorrow = osis_base::WallMs(e.now().0 + 86_400_000);
+    let tomorrow = osis_base::Time(e.now().0 + 86_400_000);
     for v in 0..n {
         let e = &mut lp.peers[1].engine;
         let mut m = Mutation::new();
@@ -1892,7 +1892,7 @@ fn expired_charge(n: usize, map: bool) -> [u64; 2] {
         let mut m = Mutation::new();
         let op = if map { PathOp { path: vec![PathSeg::Key(s(&format!("k{c}")))], op: Op::Put(s(&c.to_string())) } } else { PathOp { path: vec![], op: Op::Insert { at: c + 1, items: vec![s(&c.to_string())] } } };
         m.op(t, &log, op).unwrap();
-        m.expires(t, &log, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+        m.expires(t, &log, osis_base::Time(lp.peers[0].engine.now().0 + 60_000)).unwrap();
         lp.peers[0].engine.write(m).unwrap();
     }
     for bl in fresh(&mut lp) {
@@ -2318,7 +2318,7 @@ fn judging_beside_an_expiring_write_is_flat_spec_crdt_4_8() {
         let k = ak(KEPTSET.ak());
         let mut m = Mutation::new();
         let end = lp.peers[0].engine.now().0 + 3_600_000;
-        m.expires(t, &k, osis_base::WallMs(end)).unwrap();
+        m.expires(t, &k, osis_base::Time(end)).unwrap();
         m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(Value::Str("brief".into())) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, &KEPTSET, format!("e{i:0>200}"))).collect();

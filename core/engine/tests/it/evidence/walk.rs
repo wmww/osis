@@ -4,7 +4,7 @@
 //! are built by hand with real stated paths: engine role commits state the Interim empty path and
 //! the engine does not run the walk yet (A1 step 3), so this is the walk's plain input, with a
 //! minimal adapter (`Node`) from it to the derivation's `Part`s.
-use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, SignKey, Tid, Ts, Time};
 use osis_engine::evidence::{CopyId, Evidence, Kind, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, WriteId};
@@ -32,7 +32,7 @@ fn cid(i: u32) -> CommitId {
     CommitId(b)
 }
 fn ts(t: u64) -> Ts {
-    Ts::make(WallMs(t), 0).unwrap()
+    Ts::make(Time(t), 0).unwrap()
 }
 
 /// A world: records (thing → mint admin) and commits in writing order.

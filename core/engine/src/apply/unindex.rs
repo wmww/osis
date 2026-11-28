@@ -203,7 +203,7 @@ mod tests {
     use crate::engine::journal::Journaled;
     use crate::local_peer::LocalPeer;
     use crate::{Engine, Mutation};
-    use osis_base::{Ak, Value, WallMs};
+    use osis_base::{Ak, Value, Time};
 
     /// Every journaled index but `forgotten`, which keeps what forgetting leaves on purpose, and
     /// perm's view.
@@ -221,7 +221,7 @@ mod tests {
     // state too, but for the newest forgotten `ts` per aspect. spec: none (internal)
     #[test]
     fn forget_equals_never_indexed() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = Mutation::new();
@@ -233,7 +233,7 @@ mod tests {
         for i in 0..3 {
             let mut m = Mutation::new();
             m.op(g, &ak("t:m+.0"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Put(Value::Str(format!("v{i}"))) }).unwrap();
-            m.expires(g, &ak("t:m+.0"), WallMs(e.now().0 + 1000)).unwrap();
+            m.expires(g, &ak("t:m+.0"), Time(e.now().0 + 1000)).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
         assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
@@ -254,7 +254,7 @@ mod tests {
     // persisted index opens as a rebuild computes it.
     #[test]
     fn forgotten_void_commit_leaves_no_void_row_spec_commits_4() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, me);
@@ -289,18 +289,18 @@ mod tests {
     // back) has passed a short expiry: the write goes through, expiring just after its `ts`.
     #[test]
     fn short_expiry_behind_hlc_is_raised_spec_commits_6() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
-        lp.peers[0].clock.set(WallMs(1_700_000_000_000 - 60_000));
+        lp.peers[0].clock.set(Time(1_700_000_000_000 - 60_000));
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
         m.set(g, &ak("t:m.0"), &Value::Str("typing".into())).unwrap();
-        m.expires(g, &ak("t:m.0"), WallMs(e.now().0 + 5_000)).unwrap();
+        m.expires(g, &ak("t:m.0"), Time(e.now().0 + 5_000)).unwrap();
         let c = e.commit(m).unwrap().unwrap();
         let h = e.header(&c).unwrap();
         assert_eq!(h.expires, Some(h.ts.wall_ms().0 + 1));
@@ -317,7 +317,7 @@ mod tests {
     // (spec/crdt.md §4.7).
     #[test]
     fn memory_purge_on_replace_drops_the_replaced_part_spec_commits_5() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = Mutation::new();
@@ -325,7 +325,7 @@ mod tests {
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak("t:r+.0"), osis_schema::History::PurgeOnReplace)).unwrap();
         e.commit(m).unwrap();
-        let t = WallMs(e.now().0 + 2 * 3_600_000);
+        let t = Time(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
         for (k, v) in [("t:r+.0", "v"), ("t:s+.0", "live")] {
             m.set(g, &ak(k), &Value::Str(v.into())).unwrap();
@@ -353,14 +353,14 @@ mod tests {
     // reload; the aspects that keep a state stay listed. spec: none (internal)
     #[test]
     fn an_expired_state_leaves_no_unit() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
-        let t = WallMs(e.now().0 + 3_600_000);
+        let t = Time(e.now().0 + 3_600_000);
         let mut m = Mutation::new();
         m.set(g, &ak("t:d.0"), &Value::Int(1)).unwrap();
         m.expires(g, &ak("t:d.0"), t).unwrap();

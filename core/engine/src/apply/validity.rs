@@ -95,7 +95,7 @@ impl Grants {
     /// Whether `e` is a grant this aspect may hold: a key's carries no `retain` and no `floor`, and
     /// is no `until` 0 removal (spec/data-model.md §9 `signers.0`).
     fn fits(self, e: &Edge) -> bool {
-        self == Grants::Things || !e.retain && e.floor.is_none() && e.until != Some(osis_base::WallMs(0))
+        self == Grants::Things || !e.retain && e.floor.is_none() && e.until != Some(osis_base::Time(0))
     }
 }
 

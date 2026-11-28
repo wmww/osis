@@ -8,7 +8,7 @@
 use super::{BlobOf, BodyFacts, BodyId, BodyMeta, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
 use crate::engine::{DropFor, Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Time};
 use osis_crypto::NodeRng;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -311,7 +311,7 @@ pub(crate) fn regenerate_in(tx: &mut Tx<'_>, b: &BlobId, row: &BlobOf) -> Result
     let Ok(env) = osis_commit::regenerate(&cb, &resolved, &seal.sections) else { return Ok(None) };
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(&resolved, ais.iter().copied())?;
-    let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(WallMs), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral)).with_blocks(seal.blocks.clone())?;
+    let prefix = osis_blob::Prefix::for_delete_keys(row.salt, &cb.header.blind, osis_commit::prefix_expiry(&resolved, &ais).map(Time), &groups)?.with_class(osis_blob::Class::of_marker(resolved.ephemeral)).with_blocks(seal.blocks.clone())?;
     let (_, blob) = osis_blob::frame_under(osis_crypto::BlobKey::of_blob(seal.key.clone()), &prefix, &env.encode())?;
     Ok((osis_blob::blob_id(&blob) == *b).then_some(blob))
 }
@@ -535,7 +535,7 @@ impl Engine {
             return none(closure);
         }
         let Some(named) = self.certified_of(c, t)? else { return none(closure) };
-        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::sync_ids::fetch_order(&h));
+        let (expires, order) = (osis_commit::blob_expiry(&h).map(Time), crate::sync_ids::fetch_order(&h));
         let mut by: BTreeMap<Tid, PartSet> = BTreeMap::new();
         if !named.parts.is_empty() {
             let ctx = self.body_ctx(t);
@@ -590,7 +590,7 @@ impl Engine {
     fn closure_body(&mut self, g: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
         let ctx = self.body_ctx(g);
         let last = self.bodies_under(&ctx, c, true)?.pop();
-        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_sync_id, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
+        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(Time), order: b.order, copy: b.to_sync_id, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
     }
 
     /// The things reading `s` here: those of `s`'s things (`sync_things_of`) whose

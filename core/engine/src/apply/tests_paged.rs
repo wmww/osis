@@ -11,13 +11,13 @@
 
 use crate::local_peer::{LocalPeer, Package};
 use crate::Mutation;
-use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use osis_schema::{PurgeBy};
 use std::collections::BTreeMap;
 
-const T0: WallMs = WallMs(1_700_000_000_000);
+const T0: Time = Time(1_700_000_000_000);
 const NODES: usize = 4;
 /// Peer 2 is removed halfway with a frontier before all its writes: its deltas turn or arrive
 /// invalid (un-merging).
@@ -1022,7 +1022,7 @@ fn page_not_framed_for_its_delta_is_bad_spec_crypto_7() {
     let a = aks()[0].clone();
     let other = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([0x77; 32])).verifying_key();
     let key = |f: &mut osis_blob::Framing| f.keys[0].1 = other;
-    let expiry = |f: &mut osis_blob::Framing| f.expiry = Some(osis_base::WallMs(u64::MAX >> 2));
+    let expiry = |f: &mut osis_blob::Framing| f.expiry = Some(osis_base::Time(u64::MAX >> 2));
     let class = |f: &mut osis_blob::Framing| f.class = osis_blob::Class::Ephemeral;
     let same = |_: &mut osis_blob::Framing| {};
     // (name, the pages' framing from the delta's, its commitments split, the links naming the
@@ -1196,7 +1196,7 @@ fn hostile_paged_snapshots_match_whole_spec_crdt_8() {
     for (name, late, keyed, mutate, bare, want) in cases {
         let (_, outs) = both(|w| {
             let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
-            let later = osis_base::Ts::make(WallMs(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap();
+            let later = osis_base::Ts::make(Time(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap();
             let mut f = forged_map(now, ENTRIES, 0x80);
             if let Some(src) = late {
                 f.join(one_entry(later, src, 7));
@@ -1242,7 +1242,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
             let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
             f.join(one_entry(now, 0xfe, 5000));
             if late {
-                f.join(one_entry(osis_base::Ts::make(WallMs(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap(), 1, 5001));
+                f.join(one_entry(osis_base::Ts::make(Time(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap(), 1, 5001));
             }
             let pk = forge_snapshot(w, 0, &a, now, f, &|_, _| {});
             assert!(pk.blobs.len() >= 2, "{name}: no later page");

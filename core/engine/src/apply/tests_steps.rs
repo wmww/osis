@@ -13,7 +13,7 @@ use crate::{Engine, Mutation};
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_schema::core_types as ct;
 
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+const T0: osis_base::Time = osis_base::Time(1_700_000_000_000);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()

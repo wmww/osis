@@ -4,7 +4,7 @@
 //! stamp; the setting itself has fixed retention and binds nothing for a writer that is no admin.
 
 use crate::common::*;
-use osis_base::{CommitId, PurgeBy, Role, Tid, Value, WallMs};
+use osis_base::{CommitId, PurgeBy, Role, Tid, Value, Time};
 use osis_commit::retention::fixed_purge_by;
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::Mutation;
@@ -78,7 +78,7 @@ fn pack(lp: &mut LocalPeer, i: usize, c: &CommitId) -> Package {
 /// peer 0 owes (the fresh account's grant reaches it as its `grant@~0` fire).
 struct Base {
     packs: Vec<Package>,
-    fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
+    fires: Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)>,
 }
 
 fn base(lp: &mut LocalPeer) -> Base {
@@ -89,7 +89,7 @@ fn base(lp: &mut LocalPeer) -> Base {
 }
 
 /// The fires peer 0 owes, sealed.
-fn fires(lp: &mut LocalPeer) -> Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)> {
+fn fires(lp: &mut LocalPeer) -> Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)> {
     crate::order::owed_fires(&mut lp.peers[0].engine)
 }
 
@@ -98,7 +98,7 @@ const FRESH: u64 = 3;
 
 /// A node of the account `setup` grants read on `d` (`fresh_account`), holding `d`, at wall
 /// time `at`, holding `base` then `order`.
-fn fresh(d: Tid, base: &Base, order: &[&Package], at: WallMs) -> Peer {
+fn fresh(d: Tid, base: &Base, order: &[&Package], at: Time) -> Peer {
     let mut p = fresh_account();
     p.engine.hold(osis_base::Strong(d)).unwrap();
     p.clock.set(at);
@@ -306,7 +306,7 @@ fn value_beaten_only_by_an_expiring_one_lives_spec_crdt_4_8() {
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     let end = lp.peers[1].engine.now().0 + HOUR;
-    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.expires(d, &ak(A), Time(end)).unwrap();
     m.set(d, &ak(A), &s("brief")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -348,7 +348,7 @@ fn an_outlasted_expiring_write_drops_under_a_cover_ending_with_it_spec_commits_5
     let brief = |lp: &mut LocalPeer, v: &str, hours: u64| {
         let mut m = Mutation::new();
         let end = lp.peers[1].engine.now().0 + hours * HOUR;
-        m.expires(d, &ak(A), WallMs(end)).unwrap();
+        m.expires(d, &ak(A), Time(end)).unwrap();
         m.set(d, &ak(A), &s(v)).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap()
     };
@@ -417,7 +417,7 @@ fn covers_settle_over_mixed_lifetimes_and_skewed_clocks_spec_commits_5() {
         let mut m = Mutation::new();
         if let Some(x) = mins {
             let end = lp.peers[i].engine.now().0 + x * 60_000;
-            m.expires(d, &k, WallMs(end)).unwrap();
+            m.expires(d, &k, Time(end)).unwrap();
         }
         for (f, v) in fs {
             m.op(d, &k, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(*f)], op: osis_crdt::Op::Set(v.clone()) }).unwrap();
@@ -597,7 +597,7 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
     let v2 = put(&mut lp, 1, d, "two");
     let pks = [pack(&mut lp, 0, &k), pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     // half an hour behind the writer
-    let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
+    let at = Time(lp.peers[0].engine.now().0 - HOUR / 2);
     let mut p = fresh(d, &base, &[&pks[0], &pks[1], &pks[2], &pks[3]], at);
     assert!(p.engine.body_not_dropped(&v1, &d, &ak(A)), "a reader holds it until a writer covers it");
     assert!(!listed(&mut p, &v1, d), "never history");
@@ -619,7 +619,7 @@ fn a_replacement_ahead_of_the_clock_bounds_until_reached_spec_commits_5() {
     lp.advance(1_000);
     let v2 = put(&mut lp, 1, d, "two");
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 0, &k), pack(&mut lp, 1, &v2)];
-    let at = WallMs(lp.peers[0].engine.now().0 - HOUR / 2);
+    let at = Time(lp.peers[0].engine.now().0 - HOUR / 2);
     let mut p = fresh(d, &base, &[&pks[0], &pks[1], &pks[2], &pks[3]], at);
     let r = p.engine.header(&v2).unwrap().ts.wall_ms().0;
     let mut fx: osis_base::memo::Effects<(), Vec<u64>> = osis_base::memo::Effects::new("test keeps");
@@ -1230,7 +1230,7 @@ fn a_late_row_leaves_no_earlier_than_replaced_spec_commits_5() {
     p.clock.set(now);
     p.tick().unwrap();
     assert!(listed(&mut p, &v, d) && !told(&mut p).contains(&v), "in history, not told");
-    p.clock.set(WallMs(now.0 + 10 * 60_000 + 1_000));
+    p.clock.set(Time(now.0 + 10 * 60_000 + 1_000));
     p.tick().unwrap();
     assert!(!listed(&mut p, &v, d));
     assert!(told(&mut p).contains(&v), "told once out");
@@ -1246,7 +1246,7 @@ fn value_beaten_only_by_an_expiring_one_reads_again_kept_spec_crdt_4_8() {
     let v1 = put(&mut lp, 1, d, "one");
     let mut m = Mutation::new();
     let end = lp.peers[1].engine.now().0 + HOUR;
-    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.expires(d, &ak(A), Time(end)).unwrap();
     m.set(d, &ak(A), &s("brief")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -1276,7 +1276,7 @@ fn judging_beside_an_expiring_write_reads_no_judging_state_spec_crdt_4_8() {
         let mut m = Mutation::new();
         if brief {
             let end = lp.peers[1].engine.now().0 + HOUR;
-            m.expires(d, &ak(L), WallMs(end)).unwrap();
+            m.expires(d, &ak(L), Time(end)).unwrap();
         }
         m.op(d, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s(v)] } }).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
@@ -1302,7 +1302,7 @@ fn a_value_overwritten_only_by_an_expiring_one_is_not_replaced_spec_crdt_4_8() {
     let v1 = put(&mut lp, 1, d, "one");
     let mut m = Mutation::new();
     let end = lp.peers[1].engine.now().0 + HOUR;
-    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.expires(d, &ak(A), Time(end)).unwrap();
     m.set(d, &ak(A), &s("brief")).unwrap();
     let x = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -1333,7 +1333,7 @@ fn an_own_value_overwritten_only_by_an_expiring_one_is_kept_under_others_covers_
     let v1 = put(&mut lp, 0, d, "one");
     let mut m = Mutation::new();
     let end = lp.peers[1].engine.now().0 + HOUR;
-    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.expires(d, &ak(A), Time(end)).unwrap();
     m.set(d, &ak(A), &s("brief")).unwrap();
     let x = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -1361,7 +1361,7 @@ fn an_own_root_reset_is_kept_under_others_covers_while_only_an_expiring_write_fo
     lp.advance(1_000);
     let mut m = Mutation::new();
     let end = lp.peers[1].engine.now().0 + HOUR;
-    m.expires(d, &ak(A), WallMs(end)).unwrap();
+    m.expires(d, &ak(A), Time(end)).unwrap();
     m.set(d, &ak(A), &s("brief")).unwrap();
     let x = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();

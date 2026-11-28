@@ -5,7 +5,7 @@ use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_commit::*;
-use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, Value, Time};
 use osis_crdt::{AnyView, Delta, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_schema::{PurgeBy};
@@ -39,7 +39,7 @@ const NONCE: [u8; osis_crdt::SESSION_NONCE_LEN] = [0x28; osis_crdt::SESSION_NONC
 const SESSION: Form = Form::Session(NONCE);
 
 fn ts(wall: u64) -> Ts {
-    Ts::make(WallMs(wall), 0).unwrap()
+    Ts::make(Time(wall), 0).unwrap()
 }
 
 /// The own source of a commit of `form` by the signer (commit form: the placeholder).
@@ -321,7 +321,7 @@ fn more_accepted() -> Vec<Record> {
         // one empty group (spec/wire.md §5), under the link blind of the blob key the test sink
         // returns (zero), bound to the header's signer
         assert_eq!(p.thing, SIGNER);
-        let framed = osis_blob::Prefix::for_delete_keys(p.salt, &osis_crypto::thing_blind(&osis_crypto::link_blind(&[0; 32]), p.thing.as_bytes()), p.expiry.map(WallMs), std::slice::from_ref(&p.keys)).unwrap();
+        let framed = osis_blob::Prefix::for_delete_keys(p.salt, &osis_crypto::thing_blind(&osis_crypto::link_blind(&[0; 32]), p.thing.as_bytes()), p.expiry.map(Time), std::slice::from_ref(&p.keys)).unwrap();
         assert_eq!(framed.commitments().count(), 0);
         r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&framed.commitments().copied().collect::<Vec<_>>().concat()), hex(plain)));
     }

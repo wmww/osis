@@ -885,7 +885,7 @@ mod tests {
     /// under history setting `keep` when given. Returns the peer and the packed snapshot (if
     /// any) and bodies, in order, none ingested.
     fn restarted(n: usize, snap: bool, keep: Option<osis_schema::History>) -> (LocalPeer, Option<Vec<u8>>, Vec<Vec<u8>>) {
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         let p = &mut lp.peers[0];
         let me = p.engine.tid();
         let mut m = Mutation::new();
@@ -977,7 +977,7 @@ mod tests {
     fn a_failed_write_in_a_step_leaves_its_aspects_due_spec_sync_7() {
         let x = Ak::new("x:m.0").unwrap();
         for n in 0.. {
-            let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
             let p = &mut lp.peers[0];
             let me = p.engine.tid();
             let mut m = Mutation::new();
@@ -1014,7 +1014,7 @@ mod tests {
     #[test]
     fn a_failing_snapshot_leaves_the_other_aspects_compacted_spec_sync_7() {
         let (x, y) = (Ak::new("x:m.0").unwrap(), Ak::new("y:m.0").unwrap());
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         let p = &mut lp.peers[0];
         let me = p.engine.tid();
         let mut m = Mutation::new();
@@ -1099,7 +1099,7 @@ mod tests {
         use osis_base::Role;
         use osis_schema::core_types as ct;
         let run = |rounds: usize, held_back: usize| {
-            let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(3, osis_base::Time(1_700_000_000_000));
             lp.sync_all().unwrap();
             let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -1162,7 +1162,7 @@ mod tests {
     fn held_memory_body_past_a_snapshot_frontier_judged_by_the_join_spec_permissions_5_2() {
         use osis_base::Role;
         use osis_schema::core_types as ct;
-        let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, osis_base::Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -1187,7 +1187,7 @@ mod tests {
     /// A thing whose durable aspect `x:big.0` holds a chunked value of `n` × 64 KiB and whose
     /// ephemeral aspect `x:cur+.0` holds that value's link: (peer, thing, the tree's blobs).
     fn linked(n: usize) -> (LocalPeer, Tid, usize) {
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -1244,7 +1244,7 @@ mod tests {
         use osis_base::Role;
         use osis_schema::core_types as ct;
         for restart in [false, true] {
-            let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(2, osis_base::Time(1_700_000_000_000));
             lp.sync_all().unwrap();
             let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();

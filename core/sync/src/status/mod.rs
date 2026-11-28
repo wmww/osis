@@ -52,7 +52,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Holding, Position, RecordId, Result, Scope, SourceClass, Waiting};
 use crate::unread::Unread;
 use osis_base::memo::{Clock, Effects, Stamped, StampedSet};
-use osis_base::{BlobId, CommitId, Mono, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, Mono, SyncId, Tid, Time};
 use osis_engine::sync::{Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use std::collections::{BTreeMap, BTreeSet};
@@ -177,11 +177,11 @@ pub trait Ground: Net {
     fn mono(&self) -> Mono;
     /// The latest wall reading: dates a pass's start row, which says only how much a pass begun
     /// again at a start waited already.
-    fn now(&self) -> WallMs;
+    fn now(&self) -> Time;
     /// The start of each pass under way, kept durably: one row per S, written as it begins.
-    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>>;
+    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, Time>>;
     /// Writes S's pass start (`Some`, as it begins) or drops it (`None`, as it ends).
-    fn set_pass_begun(&mut self, s: &SyncId, at: Option<WallMs>) -> Result<()>;
+    fn set_pass_begun(&mut self, s: &SyncId, at: Option<Time>) -> Result<()>;
     /// The sync IDs this node syncs (`Store::syncs`: the sync set, and each leaving one while it
     /// waits), whole.
     fn syncs(&mut self) -> Arc<SyncSet>;

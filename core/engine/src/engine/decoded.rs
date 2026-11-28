@@ -188,14 +188,14 @@ impl DecodedCommits {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
-    use osis_base::{Ak, Value, WallMs};
+    use osis_base::{Ak, Value, Time};
 
     // A stored commit's record and parts are decoded once per change of the record: reading it
     // again, other commits arriving, its record written again with the same bytes and a removal
     // rolled back decode nothing of it; a removal leaves nothing to read.
     #[test]
     fn a_stored_commit_is_decoded_once_per_record_write() {
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let ak = Ak::new("x:a.0").unwrap();
@@ -245,7 +245,7 @@ mod tests {
         // the rest, pieces streamed by the rest, the snapshot's part walked by the rest, the
         // index kept, the snapshot's bytes with its pages)
         let judge = |n: i64| -> (u64, u64, u64, u64, usize, u64) {
-            let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
             let e = &mut lp.peers[0].engine;
             let me = e.tid();
             let ak = Ak::new("x:m.0").unwrap();

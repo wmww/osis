@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
 use crate::retention::Killed;
 use osis_commit::{CommitBlob, Decoded, Header};
-use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, Time};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
 use std::cell::RefCell;
@@ -549,7 +549,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
 }
 
 /// Applies a verified commit (`parts` examined) in this transaction.
-pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: WallMs) -> Result<()> {
+pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: Time) -> Result<()> {
     let _s = osis_base::costs::span("apply");
     tx.core.touch();
     let id = blob.id();

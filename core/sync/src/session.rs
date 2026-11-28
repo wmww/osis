@@ -12,7 +12,7 @@
 //! taken. Depends on osis-proto and the engine's proof calls (`provers`).
 
 use crate::types::{ConnId, Cx, NodeKey, Out};
-use osis_base::{Mono, Tid, WallMs};
+use osis_base::{Mono, Tid, Time};
 use osis_proto::frame::MAX_HELLO_BODY;
 use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOF_COPIES, MAX_PROOFS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
 use osis_proto::msg::{Flow, answers, peek_head};
@@ -217,7 +217,7 @@ pub struct Session {
     proven: Proven,
     acted_for: Option<Vec<Claim>>,
     /// The wall clock (Hello, Ping and Pong carry it) and the monotonic one (the stall clock).
-    now: WallMs,
+    now: Time,
     mono: Mono,
     up_at: Mono,
     next_low: RequestId,
@@ -246,7 +246,7 @@ pub struct Session {
     written: u64,
     taken: u64,
     clock: ClockSamples,
-    ping: Option<(RequestId, WallMs)>,
+    ping: Option<(RequestId, Time)>,
     pings: u32,
     offset: Option<i64>,
     /// Frames received after Hello.
@@ -888,7 +888,7 @@ fn allowance(m: &Msg) -> u64 {
 #[derive(Clone, Debug, Default)]
 pub struct Sessions {
     conns: BTreeMap<ConnId, Session>,
-    now: WallMs,
+    now: Time,
     mono: Mono,
     /// Sessions this step reached: their bytes and deadlines are taken at its end.
     touched: BTreeSet<ConnId>,
@@ -1040,7 +1040,7 @@ impl Sessions {
     }
 
     /// The driver's: the step's clocks.
-    pub fn set_now(&mut self, now: WallMs, mono: Mono) {
+    pub fn set_now(&mut self, now: Time, mono: Mono) {
         (self.now, self.mono) = (self.now.max(now), self.mono.max(mono));
     }
 

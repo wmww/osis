@@ -537,7 +537,7 @@ pub struct Timelines {
 /// with the ts it was read at and the `until` it holds before, so it answers any ts between.
 struct Now<K, V>(std::sync::Mutex<BTreeMap<K, ReadAt<V>>>);
 /// An answer, the ts it was read at, and the `until` it holds before.
-type ReadAt<V> = (V, osis_base::Ts, Option<osis_base::WallMs>);
+type ReadAt<V> = (V, osis_base::Ts, Option<osis_base::Time>);
 
 impl<K, V> Default for Now<K, V> {
     fn default() -> Self {
@@ -557,7 +557,7 @@ impl<K: Ord, V: Clone> Now<K, V> {
     }
     /// The answer for `k` at `ts`, read by `read` (the answer and its `until`) unless one held
     /// answers it.
-    fn at(&self, k: K, ts: osis_base::Ts, read: impl FnOnce() -> (V, Option<osis_base::WallMs>)) -> (V, Option<osis_base::WallMs>) {
+    fn at(&self, k: K, ts: osis_base::Ts, read: impl FnOnce() -> (V, Option<osis_base::Time>)) -> (V, Option<osis_base::Time>) {
         let held = |e: &&ReadAt<V>| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
         if let Some((v, _, until)) = self.0.lock().ok().and_then(|m| m.get(&k).filter(held).cloned()) {
             return (v, until);
@@ -769,7 +769,7 @@ impl Timelines {
 
     /// `node`'s effective role on `thing` on the current edges at `ts`, and the earliest `until`
     /// before which the answer holds (`Timeline::roles_on_now`), read as `roles_on` is.
-    pub fn role_now(&self, node: &Tid, thing: &Tid, ts: osis_base::Ts) -> (Option<Role>, Option<osis_base::WallMs>) {
+    pub fn role_now(&self, node: &Tid, thing: &Tid, ts: osis_base::Ts) -> (Option<Role>, Option<osis_base::Time>) {
         let (roles, until) = self.roles_now(thing, ts);
         (roles.get(node).copied(), until)
     }
@@ -789,7 +789,7 @@ impl Timelines {
 
     /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
     /// `until` before which they hold, read as `roles_on` is.
-    pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
+    pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::Time>) {
         let (roles, until) = self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts));
         for t in roles.keys().chain([thing]) {
             self.stamps.read(&Read::Into(*t));
@@ -913,7 +913,7 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: Holder::Thing(to), edge: Some(Edge::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::Time(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: Holder::Thing(to), edge: Some(Edge::new(role)) }] }
     }
 
     /// The held set alone as the walk reads it: each counting edge commit along the empty path.
@@ -1128,7 +1128,7 @@ mod tests {
     fn timeline_reads_match_a_fresh_read_through_random_writes() {
         use osis_base::memo::Memo;
         use osis_perm::At;
-        let (now, later) = (At::now(Ts::make(osis_base::WallMs(5), 0).unwrap()), At::now(Ts::make(osis_base::WallMs(9), 0).unwrap()));
+        let (now, later) = (At::now(Ts::make(osis_base::Time(5), 0).unwrap()), At::now(Ts::make(osis_base::Time(9), 0).unwrap()));
         let read = |tl: &Timelines, (r, t): &(u8, Tid)| -> String {
             let on = || tl.on(t);
             match r {
@@ -1179,11 +1179,11 @@ mod tests {
                         let edge = match rng(6) {
                             0 => None,
                             1 => Some(Edge::kept_end()),
-                            2 => Some(Edge { until: Some(osis_base::WallMs(3 + rng(5) as u64)), ..Edge::new(roles[rng(3)]) }),
+                            2 => Some(Edge { until: Some(osis_base::Time(3 + rng(5) as u64)), ..Edge::new(roles[rng(3)]) }),
                             _ => Some(Edge::new(roles[rng(3)])),
                         };
                         let mut c = grant(next, by, on, to, Role::Read);
-                        c.ts = Ts::make(osis_base::WallMs(1 + rng(4) as u64), next).unwrap();
+                        c.ts = Ts::make(osis_base::Time(1 + rng(4) as u64), next).unwrap();
                         c.ops[0].edge = edge;
                         ids.push(c.id);
                         h.add_commit(c);

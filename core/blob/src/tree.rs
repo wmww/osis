@@ -9,7 +9,7 @@ pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, Tre
 use crate::blob::{Level, Prefix, frame_under, open};
 use crate::Error;
 use osis_base::format::DELETE_AUTHOR;
-use osis_base::{BlobId, ChunkParams, Del, Link, Tid, WallMs};
+use osis_base::{BlobId, ChunkParams, Del, Link, Tid, Time};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
 use osis_crypto::{BlobKey, CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_blind, link_hash, thing_blind};
 use std::collections::{BTreeSet, HashMap};
@@ -23,7 +23,7 @@ pub struct Framing {
     /// The thing whose dedup secret `dedup` is (a header list's: its header's signer).
     pub thing: Tid,
     pub dedup: Secret32,
-    pub expiry: Option<WallMs>,
+    pub expiry: Option<Time>,
     /// `(level, delete key)`, blinded by each blob's salt and thing blind (`Framing::blind`).
     pub keys: Vec<(Level, VerifyingKey)>,
     /// The class of the commit the blobs belong to (spec/wire.md §5): an ephemeral commit's
@@ -304,7 +304,7 @@ impl Reuse {
 /// What a judged delta's pages are framed for: its thing, its commit's expiry and class.
 struct Judging {
     thing: Tid,
-    expiry: Option<WallMs>,
+    expiry: Option<Time>,
     class: crate::blob::Class,
 }
 
@@ -328,7 +328,7 @@ impl<'a> BlobReader<'a> {
     /// delta's framing, so what deletes or expires it at stores is what judged its delta. A part
     /// already judged is read again without it.
     pub fn judging(dedup: &'a Secret32, h: &osis_commit::Header, thing: Tid, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
-        let judging = Judging { thing, expiry: osis_commit::blob_expiry(h).map(WallMs), class: crate::blob::Class::of_marker(h.ephemeral) };
+        let judging = Judging { thing, expiry: osis_commit::blob_expiry(h).map(Time), class: crate::blob::Class::of_marker(h.ephemeral) };
         BlobReader { dedup, fetch, judging: Some(judging) }
     }
 
@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { thing: Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], class: crate::blob::Class::Durable }
+        Framing { thing: Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(Time(99)), keys: vec![(1, dk(1)), (3, dk(3))], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(written.len(), store.0.len());
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
-            assert_eq!(p.expiry(), Some(WallMs(99)));
+            assert_eq!(p.expiry(), Some(Time(99)));
             assert_eq!(p.commitments().count(), 2);
             assert_eq!(p.key_at(0, 3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind(&wr.blind)).to_bytes()));
             // another thing's blind names other commitments

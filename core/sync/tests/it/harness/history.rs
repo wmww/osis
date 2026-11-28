@@ -906,7 +906,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Refs {
 /// first: a twin behind the world pends every later commit on its `ts` and takes them only at the
 /// tick, where a write examined before the grant making it valid is dropped as invalid and, never
 /// handed again, never fetched (spec/permissions.md §6 Invalid deltas).
-fn hand(r: &mut Peer, packages: &[Package], now: osis_base::WallMs) -> BTreeSet<CommitId> {
+fn hand(r: &mut Peer, packages: &[Package], now: osis_base::Time) -> BTreeSet<CommitId> {
     r.clock.set(now);
     let mut refused = BTreeSet::new();
     for _ in 0..=packages.len() {

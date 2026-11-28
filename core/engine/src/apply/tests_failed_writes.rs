@@ -12,7 +12,7 @@ use crate::rotation::tests::edge;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_store::Fault;
 
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+const T0: osis_base::Time = osis_base::Time(1_700_000_000_000);
 
 /// Peer 0 (H) makes thing `t` and grants peers 1 (X) and 2 (W) admin; peers 3.. hold nothing
 /// on it. Everyone synced.
@@ -142,7 +142,7 @@ fn a_removal_owing_an_addendum() {
 #[test]
 fn a_step_with_compactions_due() {
     let make = || {
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);

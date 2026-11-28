@@ -36,9 +36,9 @@ impl osis_commit::Secrets for Secrets {
 #[test]
 fn budget_minimal_commit() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_base::{Ak, Ts, Value, WallMs};
+    use osis_base::{Ak, Ts, Value, Time};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
-    let (signer, at) = (Tid::from_bytes([1; 15]), Ts::make(WallMs(1_700_000_000_000), 0).unwrap());
+    let (signer, at) = (Tid::from_bytes([1; 15]), Ts::make(Time(1_700_000_000_000), 0).unwrap());
     let form = Form::Session([6; 16]);
     let mut w = Writer::new(at, form.own_source(signer, osis_base::CommitId([0; 32])), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();

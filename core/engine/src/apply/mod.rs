@@ -47,7 +47,7 @@ use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use osis_commit::{CommitBlob, Decoded, Header, Kind, delta_ctx, verify_part};
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{BlobId, ChainStep, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
+use osis_base::{BlobId, ChainStep, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, Time};
 use osis_crdt::Interner;
 use osis_crypto::{VerifyingKey, dedup_secret};
 use osis_blob::BlobReader;
@@ -1278,14 +1278,14 @@ fn store_pending(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Opti
 /// When commit `id` was received (spec/permissions.md §5.1 Received: its header decrypted and
 /// its signature verified, whether or not its deltas are held, applied or stored): at its first
 /// arrival, kept with its applied copy (`Meta::received`) or its pending one, else now.
-fn first_received(tx: &mut Tx<'_>, id: &CommitId) -> Result<WallMs> {
+fn first_received(tx: &mut Tx<'_>, id: &CommitId) -> Result<Time> {
     if let Some(m) = tx.core.ix.commits.get(id) {
         return Ok(m.received);
     }
     if tx.core.ix.pending.contains_key(id)
         && let Some(p) = tx.txn.get_pending(id)?
     {
-        return Ok(WallMs(p.received));
+        return Ok(Time(p.received));
     }
     Ok(tx.now())
 }
@@ -1552,7 +1552,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
 
 /// Applies a commit this node just built, `signed` its signature's verdict (no signature
 /// check: it signed it).
-pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commit::Signed, received: WallMs) -> Result<()> {
+pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commit::Signed, received: Time) -> Result<()> {
     let id = blob.id();
     let mut b = blob.clone();
     // a path stating an edge nobody granted its signer gives it nothing (`thing_wait`)
@@ -2890,7 +2890,7 @@ pub struct Creation {
     pub ts: osis_base::Ts,
     pub node: Tid,
     pub purge_author: Tid,
-    pub received: WallMs,
+    pub received: Time,
 }
 
 /// Stores `pages`, the blobs commit `b`'s deltas link that travel with it (a sealed fire's or a
@@ -2965,7 +2965,7 @@ mod tests {
 
     use crate::local_peer::LocalPeer;
     use crate::{Ingested, Mutation};
-    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, Time};
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
     use osis_schema::core_types as ct;
@@ -2975,7 +2975,7 @@ mod tests {
     // delivery order cannot change the held set.
     #[test]
     fn content_rules_writer_side_only_spec_perm_5_1() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let p0 = &mut lp.peers[0];
         let me = p0.engine.tid();
@@ -3010,7 +3010,7 @@ mod tests {
     // the same chain fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a0, a1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let reg = Ak::new("x:a.0").unwrap();
@@ -3118,7 +3118,7 @@ mod tests {
     // are refused.
     #[test]
     fn a_commit_signature_is_checked_once_per_node_spec_crypto_2() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let ak = Ak::new("x:a.0").unwrap();
@@ -3175,7 +3175,7 @@ mod tests {
     #[test]
     fn a_pending_commits_signature_is_checked_once_spec_crypto_2() {
         use osis_commit::CommitBlob;
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let ak = Ak::new("x:a.0").unwrap();

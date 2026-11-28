@@ -889,7 +889,7 @@ fn put_expiring(lp: &mut LocalPeer, i: usize, g: Tid, k: &str, t: u64) {
     let ak = osis_base::Ak::new("x:m.0").unwrap();
     let mut m = crate::Mutation::new();
     m.op(g, &ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))], op: osis_crdt::Op::Put(osis_base::Value::Int(1)) }).unwrap();
-    m.expires(g, &ak, osis_base::WallMs(t)).unwrap();
+    m.expires(g, &ak, osis_base::Time(t)).unwrap();
     lp.peers[i].commit(m).unwrap();
 }
 
@@ -973,7 +973,7 @@ fn write_at(lp: &mut LocalPeer, i: usize, g: Tid, k: Option<&str>, op: osis_crdt
     let mut m = crate::Mutation::new();
     m.op(g, &ak, osis_crdt::PathOp { path: k.map(|k| osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))).into_iter().collect(), op }).unwrap();
     if let Some(t) = t {
-        m.expires(g, &ak, osis_base::WallMs(t)).unwrap();
+        m.expires(g, &ak, osis_base::Time(t)).unwrap();
     }
     lp.peers[i].commit(m).unwrap();
 }
@@ -1063,7 +1063,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
                     let k = format!("e{step}");
                     let mut m = crate::Mutation::new();
                     m.op(g, &m_ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Str(k.clone()))], op: osis_crdt::Op::Put(osis_base::Value::Int(1)) }).unwrap();
-                    m.expires(g, &m_ak, osis_base::WallMs(t)).unwrap();
+                    m.expires(g, &m_ak, osis_base::Time(t)).unwrap();
                     let c = lp.peers[0].commit(m).unwrap().unwrap();
                     expiring_keys.push((k, c, t));
                 }
@@ -1071,7 +1071,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
                     let mut m = crate::Mutation::new();
                     m.op(g, &r_ak, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Int(step)) }).unwrap();
                     if rng.next(2) == 0 {
-                        m.expires(g, &r_ak, osis_base::WallMs(t)).unwrap();
+                        m.expires(g, &r_ak, osis_base::Time(t)).unwrap();
                     }
                     lp.peers[0].commit(m).unwrap();
                 }

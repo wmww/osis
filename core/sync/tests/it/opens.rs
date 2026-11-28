@@ -1250,7 +1250,7 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     let mut p = readers();
     let rid = p.a.opens.record(p.ca).unwrap();
     // rows of other modules in the record: a stand (store), a source's word (streams)
-    let stand = osis_sync::store::Stand { at: osis_base::WallMs(1), logged: osis_base::BlobId([1; 32]), head: osis_blob::StepId([2; 32]), fall: 0 };
+    let stand = osis_sync::store::Stand { at: osis_base::Time(1), logged: osis_base::BlobId([1; 32]), head: osis_blob::StepId([2; 32]), fall: 0 };
     p.a.store.set_stand(Source::Record(rid), &S, b"body", Some(&stand)).unwrap();
     p.a.store.with_tx(|t| t.record_put_row(&rid, b'k', &S, &[3; 32], Vec::new())).unwrap();
     // in use: kept whatever the budget
@@ -1732,7 +1732,7 @@ fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
 fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
         let a2 = w.node(2).account.unwrap();
-        let until = osis_base::WallMs(w.now().0 + 60_000);
+        let until = osis_base::Time(w.now().0 + 60_000);
         let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
         w.write(0, |e| e.grant(&t, &a2, &edge)).unwrap();
         w.advance(120_000);

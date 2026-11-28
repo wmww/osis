@@ -13,7 +13,7 @@ use crate::{Ingested, Mutation, Reason};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Tid, Value};
 
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+const T0: osis_base::Time = osis_base::Time(1_700_000_000_000);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -114,7 +114,7 @@ fn a_timer_faulting_at_a_tick_is_set_aside_alone_spec_commits_4() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap().unwrap();
-    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let at = osis_base::Time(lp.peers[0].engine.now().0 + 60_000);
     let mut expiring = |k: &str| {
         let mut m = Mutation::new();
         m.set(t, &ak(k), &Value::Int(1)).unwrap();
@@ -150,7 +150,7 @@ fn a_tick_whose_finding_faults_sets_it_aside_spec_commits_4() {
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
-    m.expires(t, &ak("x:a.0"), osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    m.expires(t, &ak("x:a.0"), osis_base::Time(lp.peers[0].engine.now().0 + 60_000)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let rx = lp.peers[0].engine.subscribe();
     lp.peers[0].engine.core.end_fault = Some(EndFault::Find);

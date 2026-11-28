@@ -5,7 +5,7 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{Ak, BlobId, CommitId, Float, Ref, Role, Strong, SyncId, Ts, Value, WallMs, Weak};
+use osis_base::{Ak, BlobId, CommitId, Float, Ref, Role, Strong, SyncId, Ts, Value, Time, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
@@ -102,12 +102,12 @@ impl Codec for u64 {
     }
 }
 
-impl Codec for WallMs {
+impl Codec for Time {
     fn to_value(&self) -> Value {
         self.0.to_value()
     }
-    fn from_value(v: &Value) -> Result<WallMs, PathError> {
-        u64::from_value(v).map(WallMs)
+    fn from_value(v: &Value) -> Result<Time, PathError> {
+        u64::from_value(v).map(Time)
     }
 }
 

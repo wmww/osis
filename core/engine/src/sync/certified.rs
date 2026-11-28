@@ -303,7 +303,7 @@ mod tests {
     use crate::Engine;
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, Time};
     use osis_schema::core_types as ct;
 
     /// The rows `follow_cert_records` keeps equal those derived whole from the certificates.
@@ -323,7 +323,7 @@ mod tests {
     // whole, and a reader holds what its write rests on.
     #[test]
     fn rows_follow_the_certificates_spec_permissions_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());

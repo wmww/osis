@@ -11,7 +11,7 @@ use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::sync::units::Written;
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Holder, Role, Tid, Ts, Value, WallMs, record_chain};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Holder, Role, Tid, Ts, Value, Time, record_chain};
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
@@ -209,7 +209,7 @@ impl Mutation {
 
     /// Expiry T (wall ms) for this aspect's delta, raised to just after the commit's `ts` if that
     /// has passed it (spec/commits.md §6).
-    pub fn expires<K: RawKey>(&mut self, tid: Tid, key: &K, t: WallMs) -> Result<&mut Self> {
+    pub fn expires<K: RawKey>(&mut self, tid: Tid, key: &K, t: Time) -> Result<&mut Self> {
         self.entry(tid, key)?.expires = Some(t.0);
         Ok(self)
     }
@@ -222,7 +222,7 @@ impl Mutation {
     }
 
     /// Expiry T (wall ms) for the delta of every aspect written so far (`expires`).
-    pub fn expires_all(&mut self, t: WallMs) -> &mut Self {
+    pub fn expires_all(&mut self, t: Time) -> &mut Self {
         for a in self.aspects.values_mut() {
             a.expires = Some(t.0);
         }
@@ -883,7 +883,7 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     let keys = osis_commit::delete_keys(&secrets, tid, purge_by)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
-    Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
+    Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(Time), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
 /// A request's delta on its thing (spec/commits.md §5 Purge): `purge.0`, which carries no expiry,
@@ -1120,7 +1120,7 @@ impl Engine {
 
     /// Tests: `new_thing` ending at `expires`; `m` expires then.
     #[doc(hidden)]
-    pub fn new_expiring_thing(&mut self, m: &mut Mutation, admin: Tid, expires: Option<WallMs>) -> Tid {
+    pub fn new_expiring_thing(&mut self, m: &mut Mutation, admin: Tid, expires: Option<Time>) -> Tid {
         let t = m.create(self.thing_record(admin, expires));
         self.hold_where_it_lives(m, t, admin);
         if let Some(at) = expires {
@@ -1158,7 +1158,7 @@ impl Engine {
 
     /// The creation record of a new thing whose mint admin is `admin`, ending at `expires`
     /// (`None`: never; `Mutation::create` writes it, its commit expiring then).
-    pub fn thing_record(&mut self, admin: Tid, expires: Option<WallMs>) -> CreationRecord {
+    pub fn thing_record(&mut self, admin: Tid, expires: Option<Time>) -> CreationRecord {
         crate::identity::thing_record(admin, expires.map(|t| t.0), &mut *self.rng)
     }
 

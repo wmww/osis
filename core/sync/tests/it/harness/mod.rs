@@ -21,7 +21,7 @@ pub mod trace;
 
 use lies::{Lie, Liar};
 use osis_base::testenv::Script;
-use osis_base::{Clock, ManualClock, Tid, WallMs};
+use osis_base::{Clock, ManualClock, Tid, Time};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::Engine;
 use osis_proto::FrameDecoder;
@@ -64,7 +64,7 @@ pub const ROUND_CAP: u64 = 16;
 pub const HORIZON_MS: u64 = 3_600_000;
 
 /// The world's start time (any fixed value).
-pub const START: WallMs = WallMs(1_700_000_000_000);
+pub const START: Time = Time(1_700_000_000_000);
 
 /// A node's clock: the world's, its wall clock moved by the node's skew (`World::skew`), its
 /// monotonic clock started again from 0 at each power loss (`World::power_off`), as a process's
@@ -88,8 +88,8 @@ impl NodeClock {
 }
 
 impl Clock for NodeClock {
-    fn now_wall_ms(&self) -> WallMs {
-        WallMs(self.world.now_wall_ms().0.saturating_add_signed(self.skew.load(Ordering::SeqCst)))
+    fn now_wall_ms(&self) -> Time {
+        Time(self.world.now_wall_ms().0.saturating_add_signed(self.skew.load(Ordering::SeqCst)))
     }
     /// The world's since the last power loss: a skew moves the wall clock alone.
     fn mono(&self) -> osis_base::Mono {
@@ -234,15 +234,15 @@ pub struct Net {
     links: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     queue: VecDeque<(usize, Input)>,
     /// Inputs held back (`Loss::delay`), by (due, order).
-    delayed: BTreeMap<(WallMs, u64), (usize, Input)>,
+    delayed: BTreeMap<(Time, u64), (usize, Input)>,
     /// Per receiving end, the due time of its last held-back input: later ones wait behind it.
-    held_until: BTreeMap<(usize, ConnId), WallMs>,
+    held_until: BTreeMap<(usize, ConnId), Time>,
     held: u64,
     /// The world's time, as the network last saw it.
-    now: WallMs,
+    now: Time,
     /// Each node's one wake (`Links::wake` replaces it), in world time: a node's waits run on its
     /// monotonic clock, which no skew moves (its boot offset added back: `NodeLinks::boot`).
-    wakes: BTreeMap<usize, WallMs>,
+    wakes: BTreeMap<usize, Time>,
     /// Node pairs a partition separates (lower index first).
     cut_off: BTreeSet<(usize, usize)>,
     online: Vec<bool>,
@@ -322,7 +322,7 @@ impl Net {
     /// waits for.
     fn push(&mut self, to: usize, tc: ConnId, input: Input, delay: u64) {
         let behind = self.held_until.get(&(to, tc)).copied().filter(|t| *t > self.now);
-        let due = WallMs(self.now.0.saturating_add(delay));
+        let due = Time(self.now.0.saturating_add(delay));
         let due = behind.map_or(due, |b| b.max(due));
         if due > self.now {
             self.held += 1;
@@ -503,7 +503,7 @@ impl Net {
     }
 
     /// The earliest wake of an online node or held-back input due by `until`.
-    fn next_due(&self, until: WallMs) -> Option<WallMs> {
+    fn next_due(&self, until: Time) -> Option<Time> {
         let wake = self.wakes.iter().filter(|(n, _)| self.online.get(**n) == Some(&true)).map(|(_, at)| *at).min();
         let held = self.delayed.keys().next().map(|k| k.0);
         [wake, held].into_iter().flatten().min().filter(|at| *at <= until)
@@ -513,7 +513,7 @@ impl Net {
     /// so one a node sent near the horizon still arrives (a timer's write at the horizon edge).
     /// Firing it ticks no wake past `until` (`World::fire`): what follows is the reaction to
     /// messages alone, so a timer chain cannot carry the run past the horizon.
-    fn next_quiet(&self, until: WallMs) -> Option<WallMs> {
+    fn next_quiet(&self, until: Time) -> Option<Time> {
         self.next_due(until).or_else(|| self.delayed.keys().next().map(|k| k.0))
     }
 }
@@ -547,7 +547,7 @@ impl Links for NodeLinks<'_> {
 
     fn wake(&mut self, at: osis_base::Mono) {
         // the world's clock never goes back: its monotonic clock reads as its time
-        self.net.wakes.insert(self.node, WallMs(at.0.saturating_add(self.boot)));
+        self.net.wakes.insert(self.node, Time(at.0.saturating_add(self.boot)));
     }
 }
 
@@ -659,16 +659,16 @@ impl World {
     }
 
     /// The world's time.
-    pub fn now(&self) -> WallMs {
+    pub fn now(&self) -> Time {
         self.clock.now_wall_ms()
     }
 
     /// Node `i`'s time: the world's moved by its skew.
-    pub fn node_now(&self, i: usize) -> WallMs {
+    pub fn node_now(&self, i: usize) -> Time {
         self.node(i).clock.now_wall_ms()
     }
 
-    fn set_clock(&mut self, t: WallMs) {
+    fn set_clock(&mut self, t: Time) {
         if t > self.now() {
             self.clock.set(t);
         }
@@ -1232,7 +1232,7 @@ impl World {
         if self.step() {
             return true;
         }
-        let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
+        let horizon = Time(self.now().0.saturating_add(self.horizon_ms));
         let Some(at) = self.net.next_quiet(horizon) else { return false };
         self.fire(at, horizon);
         true
@@ -1249,7 +1249,7 @@ impl World {
 
     /// Moves the clock to `at` (when later), releases what is held back to then, and ticks the
     /// node whose wake is earliest by then and by `wakes`.
-    fn fire(&mut self, at: WallMs, wakes: WallMs) {
+    fn fire(&mut self, at: Time, wakes: Time) {
         self.set_clock(at);
         let due = self.now().min(wakes);
         let next = self.net.wakes.iter().filter(|(n, w)| **w <= due && self.net.online.get(**n) == Some(&true)).min_by_key(|(n, w)| (**w, **n)).map(|(n, _)| *n);
@@ -1266,7 +1266,7 @@ impl World {
     pub fn run(&mut self) {
         self.run_from = self.deliveries;
         self.delivered.clear();
-        let mut horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
+        let mut horizon = Time(self.now().0.saturating_add(self.horizon_ms));
         let mut waited = false;
         loop {
             self.flush();
@@ -1274,7 +1274,7 @@ impl World {
                 Some(at) => self.fire(at, horizon),
                 None if !waited && self.passes_under_way() => {
                     waited = true;
-                    horizon = WallMs(self.now().0.saturating_add(osis_proto::limits::PASS_WAIT_MS));
+                    horizon = Time(self.now().0.saturating_add(osis_proto::limits::PASS_WAIT_MS));
                 }
                 None => break,
             }
@@ -1488,7 +1488,7 @@ impl World {
 
     /// Moves the clock by `ms` (tests about time only) and runs every wake up to then.
     pub fn advance(&mut self, ms: u64) {
-        let to = WallMs(self.now().0.saturating_add(ms));
+        let to = Time(self.now().0.saturating_add(ms));
         loop {
             self.flush();
             match self.net.next_due(to) {
@@ -1503,7 +1503,7 @@ impl World {
     /// Moves the clock `ms` on with no wake fired between, as if every node slept through it, then
     /// runs: a long absence costs no dial ticks.
     pub fn jump(&mut self, ms: u64) {
-        let to = WallMs(self.now().0.saturating_add(ms));
+        let to = Time(self.now().0.saturating_add(ms));
         self.set_clock(to);
         self.run();
     }

@@ -176,7 +176,7 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     for e in [edge(Role::Write), ct::Edge { may_grant: true, ..edge(Role::Read) }] {
         assert!(lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
     }
-    let until = osis_base::WallMs(lp.peers[1].engine.core.now().0 + 100);
+    let until = osis_base::Time(lp.peers[1].engine.core.now().0 + 100);
     lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let public = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).get(&Tid::PUBLIC).map(|e| e.role);

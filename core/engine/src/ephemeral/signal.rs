@@ -187,7 +187,7 @@ impl Engine {
 
 /// A fired ephemeral signal commit as it arrived, told at each signal it fired: a fire is
 /// content, though its relay-only commit is snapshot-encoded.
-fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, node: Tid, purge_author: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
+fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, node: Tid, purge_author: Tid, ts: Ts, received: osis_base::Time) -> Vec<CommitChange> {
     if signals.is_empty() {
         return Vec::new();
     }

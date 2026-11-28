@@ -432,7 +432,7 @@ impl Engine {
     /// or that a held purge request drops, its thing's record held so it could be stripped (tests:
     /// `order::value_past_end`; spec/commits.md §5).
     #[doc(hidden)]
-    pub fn pending_value_past_end(&mut self, c: &CommitId, now: osis_base::WallMs) -> Result<Option<String>> {
+    pub fn pending_value_past_end(&mut self, c: &CommitId, now: osis_base::Time) -> Result<Option<String>> {
         let c = *c;
         self.read(|tx| {
             let Some(osis_store::Pending { bytes, .. }) = tx.txn.get_pending(&c)? else { return Ok(None) };
@@ -783,7 +783,7 @@ fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, std::collections::BTree
 }
 
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
-fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
+fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::Time, &crate::events::Origin, &super::View)) {
     let n = m.parts();
     let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stripped: m.stripped_parts().collect(), own_live: (0..n).filter(|ai| m.own_live(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
     (d, (&m.received, &m.origin, &*m.view))
@@ -1085,8 +1085,8 @@ mod tests {
     // parts and of more parts than one CBOR head byte counts; without the key it stays shut.
     #[test]
     fn forensic_opens_a_section_by_its_planted_key() {
-        use osis_base::{Value, WallMs};
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        use osis_base::{Value, Time};
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = crate::Mutation::new();
@@ -1126,8 +1126,8 @@ mod tests {
     // sealed again under it (the attack's memo of failed tries is by a section's bytes).
     #[test]
     fn forensic_retries_a_resealed_section() {
-        use osis_base::{Value, WallMs};
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        use osis_base::{Value, Time};
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let mut m = crate::Mutation::new();

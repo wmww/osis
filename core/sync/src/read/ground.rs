@@ -7,7 +7,7 @@
 use crate::store::{Source, Stand};
 use crate::session::RequestId;
 use crate::types::{ConnId, Entry, Result};
-use osis_base::{BlobId, CommitId, SyncId, Tid, Ts, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Ts, Time};
 use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
@@ -141,7 +141,7 @@ pub trait Ground {
     /// Loggable): must-hold only while it may.
     fn may_log(&mut self, s: &SyncId, c: &BodyId) -> Result<bool>;
     /// The time (not followed: `Read` follows it through its clock).
-    fn now(&self) -> WallMs;
+    fn now(&self) -> Time;
 
     /// The entries of `c` in this node's own store of S.
     fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>>;

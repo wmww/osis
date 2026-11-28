@@ -544,7 +544,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
 #[test]
 fn a_pending_grant_read_before_and_after_its_signer_is_known_is_one_source_spec_crypto_4() {
     // bob's clock two days behind alice's: the grant's fire waits there, stamped ahead
-    let early = osis_base::WallMs(crate::common::T0.0 - 2 * 86_400_000);
+    let early = osis_base::Time(crate::common::T0.0 - 2 * 86_400_000);
     let mut lp = LocalPeer::apart(vec![osis_engine::local_peer::Peer::new(1, crate::common::T0).unwrap(), osis_engine::local_peer::Peer::new(2, early).unwrap()], 0);
     let pa = lp.peers[0].engine.tid();
     let pb = lp.peers[1].engine.tid();
@@ -715,7 +715,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, retain: None }).unwrap();
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
-    let until = osis_base::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
+    let until = osis_base::Time(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
     let before = ids(&lp, 2);
     lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), may_grant: false, retain: false, floor: None }).unwrap();
     let forged = new_ids(&lp, 2, &before);
@@ -922,7 +922,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
-fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_engine::flows::LinkSpec {
+fn link_spec(target: Tid, role: Role, until: Option<osis_base::Time>) -> osis_engine::flows::LinkSpec {
     osis_engine::flows::LinkSpec { target, role, until, peers: Vec::new(), single_use: false }
 }
 
@@ -964,7 +964,7 @@ fn redeem_with_the_clock_set_back_spec_crdt_2() {
     follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let back = lp.peers[1].clock.now_wall_ms().0 - 120 * 60_000;
-    lp.peers[1].clock.set(osis_base::WallMs(back));
+    lp.peers[1].clock.set(osis_base::Time(back));
     lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Read));
@@ -1106,7 +1106,7 @@ fn link_bearer_and_until_spec_perm_7() {
     let (mut lp, ps) = people(2);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, Some(until))).unwrap();
     follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
@@ -1149,7 +1149,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     let (joiner, forger) = (ps[0], ps[1]);
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, p);
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, keep, _) = lp.peers[0].engine.create_link(&p, &link_spec(d, Role::Read, Some(until))).unwrap();
     follow(&mut lp, &link);
     let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
@@ -1217,7 +1217,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     let (mut lp, ps) = people(2);
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 5_000);
     lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None }).unwrap();
     let e0 = newest_read(&lp, 0, t);
     lp.advance(10_000);
@@ -1598,7 +1598,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
     lp.advance(1000);
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), may_grant: false, retain: false, floor: None }).unwrap();
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: Some(edge_of(Role::Read)), retain: None }).unwrap();
     spread(&mut lp);
@@ -2395,7 +2395,7 @@ fn lower(holder: Tid, e: ct::Edge) -> Demotion {
 
 /// An admin edge ending well after now at peer `i`.
 fn timed_admin(lp: &LocalPeer, i: usize) -> ct::Edge {
-    ct::Edge { until: Some(osis_base::WallMs(lp.peers[i].engine.now().0 + 1_000_000_000)), ..edge_of(Role::Admin) }
+    ct::Edge { until: Some(osis_base::Time(lp.peers[i].engine.now().0 + 1_000_000_000)), ..edge_of(Role::Admin) }
 }
 
 // spec/permissions.md §1 (The last admin): every write taking the last standing admin's edge to

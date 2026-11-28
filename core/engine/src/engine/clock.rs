@@ -2,7 +2,7 @@
 //! `logical` incremented on equal `wall_ms`. A writer that exhausts the
 //! 16 logical bits within one millisecond moves to the next millisecond instead of waiting.
 
-use osis_base::{Clock, Mono, Ts, WallMs};
+use osis_base::{Clock, Mono, Ts, Time};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ impl Hlc {
     }
 
     /// The wall clock.
-    pub fn wall(&self) -> WallMs {
+    pub fn wall(&self) -> Time {
         self.clock.now_wall_ms()
     }
 
@@ -68,24 +68,24 @@ mod tests {
     // spec/crdt.md §2.2: ts = max(wall, last seen), logical incremented on equal wall_ms.
     #[test]
     fn hlc_rules_spec_2_2() {
-        let c = Arc::new(ManualClock::new(WallMs(1000)));
+        let c = Arc::new(ManualClock::new(Time(1000)));
         let mut h = Hlc::new(c.clone(), Ts::default());
         let a = h.next();
-        assert_eq!((a.wall_ms(), a.logical()), (WallMs(1000), 0));
+        assert_eq!((a.wall_ms(), a.logical()), (Time(1000), 0));
         let b = h.next();
-        assert_eq!((b.wall_ms(), b.logical()), (WallMs(1000), 1));
-        h.observe(Ts::make(WallMs(5000), 7).unwrap());
+        assert_eq!((b.wall_ms(), b.logical()), (Time(1000), 1));
+        h.observe(Ts::make(Time(5000), 7).unwrap());
         let d = h.next();
-        assert_eq!((d.wall_ms(), d.logical()), (WallMs(5000), 8));
-        c.set(WallMs(6000));
-        assert_eq!(h.next(), Ts::make(WallMs(6000), 0).unwrap());
+        assert_eq!((d.wall_ms(), d.logical()), (Time(5000), 8));
+        c.set(Time(6000));
+        assert_eq!(h.next(), Ts::make(Time(6000), 0).unwrap());
     }
 
     // spec/crdt.md §2.2: 16 logical bits; exhausting them moves to the next millisecond.
     #[test]
     fn hlc_logical_exhaustion_spec_2_2() {
-        let c = Arc::new(ManualClock::new(WallMs(1000)));
-        let mut h = Hlc::new(c, Ts::make(WallMs(1000), 0xffff).unwrap());
-        assert_eq!(h.next(), Ts::make(WallMs(1001), 0).unwrap());
+        let c = Arc::new(ManualClock::new(Time(1000)));
+        let mut h = Hlc::new(c, Ts::make(Time(1000), 0xffff).unwrap());
+        assert_eq!(h.next(), Ts::make(Time(1001), 0).unwrap());
     }
 }

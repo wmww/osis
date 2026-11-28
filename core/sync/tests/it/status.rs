@@ -4,7 +4,7 @@
 //! as in a node. Sources come and go as opens' `Moved` would bring them (`joined`, `left`).
 
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Time};
 use osis_engine::sync::{Holding, Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use osis_sync::Result;
@@ -55,7 +55,7 @@ struct Fake {
     /// The wall clock where it is not `now` (frozen, set back).
     wall: Option<u64>,
     set: Stamped<(), Arc<SyncSet>>,
-    caught: Stamped<(ConnId, SyncId), WallMs>,
+    caught: Stamped<(ConnId, SyncId), Time>,
     full: StampedSet<(ConnId, SyncId)>,
     refused: StampedSet<(Source, SyncId, BlobId)>,
     stranded: StampedSet<SyncId>,
@@ -85,7 +85,7 @@ struct Fake {
     leave: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
     passes: Vec<(SyncId, u64)>,
     /// The pass starts kept durably (`set_pass_begun`): what a restart keeps.
-    begun: BTreeMap<SyncId, WallMs>,
+    begun: BTreeMap<SyncId, Time>,
     /// Calls to `stamped` (lacking counts taken).
     stamped_reads: u64,
     /// The engine's `stranded` per read S.
@@ -116,13 +116,13 @@ impl Ground for Fake {
     fn mono(&self) -> osis_base::Mono {
         osis_base::Mono(self.now)
     }
-    fn now(&self) -> WallMs {
-        WallMs(self.wall.unwrap_or(self.now))
+    fn now(&self) -> Time {
+        Time(self.wall.unwrap_or(self.now))
     }
-    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>> {
+    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, Time>> {
         Ok(self.begun.clone())
     }
-    fn set_pass_begun(&mut self, s: &SyncId, at: Option<WallMs>) -> Result<()> {
+    fn set_pass_begun(&mut self, s: &SyncId, at: Option<Time>) -> Result<()> {
         match at {
             Some(at) => self.begun.insert(*s, at),
             None => self.begun.remove(s),
@@ -267,7 +267,7 @@ impl T {
     }
 
     fn caught(&mut self, conn: ConnId, s: SyncId, since: u64) {
-        self.g.caught.insert((conn, s), WallMs(since));
+        self.g.caught.insert((conn, s), Time(since));
         self.settle();
     }
 
@@ -651,7 +651,7 @@ fn complete_pass_gives_up_on_away_peer() {
 #[test]
 fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
     let mut t = away_pass(None);
-    assert_eq!(t.g.begun, [(S, WallMs(10))].into(), "its start is kept");
+    assert_eq!(t.g.begun, [(S, Time(10))].into(), "its start is kept");
     for k in 1..4 {
         t.st = Status::default();
         t.at(10 + k * PASS_WAIT_MS / 4);
@@ -687,14 +687,14 @@ fn a_wall_clock_set_back_at_each_restart_still_ends_a_pass_spec_sync_status_1() 
     const Q: u64 = PASS_WAIT_MS / 4;
     let w0 = 10 * PASS_WAIT_MS;
     let mut t = away_pass(Some(w0));
-    assert_eq!(t.g.begun, [(S, WallMs(w0))].into());
+    assert_eq!(t.g.begun, [(S, Time(w0))].into());
     // the run waits a quarter; the clock is set back a half across the restart: ahead of the row
     let mut wall = w0 + Q - 2 * Q;
     let mut mono = 10 + Q;
     t.st = Status::default();
     t.g.wall = Some(wall);
     t.at(mono);
-    assert_eq!(t.g.begun, [(S, WallMs(wall))].into(), "a row ahead of the wall clock counts as now");
+    assert_eq!(t.g.begun, [(S, Time(wall))].into(), "a row ahead of the wall clock counts as now");
     assert_eq!(t.st.next_wake(), Some(osis_base::Mono(mono + PASS_WAIT_MS)), "nothing credited");
     // then each run a quarter on both clocks, the clock set back an eighth at each restart: an
     // eighth more credited per restart, so the run after the 6th ends it

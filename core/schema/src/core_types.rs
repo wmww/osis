@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ts, Value, WallMs, Weak};
+use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ts, Value, Time, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -155,7 +155,7 @@ codec_struct! {
     /// Retain); `floor`: the read n its holder reads from, granted without history
     /// (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
+    pub struct Edge { 0 role: Role, 1 until: Option<Time>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, the epochs its rotation
@@ -251,7 +251,7 @@ codec_struct! {
 codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
+    pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<Time> }
 }
 #[doc(hidden)]
 impl Codec for osis_base::PurgeBy {
@@ -434,7 +434,7 @@ pub const CLIENTS: Aspect<BTreeMap<Weak, Client>> = Aspect::new("clients^.0", &C
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
-pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
+pub const PURGE: Aspect<Time> = Aspect::new("purge.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);

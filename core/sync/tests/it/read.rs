@@ -7,7 +7,7 @@
 //! fails without its rule, and each judgement scenario from the old sync's issues one.
 
 use osis_base::memo::Stamped;
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Time};
 use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
@@ -425,8 +425,8 @@ impl Ground for Fake {
         self.records.insert(*s, x);
         Ok(())
     }
-    fn now(&self) -> WallMs {
-        WallMs(self.now)
+    fn now(&self) -> Time {
+        Time(self.now)
     }
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: false })))
@@ -961,7 +961,7 @@ fn covered_delete_waits_max_drift_spec_commits_5() {
     w.settle();
     assert!(w.own_blobs(S, cid(1)).is_empty(), "the own log waits for no drift");
     assert_eq!(w.deletes(), 0, "deleted at K before every node's clock agrees it left history");
-    assert_eq!(w.read.next_wake(), Some(WallMs(5_000)), "no wake at the wait's end");
+    assert_eq!(w.read.next_wake(), Some(Time(5_000)), "no wake at the wait's end");
     w.g.now = 5_000;
     w.settle();
     assert_eq!(w.deletes(), 1, "not deleted once the wait ended");

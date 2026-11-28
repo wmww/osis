@@ -249,7 +249,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let secrets = osis_base::Ak::new("secrets.0").unwrap();
     let author = e.tid();
     // after the steps whose keys it lists (notes/delete-keys.md, Tests)
-    let ts = osis_base::Ts::make(osis_base::WallMs(e.now().0 + 1), 0).unwrap();
+    let ts = osis_base::Ts::make(osis_base::Time(e.now().0 + 1), 0).unwrap();
     let view = osis_schema::core_schema().view(secrets.as_str()).unwrap();
     let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &boxed).unwrap();
@@ -440,9 +440,9 @@ fn expired_part_with_pages_away_order_spec_commits_4() {
         let (mut lp, g, h, pk) = two_things(|m, g, h| {
             m.set(g, &REG, &s("small")).unwrap();
             m.set(h, &BIG, &big).unwrap();
-            m.expires(h, &BIG, osis_base::WallMs(1_700_000_001_000)).unwrap();
+            m.expires(h, &BIG, osis_base::Time(1_700_000_001_000)).unwrap();
             // one expiry per commit (spec/commits.md §6)
-            m.expires(g, &REG, osis_base::WallMs(1_700_000_001_000)).unwrap();
+            m.expires(g, &REG, osis_base::Time(1_700_000_001_000)).unwrap();
         });
         assert!(!pk.blobs.is_empty(), "paged");
         lp.peers[1].clock.advance(10_000_000);
@@ -753,7 +753,7 @@ struct Forge {
 
 impl Forge {
     /// A fresh node at `now`: a node of 0's account, so it holds what it is given of 0's things.
-    fn fresh(&mut self, now: osis_base::WallMs) -> Peer {
+    fn fresh(&mut self, now: osis_base::Time) -> Peer {
         let p = self.node.copy().unwrap();
         p.clock.set(now);
         p
@@ -834,7 +834,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let (x, y, z) = (f.x, f.y, f.z);
     let b = forge(&mut f, &[(x, "t:future.0", Made::Parked, Some(1000)), (y, "t:reg.0", Made::Good, Some(1000)), (z, "t:reg.0", Made::Good, None)]);
     let live = f.lp.peers[0].engine.now();
-    let late = osis_base::WallMs(live.0 + 5000);
+    let late = osis_base::Time(live.0 + 5000);
     let copy_held = |p: &mut Peer| p.engine.commit_bytes(&b.id()).unwrap().is_some_and(|c| !CommitBlob::decode(&c).unwrap().parts.is_empty());
     let mut new = |now| {
         let mut p = f.fresh(now);
@@ -971,7 +971,7 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
         let mut f = forge_setup();
         let (x, y, z) = (f.x, f.y, f.z);
         let b = forge(&mut f, &[(x, "t:brief.0", Made::Good, Some(1000)), (y, "t:reg.0", how, None), (z, "t:reg.0", Made::Good, None)]);
-        let now = osis_base::WallMs(f.lp.peers[0].engine.now().0 + 5000);
+        let now = osis_base::Time(f.lp.peers[0].engine.now().0 + 5000);
         let junk = |t: Tid, fill: u8| {
             let mut c = b.clone();
             let h = c.header.clone();

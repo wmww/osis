@@ -2,7 +2,7 @@
 //! what a holder keeps per byte of ephemeral data, and the peak of applying a huge map.
 //! `cargo test --release -p osis-engine --test it -- --ignored --nocapture --test-threads 1 memory::<name>`.
 
-use osis_base::{Ak, BlobId, Clock, Role, Tid, Value, WallMs};
+use osis_base::{Ak, BlobId, Clock, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::Mutation;
 use osis_engine::local_peer::LocalPeer;
@@ -132,7 +132,7 @@ fn eph_leftover_memory() {
     for c in 0..n {
         let mut m = Mutation::new();
         m.op(t, &log, PathOp { path: vec![], op: Op::Insert { at: c + 1, items: vec![Value::Str(c.to_string())] } }).unwrap();
-        m.expires(t, &log, osis_base::WallMs(lp.peers[x].engine.now().0 + 60_000)).unwrap();
+        m.expires(t, &log, osis_base::Time(lp.peers[x].engine.now().0 + 60_000)).unwrap();
         lp.peers[x].engine.write(m).unwrap();
         blobs.extend(take_memory(&mut lp, x));
     }
@@ -232,7 +232,7 @@ fn big_map_apply_memory() {
         let (target, t) = (pks.pop().unwrap(), pks.pop().unwrap());
         let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits::new(4, t.bytes.len())).unwrap() else { panic!() };
         let (Value::Weak(t), Value::Int(now), Value::Weak(reader)) = (&t[0], &t[1], &t[2]) else { panic!() };
-        let mut p = osis_engine::local_peer::Peer::new(5, WallMs(*now as u64)).unwrap();
+        let mut p = osis_engine::local_peer::Peer::new(5, Time(*now as u64)).unwrap();
         assert_eq!(p.engine.tid(), *reader, "the reader the parent granted");
         p.engine.hold(osis_base::Strong(*t)).unwrap();
         for pk in &pks {

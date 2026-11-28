@@ -24,7 +24,7 @@ mod tests {
     #[test]
     fn split_and_clear_forms_apply_alike_spec_wire_4() {
         let run = |split: bool| {
-            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
             lp.sync_all().unwrap();
             let (me, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
             let (t, g) = (thing(&mut lp, me), thing(&mut lp, me));
@@ -66,7 +66,7 @@ mod tests {
     }
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{Role, Tid, Value, WallMs};
+    use osis_base::{Role, Tid, Value, Time};
     use osis_schema::core_types as ct;
     use std::collections::BTreeSet;
 
@@ -75,7 +75,7 @@ mod tests {
     // that writes another holder's box is not the grantee's: it gets no may-grant exemption.
     #[test]
     fn may_grant_grant_secrets_limited_to_grantee_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -106,7 +106,7 @@ mod tests {
     // reads the thing. Judged as one delta, the junk voids the grantee's box with it.
     #[test]
     fn a_grantees_box_stands_beside_a_junk_box_spec_wire_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -146,7 +146,7 @@ mod tests {
     // holding one holder's records or none, and the rest.
     #[test]
     fn a_secrets_snapshot_is_written_in_pieces_spec_wire_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -176,7 +176,7 @@ mod tests {
     // tables. Every node keeps the grant and c's box, through a day's ticks and a restart.
     #[test]
     fn a_rest_piece_over_claiming_covers_nothing_spec_commits_5() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -231,7 +231,7 @@ mod tests {
     // new one, in pieces needing write, count for nothing.
     #[test]
     fn a_readers_rotation_rotates_nothing_spec_permissions_3() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -282,7 +282,7 @@ mod tests {
     // least write, which a reader lacks.
     #[test]
     fn may_grant_grant_writes_no_keys_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -324,7 +324,7 @@ mod tests {
     // writer writes. Failed when a bare record needed write: each one a current commit more.
     #[test]
     fn bare_box_records_need_admin_and_stay_out_of_the_current_keys_spec_perm_3() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let t = thing(&mut lp, a);
@@ -356,12 +356,12 @@ mod tests {
     // writing inside an entry it did not create is bad input, whoever signed it.
     #[test]
     fn nested_holders_write_is_bad_input_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let t = thing(&mut lp, a);
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(WallMs(1_700_000_100_000)), may_grant: false, retain: false, floor: None }).unwrap();
+        crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(Time(1_700_000_100_000)), may_grant: false, retain: false, floor: None }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         // the role field alone, into the grant's entry: admin, with the `until` left behind
@@ -379,7 +379,7 @@ mod tests {
     // `roles.0` part arrives first and the overreaching `secrets.0` part joins late.
     #[test]
     fn overreaching_grant_late_secrets_invalid_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
@@ -416,7 +416,7 @@ mod tests {
     fn may_grant_grant_resets_unmerged_any_order_spec_perm_2() {
         use osis_crdt::{Op, PathOp, PathSeg};
         use osis_schema::Codec;
-        let mut lp = LocalPeer::fresh(6, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(6, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
@@ -458,7 +458,7 @@ mod tests {
     // did not move, as where they came in the other order.
     #[test]
     fn may_grant_grant_overtaken_on_its_edge_any_order_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(5, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers
         let (a, b, e) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -489,7 +489,7 @@ mod tests {
     // write falls, as where the grant came first.
     #[test]
     fn may_grant_grant_turned_audited_any_order_spec_perm_5_1() {
-        let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(5, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 holder, 3 and 4 readers receiving
         let (a, b, h) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -557,7 +557,7 @@ mod tests {
             let Some(SlotRef::Frag(osis_crdt::Fragment::Map(m))) = st.field(0).and_then(|x| x.slot(Encoding::Map)) else { return Vec::new() };
             m.entries().map(|(d, _, k, _)| (d.clone(), k.cloned())).collect()
         }
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, a);
@@ -572,7 +572,7 @@ mod tests {
         let g_key = ct::BoxKey { holder: osis_base::Weak(g), role: Role::Read, epoch: a_key.epoch.clone() };
         let schema = osis_schema::core_schema();
         let view = schema.view("secrets.0").unwrap();
-        let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
+        let ts = osis_base::Ts::make(Time(1_700_000_000_100), 0).unwrap();
         let mut builder = DeltaBuilder::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
         builder.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
         let (d, range) = builder.finish().unwrap();
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn record_chain_deeper_than_cap_invalid_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
         let mut up = lp.peers[0].engine.tid();
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn record_chain_through_mint_admins_capped_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
         let mut up = lp.peers[0].engine.tid();
@@ -693,7 +693,7 @@ mod tests {
         use osis_base::Tid;
         use osis_crdt::{Op, PathOp, PathSeg};
         use osis_schema::Codec;
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let x = lp.peers[1].engine.tid();
@@ -746,7 +746,7 @@ mod tests {
     fn self_removal_beside_failing_grant_no_exemption_spec_perm_2() {
         use osis_base::Tid;
         use osis_crdt::{Op, PathOp};
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, r, z, g) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
@@ -795,7 +795,7 @@ mod keys_tests {
     use super::thing;
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{Role, Value, WallMs};
+    use osis_base::{Role, Value, Time};
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
     use osis_schema::Codec;
@@ -805,7 +805,7 @@ mod keys_tests {
     // the key every deposit to the thing is signed with.
     #[test]
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let w = lp.peers[1].engine.tid();
@@ -851,7 +851,7 @@ mod keys_tests {
     // admin fields and every box: an admin's write, invalid from a writer
     #[test]
     fn writer_cannot_replace_keys_or_secrets_spec_perm_3() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let w = lp.peers[1].engine.tid();
@@ -883,7 +883,7 @@ mod keys_tests {
     #[test]
     fn writer_snapshot_of_keys_invalid_spec_perm_5_2() {
         use osis_crdt::{DeltaBuilder, Source, Writer};
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let w = lp.peers[1].engine.tid();
@@ -929,7 +929,7 @@ mod keys_tests {
     // and at every node.
     #[test]
     fn secrets_removal_dropped_creation_open_equals_rebuild() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, w1, w2, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
@@ -976,7 +976,7 @@ mod keys_tests {
     // after a rebuild; the keyset stays held.
     #[test]
     fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, p, r, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
@@ -1018,7 +1018,7 @@ mod keys_tests {
     // it then removes on arrival.
     #[test]
     fn writer_cannot_remove_admin_boxes_spec_perm_3() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, w, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 3));
@@ -1065,7 +1065,7 @@ mod keys_tests {
     // of that key); a key-erased removal resets every record of its dot: admin
     #[test]
     fn secrets_removal_role_from_its_key_spec_perm_3() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let t = thing(&mut lp, me);
@@ -1075,7 +1075,7 @@ mod keys_tests {
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
         let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
-        let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
+        let w = osis_crdt::Writer::new(osis_base::Ts::make(Time(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
         let dot = osis_crdt::Dot::new(osis_crdt::Source::session(osis_crdt::Session { node: me, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 3);
         let rm = |k: Option<&ct::BoxKey>| {
             let f = match k {
@@ -1097,7 +1097,7 @@ mod keys_tests {
     // whole `secrets.0` value is no grantee's box
     #[test]
     fn may_grant_grant_cannot_replace_secrets_spec_perm_2() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());

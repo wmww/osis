@@ -1045,7 +1045,7 @@ mod tests {
     use crate::engine::secrets::MAX_READING_ACTORS;
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
-    use osis_base::{CommitId, Role, Tid, Value, WallMs};
+    use osis_base::{CommitId, Role, Tid, Value, Time};
     use osis_crypto::{Epoch, Secret32};
     use osis_keys::{ActorEpochs, Unchecked};
     use osis_schema::Codec;
@@ -1063,7 +1063,7 @@ mod tests {
     // for good on the sync ID those secrets open.
     #[test]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
-        let (mut lp, ps) = LocalPeer::accounts(2, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (mut lp, ps) = LocalPeer::accounts(2, 0, Time(1_700_000_000_000)).unwrap();
         let (me, b) = (ps[0], ps[1]);
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();
@@ -1115,7 +1115,7 @@ mod tests {
     // must give nothing new: no derived establishment from `u`.
     #[test]
     fn pending_boxes_read_no_chain_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let b = lp.peers[1].engine.tid();
@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     fn grantee_build(n: usize) -> (LocalPeer, Tid) {
-        let mut lp = LocalPeer::fresh(n, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(n, Time(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
         // the granter holds the grantee's keys, then its inbox's (named by them): to signal it
         lp.sync(1, 0).unwrap();
@@ -1276,7 +1276,7 @@ mod tests {
     fn bogus_keyset_drops_no_secret_spec_crypto_4() {
         use osis_crdt::{Op, PathOp, PathSeg};
         for junk_first in [true, false] {
-            let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
             lp.sync_all().unwrap();
             let me = lp.peers[0].engine.tid();
             let (w, d, m) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
@@ -1467,7 +1467,7 @@ mod tests {
     // the lost-access trigger, which forgets it.
     #[test]
     fn applied_commit_hands_reading_only_actor_to_lost_trigger_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
         lp.peers[0].engine.index_poked = true;
         lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
@@ -1484,7 +1484,7 @@ mod tests {
     // opens and reads by value at both.
     #[test]
     fn a_write_under_an_invalid_rotations_epoch_reads_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (o, a, w, r) = (0, 1, 2, 3);
         let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1522,7 +1522,7 @@ mod tests {
     // commit's boxes are read only at its arrival and at each reexamine.
     #[test]
     fn a_pending_box_opens_once_its_opener_is_held_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (o, n) = (0, 1);
         let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1563,7 +1563,7 @@ mod tests {
     // commit without reading its boxes.
     #[test]
     fn a_parked_commits_box_opens_once_its_opener_is_held_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (o, n) = (0, 1);
         let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1622,7 +1622,7 @@ mod tests {
     // index lacks the lowest, which a rebuild (reading the state after) opens.
     #[test]
     fn a_reading_only_secret_opens_the_applied_history_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (o, a, n) = (0, 1, 2);
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1662,7 +1662,7 @@ mod tests {
     // applied valid first (Y: a reader of G). The mint admin's own grant then makes T independent everywhere.
     #[test]
     fn keyset_of_invalid_rotation_leaves_thing_dependent_spec_crypto_3() {
-        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(4, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
@@ -1726,7 +1726,7 @@ mod tests {
     // derived epoch are established, though nothing of T arrived again.
     #[test]
     fn derived_epoch_follows_base_establishment_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));

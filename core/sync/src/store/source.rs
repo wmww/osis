@@ -9,7 +9,7 @@
 
 use super::rows::tag::{SEEN, STAND};
 use super::rows::{self, R, Source};
-use osis_base::{SyncId, WallMs};
+use osis_base::{SyncId, Time};
 use osis_store::{Error, KeyValue, Shred, Transaction};
 
 const ROW: &[u8] = b"C/";
@@ -149,7 +149,7 @@ fn ages(tag: u8) -> bool {
 
 /// Writes `src`'s row under an aging tag, written at `at` (its value starts with it), with its
 /// aging row (`w/`, swept by `Store::settle_at`).
-pub(crate) fn put_aging(t: &mut Transaction<'_>, src: Source, tag: u8, s: &SyncId, key: &[u8], at: WallMs, v: Vec<u8>) -> Result<(), Error> {
+pub(crate) fn put_aging(t: &mut Transaction<'_>, src: Source, tag: u8, s: &SyncId, key: &[u8], at: Time, v: Vec<u8>) -> Result<(), Error> {
     debug_assert!(ages(tag) && v.get(..8) == Some(&at.0.to_be_bytes()[..]));
     put(t, src, tag, s, key, v)?;
     t.put_local(&rows::aging_key(at, s, tag, key, src), &[], Shred::No)
@@ -160,7 +160,7 @@ pub(crate) fn drop_row(t: &mut Transaction<'_>, src: Source, tag: u8, s: &SyncId
     if ages(tag)
         && let Some(at) = get(t, src, tag, s, key)?.and_then(|v| Some(u64::from_be_bytes(v.get(..8)?.try_into().ok()?)))
     {
-        t.remove_local(&rows::aging_key(WallMs(at), s, tag, key, src), Shred::No)?;
+        t.remove_local(&rows::aging_key(Time(at), s, tag, key, src), Shred::No)?;
     }
     remove(t, src, tag, s, key).map(|_| ())
 }

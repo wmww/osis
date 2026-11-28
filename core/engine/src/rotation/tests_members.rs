@@ -9,7 +9,7 @@ use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, e
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid, Time};
 use osis_crypto::Epoch;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -1597,7 +1597,7 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     let (g, m, h) = (independent_thing(&mut lp, 0), independent_thing(&mut lp, 0), independent_thing(&mut lp, 0));
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&m, &h, &edge(Role::Write)).unwrap();
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     lp.peers[0].engine.grant(&m, &y, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &x, &edge(Role::Admin)).unwrap();
@@ -1626,12 +1626,12 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
 fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     let mut lp = synced(1);
     let (g, m) = (independent_thing(&mut lp, 0), independent_thing(&mut lp, 0));
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 1_000);
+    let until = Time(lp.peers[0].engine.core.now().0 + 1_000);
     lp.peers[0].engine.grant(&g, &m, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
     let cands = |lp: &mut LocalPeer| lp.peers[0].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
     assert!(cands(&mut lp).iter().any(|c| c.0 == m), "M lacks its box at G's newest epoch");
-    lp.peers[0].clock.set(WallMs(until.0 - 1));
+    lp.peers[0].clock.set(Time(until.0 - 1));
     assert!(cands(&mut lp).iter().any(|c| c.0 == m), "a millisecond before its `until`");
     lp.peers[0].clock.set(until);
     let after = cands(&mut lp);
@@ -1696,9 +1696,9 @@ fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, 0, T0).unwrap();
     let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(WallMs(T0.0 + 50_000)));
+    let t = lp.peers[0].engine.new_expiring_thing(&mut m, me, Some(Time(T0.0 + 50_000)));
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
-    m.expires_all(WallMs(T0.0 + 50_000));
+    m.expires_all(Time(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
     lp.peers[0].engine.make_independent(&t).unwrap();
@@ -1721,7 +1721,7 @@ fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid, Tid) {
     (lp, t, x, g, d)
 }
 
-const T0: WallMs = WallMs(1_700_000_000_000);
+const T0: Time = Time(1_700_000_000_000);
 
 // spec/crypto.md §4 (Holder actors, Destroyed): a destroyed thing holds no keys and nobody stands
 // in its place. Once T expires, X's admin rotates X (its box to T is a departure) boxing neither

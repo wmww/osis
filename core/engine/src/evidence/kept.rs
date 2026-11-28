@@ -198,14 +198,14 @@ impl Engine {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::local_peer::LocalPeer;
-    use osis_base::WallMs;
+    use osis_base::Time;
 
     // spec: none (internal: notes/engine.md, Quiet). The comparison's schedule counts the
     // follows this thread's own writes owed: a follow another thread's write ran, which finds
     // nothing, moves it not, so when the evidence is compared is a function of the node's history.
     #[test]
     fn another_threads_write_moves_no_comparison_schedule() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         e.kept_evidence().unwrap();
         e.kept_evidence().unwrap();

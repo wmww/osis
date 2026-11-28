@@ -1712,7 +1712,7 @@ mod tests {
     use crate::engine::{DropFor, Hold, Missing};
     use crate::flows::Demotion;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, CommitId, Role, Value, WallMs};
+    use osis_base::{Ak, CommitId, Role, Value, Time};
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
 
@@ -1722,7 +1722,7 @@ mod tests {
     #[test]
     fn reset_judged_walks_parts_once_spec_commits_5() {
         let walks = |n: usize| {
-            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
             let (t, x) = kept_on(&mut lp);
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap();
@@ -1778,7 +1778,7 @@ mod tests {
     /// Three synced peers: admin 0 makes a thing (with `setting`, if any), grants peer 1 write
     /// and peer 2 read on it.
     pub(super) fn admin_writer_reader(setting: Option<ct::RetentionSetting>) -> (LocalPeer, osis_base::Tid) {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, w, r] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
         let mut m = Mutation::new();
@@ -1808,7 +1808,7 @@ mod tests {
 
     /// One peer and `kept_on`.
     fn kept_register(seed: u64) -> (LocalPeer, osis_base::Tid, Ak) {
-        let mut lp = LocalPeer::new(1, seed, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(1, seed, Time(1_700_000_000_000)).unwrap();
         let (t, x) = kept_on(&mut lp);
         (lp, t, x)
     }
@@ -1890,7 +1890,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn held_writes_over_an_invalid_part_are_those_of_the_held_bodies() {
-        let mut lp = LocalPeer::new(4, 959, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(4, 959, Time(1_700_000_000_000)).unwrap();
         let (t, x) = kept_on(&mut lp);
         lp.sync_all().unwrap();
         for (w, role) in [(1, Role::Write), (2, Role::Write), (3, Role::Read)] {
@@ -1919,7 +1919,7 @@ mod tests {
         let r = lp.peers[2].engine.tid();
         use std::collections::{BTreeMap, BTreeSet};
         let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
-        let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
+        let f = lp.peers[0].engine.frontier(&scope, Time(1_700_000_000_000)).unwrap();
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(r)) }).unwrap();
         m.frontier(osis_perm::Frontier::new(f.commits));
@@ -1957,7 +1957,7 @@ mod tests {
         use crate::engine::Tx;
         use osis_base::memo::Memo;
         use crate::error::Error;
-        let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(1, 956, Time(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
@@ -2003,7 +2003,7 @@ mod tests {
     #[test]
     fn writer_covers_once_its_thing_turns_independent_in_any_order_spec_commits_5() {
         let end = |keys_first: bool| {
-            let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
             lp.sync_all().unwrap();
             let (alice, bob, carol) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             let x = Ak::new("x:v.0").unwrap();
@@ -2075,7 +2075,7 @@ mod tests {
     // makes it independent, its own.
     #[test]
     fn its_independent_up_the_record_chain_spec_sync_3() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let e = &mut lp.peers[0].engine;
@@ -2098,7 +2098,7 @@ mod tests {
     // dead; a re-grant that makes it valid again counts it live again.
     #[test]
     fn delta_live_follows_validity_spec_sync_7() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let ak = Ak::new("x:a.0").unwrap();
@@ -2141,7 +2141,7 @@ mod tests {
         static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; aspect k:s.0: struct { a 0: int, m 1: map<string, int> };\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
         let ak = Ak::new("k:s.0").unwrap();
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -2176,7 +2176,7 @@ mod tests {
     // snapshot covers it: none carries the expiring write that superseded it).
     #[test]
     fn gone_write_reads_what_it_replaced_spec_crdt_4_7() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
         let mut m = Mutation::new();
@@ -2188,7 +2188,7 @@ mod tests {
         let now = lp.peers[0].engine.now();
         let mut m = Mutation::new();
         m.set(t, &reg, &Value::Str("brief".into())).unwrap();
-        m.expires(t, &reg, WallMs(now.0 + 1000)).unwrap();
+        m.expires(t, &reg, Time(now.0 + 1000)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(2000);
         lp.peers[0].tick().unwrap();
@@ -2248,7 +2248,7 @@ mod tests {
 
     /// T of admin A (0) with admin X (1) and writer W (2), `other` set: (lp, T, X, W, reg, other).
     fn purger_and_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid, Ak, Ak) {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, x, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
@@ -2417,7 +2417,7 @@ mod tests {
     #[test]
     fn forgotten_coverers_keep_the_chain_short_spec_permissions_5_2() {
         let work = |n: i64| {
-            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
             let e = &mut lp.peers[0].engine;
             let me = e.tid();
             let reg = Ak::new("x:a.0").unwrap();
@@ -2459,7 +2459,7 @@ mod tests {
     // nothing is kept, before and after a restart.
     #[test]
     fn a_forgotten_coverers_covers_go_with_what_names_it_spec_permissions_5_2() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let reg = Ak::new("x:a.0").unwrap();
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
@@ -2505,7 +2505,7 @@ mod tests {
     // so a reader following it is due then with nothing else moving.
     #[test]
     fn a_purged_commit_wakes_its_reader_at_its_expiry_spec_commits_5() {
-        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(1, 955, Time(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
@@ -2516,7 +2516,7 @@ mod tests {
         let expires = lp.peers[0].engine.now().0 + 100_000;
         let mut m = Mutation::new();
         m.set(t, &x, &Value::Int(1)).unwrap();
-        m.expires_all(WallMs(expires));
+        m.expires_all(Time(expires));
         let w = lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(10);
         let mut m = Mutation::new();
@@ -2533,7 +2533,7 @@ mod tests {
     // be forgotten at once, the read unchanged: the write it replaced.
     #[test]
     fn a_purged_commit_goes_at_once_spec_commits_5() {
-        let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(1, 956, Time(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.tid();
         let x = Ak::new("x:m.0").unwrap();
         let mut m = Mutation::new();
@@ -2567,7 +2567,7 @@ mod tests {
     /// Peer 0 makes things `t` and `u` and grants peer 1's account write on `t` and admin on `u`,
     /// synced; then lowers it to read on `t` without telling peer 1.
     fn lowered_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.tid();
         let r = lp.peers[1].engine.tid();
@@ -2702,7 +2702,7 @@ mod tests {
     // was kept for good): both are forgettable and forgetting them changes no read.
     #[test]
     fn an_invalid_write_whose_purge_falls_stays_dropped_as_invalid_spec_perm_6() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.tid();
         let r = lp.peers[1].engine.tid();

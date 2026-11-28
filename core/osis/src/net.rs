@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Locked, WeakOsis};
 use crate::watch::lock;
-use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
+use osis_base::{Clock, ManualClock, Mono, Tid, Time};
 use osis_sync::{ConnId, Input, Links, Listening, NodeKey, Out, TransportLinks, apply};
 use osis_transport::{StaticSecret, Transport};
 use std::collections::{BTreeMap, VecDeque};
@@ -546,7 +546,7 @@ impl ManualNet {
     /// Delivers until nothing is queued and no wake is due within an hour of simulated time,
     /// moving the clock to each wake. Panics past `MANUAL_CAP` deliveries (a storm).
     pub fn run(&self) {
-        let horizon = WallMs(lock(&self.0).clock.now_wall_ms().0.saturating_add(MANUAL_HORIZON_MS));
+        let horizon = Time(lock(&self.0).clock.now_wall_ms().0.saturating_add(MANUAL_HORIZON_MS));
         self.until(horizon, false);
     }
 
@@ -559,11 +559,11 @@ impl ManualNet {
 
     /// Delivers every input and wake up to `ms` from now, then sets the clock there.
     pub fn advance(&self, ms: u64) {
-        let to = WallMs(lock(&self.0).clock.now_wall_ms().0.saturating_add(ms));
+        let to = Time(lock(&self.0).clock.now_wall_ms().0.saturating_add(ms));
         self.until(to, true);
     }
 
-    fn until(&self, to: WallMs, set: bool) {
+    fn until(&self, to: Time, set: bool) {
         lock(&self.0).deliveries = 0;
         loop {
             let next = {

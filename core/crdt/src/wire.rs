@@ -11,7 +11,7 @@ use crate::page::{PageSink, PageSource};
 use crate::paging::Step;
 use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
 use osis_base::cbor::{Item, List, put_array, put_bytes, put_tid, put_uint};
-use osis_base::{CommitId, Tid, Ts, WallMs};
+use osis_base::{CommitId, Tid, Ts, Time};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
@@ -938,7 +938,7 @@ impl<'a> Dec<'a> {
             None => dwall,
             Some((w, _)) => w.checked_add(dwall).ok_or(Error::Malformed("commit wall overflow"))?,
         };
-        let ts = Ts::make(WallMs(wall), as_uint(logical)?).ok_or(Error::Malformed("commit ts out of range"))?;
+        let ts = Ts::make(Time(wall), as_uint(logical)?).ok_or(Error::Malformed("commit ts out of range"))?;
         if prev.is_some_and(|(_, p)| ts <= p) {
             return Err(Error::Malformed("commit entries out of order"));
         }
@@ -1040,7 +1040,7 @@ mod tests {
         f(Item::parse(&b, &osis_base::Limits::DEFAULT).unwrap())
     }
     fn ts(wall: u64, logical: u64) -> Ts {
-        Ts::make(WallMs(wall), logical).unwrap()
+        Ts::make(Time(wall), logical).unwrap()
     }
     /// `Sources` and `Commits` written as `sources` and `commits` into `dec`.
     fn tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Result<(), Error> {

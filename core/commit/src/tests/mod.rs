@@ -8,7 +8,7 @@ mod validate;
 mod verify;
 
 use crate::*;
-use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, Value, Time};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_schema::{PurgeBy};
 
@@ -17,7 +17,7 @@ pub(crate) fn t(n: u8) -> Tid {
 }
 
 pub(crate) fn ts(wall: u64) -> Ts {
-    Ts::make(WallMs(wall), 0).unwrap()
+    Ts::make(Time(wall), 0).unwrap()
 }
 
 /// A valid delete key at `level` from secret `[b; 32]`.

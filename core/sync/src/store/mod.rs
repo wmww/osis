@@ -53,7 +53,7 @@ use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::memo::{Clock, Effects};
-use osis_base::{BlobId, Mono, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Time};
 use osis_engine::sync::{Caps, Held, Holding, Path, SyncSet};
 use osis_blob::{Class, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
@@ -145,7 +145,7 @@ impl Policy {
 /// while the connection lasts and no longer than that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stand {
-    pub at: WallMs,
+    pub at: Time,
     pub logged: BlobId,
     pub head: StepId,
     pub fall: u64,
@@ -157,13 +157,13 @@ impl Stand {
     }
     fn decode(v: &[u8]) -> Result<Stand> {
         let mut r = R::new(v);
-        Ok(Stand { at: WallMs(r.u64()?), logged: BlobId(r.array()?), head: StepId(r.array()?), fall: r.u64()? })
+        Ok(Stand { at: Time(r.u64()?), logged: BlobId(r.array()?), head: StepId(r.array()?), fall: r.u64()? })
     }
 }
 
 /// What the operations of one transaction see and change beside its rows.
 pub(crate) struct Env<'a> {
-    pub now: WallMs,
+    pub now: Time,
     pub holdings: &'a BTreeMap<SyncId, Held>,
     pub caps: &'a Caps,
     pub policy: &'a Policy,
@@ -259,7 +259,7 @@ pub(crate) struct Inner {
     rng: Box<dyn osis_crypto::NodeRng>,
     /// The engine's transaction, open between its blob calls.
     open: Option<Suspended>,
-    now: WallMs,
+    now: Time,
     holdings: BTreeMap<SyncId, Held>,
     caps: Caps,
     policy: Policy,
@@ -300,7 +300,7 @@ impl Inner {
     /// need and the latest expiry that cap refused (`Store::room_grew`), and each of `from` with
     /// no room mark of S gets one standing (an owed one stays owed: its pull from the start shows
     /// the entry again), a record's in the same transaction (a connection's in the memory part).
-    fn wait_room(&mut self, s: &SyncId, cap: Cap, need: u64, expires: Option<WallMs>, from: &[Source]) -> Result<()> {
+    fn wait_room(&mut self, s: &SyncId, cap: Cap, need: u64, expires: Option<Time>, from: &[Source]) -> Result<()> {
         let expires = expires.map_or(u64::MAX, |t| t.0);
         let r = match self.room.get(&(*s, cap)) {
             Some(r) => Refused { need: r.need.min(need), expires: r.expires.max(expires) },
@@ -434,7 +434,7 @@ impl Inner {
 }
 
 /// What a blob's bytes say of it, or the code refusing them.
-fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<WallMs>), Code> {
+fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<Time>), Code> {
     if bytes.len() > MAX_BLOB {
         return Err(Code::TOO_LARGE);
     }
@@ -451,7 +451,7 @@ fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<Wa
 
 /// A blob of `class` expiring at `expires` as a store keeps one now, or the code refusing it: a
 /// relay-only blob is never held (14), an expired one never taken (7).
-fn kept((class, expires): (Class, Option<WallMs>), now: WallMs) -> std::result::Result<(Class, Option<WallMs>), Code> {
+fn kept((class, expires): (Class, Option<Time>), now: Time) -> std::result::Result<(Class, Option<Time>), Code> {
     match class {
         Class::Relay => Err(Code::DECLINED),
         _ if expired(expires, now) => Err(Code::EXPIRED),
@@ -474,7 +474,7 @@ fn read_prefix(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<Prefix>> {
     }
 }
 
-fn expired(at: Option<WallMs>, now: WallMs) -> bool {
+fn expired(at: Option<Time>, now: Time) -> bool {
     at.is_some_and(|t| t.0 <= now.0)
 }
 
@@ -501,7 +501,7 @@ impl Store {
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let ram = osis_store::Store::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, ram, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default() };
+        let mut inner = Inner { store, ram, rng, open: None, now: Time(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), paths: path::Paths::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -1731,7 +1731,7 @@ impl Store {
 
     /// Writes (or with `None` removes) the row `src` keeps of S in its own part, written at `at`:
     /// it ages out after `TOMBSTONE_LIFETIME` (`settle_at`).
-    fn source_put(&mut self, src: Source, s: &SyncId, tag: u8, key: &[u8], val: Option<(WallMs, Vec<u8>)>) -> Result<()> {
+    fn source_put(&mut self, src: Source, s: &SyncId, tag: u8, key: &[u8], val: Option<(Time, Vec<u8>)>) -> Result<()> {
         self.lock().write_in(source::home(src), |t, _| {
             match val {
                 Some((at, v)) => source::put_aging(t, src, tag, s, key, at, v)?,
@@ -1778,9 +1778,9 @@ impl Store {
     /// Time is `now`: entries past their expiry go (no tombstone, no event), tombstones and the
     /// rows of deletes seen and stands end after `TOMBSTONE_LIFETIME`, deletion events leave the log, and the caps give way if the total
     /// is past them. At most `PAGE` of each a call; whether anything acted.
-    pub fn settle_at(&mut self, now: WallMs) -> Result<bool> {
+    pub fn settle_at(&mut self, now: Time) -> Result<bool> {
         let mut g = self.lock();
-        g.now = WallMs(g.now.0.max(now.0));
+        g.now = Time(g.now.0.max(now.0));
         let at = g.now.0;
         g.clock.set(at);
         let now = g.now;
@@ -1828,20 +1828,20 @@ impl Store {
     }
 
     /// When `settle_at` next has something to do.
-    pub fn next_wake(&self) -> Option<WallMs> {
+    pub fn next_wake(&self) -> Option<Time> {
         let mut g = self.lock();
         let m = g.mem.next_due();
         let d = g
             .each(|t, _| {
                 let first = |t: &mut Transaction<'_>, p: &[u8], add: u64| -> Result<Option<u64>> { Ok(t.scan_local(p, b"", 1)?.first().map(|(k, _)| time_of(k)).transpose()?.map(|x| x.saturating_add(add))) };
                 let all = [first(t, rows::EXPIRY, 0)?, first(t, rows::TOMB_AT, 0)?, first(t, rows::AGING, TOMBSTONE_LIFETIME_MS)?, if t.is_memory() { None } else { t.log_next_due()? }];
-                Ok(all.into_iter().flatten().min().map(WallMs))
+                Ok(all.into_iter().flatten().min().map(Time))
             })
             .ok()
             .into_iter()
             .flatten()
             .flatten();
-        m.into_iter().chain(d).chain(g.clock.next().map(WallMs)).min()
+        m.into_iter().chain(d).chain(g.clock.next().map(Time)).min()
     }
 
     /// Tests only: this store's copy inside a world copy (`osis_base::copying`), the one the

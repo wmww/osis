@@ -16,7 +16,7 @@ use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
 use crate::events::Origin;
-use osis_base::{BlobId, CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{BlobId, CommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::Dot;
 use osis_schema::Codec;
 use osis_schema::core_types::BoxKey;
@@ -392,7 +392,7 @@ impl Rec for osis_perm::Edge {
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
         let [role, until, Value::Bool(may_grant), Value::Bool(retain), floor] = x.as_slice() else { return None };
-        let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
+        let until = <Option<u64> as Rec>::from(until)?.map(Time);
         Some(osis_perm::Edge { role: Rec::from(role)?, until, may_grant: *may_grant, retain: *retain, floor: Rec::from(floor)? })
     }
 }
@@ -617,7 +617,7 @@ pub(crate) fn load_perm(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::app
 /// parts and what each keeps (`Hold::Dropped`), and the header's linked lists (a held header is
 /// whole on its own: the list blobs live by the sync rules, gone at the commit's expiry).
 pub(crate) struct RecordHead {
-    pub received: WallMs,
+    pub received: Time,
     pub origin: Origin,
     /// `Meta::repair`.
     pub repair: Option<Arc<BTreeSet<BlobId>>>,
@@ -760,7 +760,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     if r.u8()? != 1 {
         return Err(Error::Corrupt("commit record version"));
     }
-    let received = WallMs(r.u64()?);
+    let received = Time(r.u64()?);
     let (origin, repair) = match r.u8()? {
         0 => (Origin::Local, None),
         1 => (Origin::Remote, None),
@@ -1061,14 +1061,14 @@ mod tests {
     use super::super::{DropFor, Dropped, Hold, Missing};
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Value, WallMs};
+    use osis_base::{Ak, Value, Time};
 
     // spec: none (internal: notes/engine-store.md, the commit record and meta row). Every part
     // state and the repair mark are stored as the record head and the meta row's bits and read
     // back as they were, but `Missing::ToFetch`, a memory commit's mark, which no store keeps.
     #[test]
     fn every_part_state_reads_back_as_stored() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);

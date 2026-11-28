@@ -95,7 +95,7 @@ fn every_later_own_replace_covers_spec_commits_5() {
 fn expiring_writes_are_no_own_replaces_spec_commits_5() {
     let (mut lp, t) = thing();
     let a = ak("x:a.0");
-    let end = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let end = osis_base::Time(lp.peers[0].engine.now().0 + 60_000);
     let cs: Vec<CommitId> = (0..3)
         .map(|v| {
             lp.advance(1000);
@@ -118,7 +118,7 @@ fn expiring_writes_hide_no_own_replace_spec_commits_5() {
     let (mut lp, t) = thing();
     let a = ak("x:a.0");
     let qs = replaces(&mut lp, t, &a, 0..3);
-    let end = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let end = osis_base::Time(lp.peers[0].engine.now().0 + 60_000);
     for v in 3..5 {
         lp.advance(1000);
         let mut m = Mutation::new();
@@ -165,9 +165,9 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     let me = e.tid();
     let mut m = Mutation::new();
     // the creating commit's expiry is its thing's (spec/commits.md §5 Destruction)
-    let t = e.new_expiring_thing(&mut m, me, Some(osis_base::WallMs(T0.0 + 100_000)));
+    let t = e.new_expiring_thing(&mut m, me, Some(osis_base::Time(T0.0 + 100_000)));
     m.set(t, &ak("x:b.0"), &Value::Int(0)).unwrap();
-    m.expires_all(osis_base::WallMs(T0.0 + 100_000));
+    m.expires_all(osis_base::Time(T0.0 + 100_000));
     e.commit(m).unwrap();
     let a = ak("x:a.0");
     let c = replaces(&mut lp, t, &a, 0..1)[0];

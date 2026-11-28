@@ -9,7 +9,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
 use osis_commit::PurgeItem;
 use osis_schema::core_types as ct;
 
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+const T0: osis_base::Time = osis_base::Time(1_700_000_000_000);
 
 fn reg() -> Ak {
     Ak::new("x:a.0").unwrap()
@@ -391,7 +391,7 @@ fn an_expiring_purge_of_a_forgotten_write_is_refused_spec_commits_5() {
         let mut m = Mutation::new();
         let other = Ak::new("x:b.0").unwrap();
         m.set(t, &other, &Value::Int(1)).unwrap();
-        m.expires(t, &other, osis_base::WallMs(T0.0 + 3_600_000)).unwrap();
+        m.expires(t, &other, osis_base::Time(T0.0 + 3_600_000)).unwrap();
         m.purge_commit(c, t, reg());
         let r = lp.peers[0].commit(m);
         assert!(matches!(r, Err(crate::Error::Clash(_))), "forget {forget}: {r:?}");

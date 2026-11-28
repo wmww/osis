@@ -2,7 +2,7 @@
 //! spec/data-model.md §9). The node adapts commit headers and deltas into these; perm parses no
 //! bytes. Every record is untrusted: perm never panics on one.
 
-use osis_base::{CommitId, Holder, Role, SignKey, Tid, Ts, WallMs};
+use osis_base::{CommitId, Holder, Role, SignKey, Tid, Ts, Time};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ pub struct Point {
 pub struct Edge {
     pub role: Role,
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     /// The may-grant flag (spec/permissions.md §2): its holder may add new holders up to its role.
     pub may_grant: bool,
     /// With `until`: its passing says retain (spec/permissions.md §3, Retain).
@@ -37,11 +37,11 @@ impl Edge {
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
     pub fn kept_end() -> Edge {
-        Edge { until: Some(osis_base::WallMs(0)), ..Edge::new(osis_base::Role::Read) }
+        Edge { until: Some(osis_base::Time(0)), ..Edge::new(osis_base::Role::Read) }
     }
     /// Whether this value is a removal's saying retain.
     pub fn says_retain(&self) -> bool {
-        self.until == Some(osis_base::WallMs(0))
+        self.until == Some(osis_base::Time(0))
     }
     /// Whether this value, once it has no alive value after it, ended saying retain: a removal's
     /// saying so, or one whose `until` passed written to retain (spec/permissions.md §3, Retain).
@@ -158,7 +158,7 @@ impl RoleCommit {
 pub struct WriteId(pub CommitId, pub u32);
 
 /// The earlier of two optional expiries.
-pub(crate) fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {
+pub(crate) fn earliest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),

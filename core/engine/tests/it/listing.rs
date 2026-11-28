@@ -229,7 +229,7 @@ fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
     let expiring = {
         let mut m = Mutation::new();
         m.set(d, &reg(), &s("gone soon")).unwrap();
-        m.expires(d, &reg(), osis_base::WallMs(lp.peers[0].engine.now().0 + 10)).unwrap();
+        m.expires(d, &reg(), osis_base::Time(lp.peers[0].engine.now().0 + 10)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     lp.sync_all().unwrap();
@@ -255,7 +255,7 @@ fn expired_then_purged_tells_the_watch_spec_commits_5() {
     let (mut lp, d, _) = setup();
     let mut m = Mutation::new();
     m.set(d, &reg(), &s("gone soon")).unwrap();
-    m.expires(d, &reg(), osis_base::WallMs(lp.peers[0].engine.now().0 + 10)).unwrap();
+    m.expires(d, &reg(), osis_base::Time(lp.peers[0].engine.now().0 + 10)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(20);

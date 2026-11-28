@@ -3,7 +3,7 @@
 
 use crate::Error;
 use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
-use osis_base::{BlobId, WallMs};
+use osis_base::{BlobId, Time};
 use crate::claim::ClaimBlock;
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob};
 
@@ -54,7 +54,7 @@ pub type Group = Vec<[u8; COMMITMENT_LEN]>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     salt: [u8; 16],
-    expiry: Option<WallMs>,
+    expiry: Option<Time>,
     class: Class,
     groups: Vec<Group>,
     blocks: Vec<ClaimBlock>,
@@ -64,7 +64,7 @@ impl Prefix {
     /// Sorts each group's commitments; `Malformed` for two at one level in a group, a level
     /// outside 1..=3, more than `MAX_GROUPS` groups, or an expiry of 0 (which means none on the
     /// wire).
-    pub fn new(salt: [u8; 16], expiry: Option<WallMs>, mut groups: Vec<Group>) -> Result<Prefix, Error> {
+    pub fn new(salt: [u8; 16], expiry: Option<Time>, mut groups: Vec<Group>) -> Result<Prefix, Error> {
         for g in &mut groups {
             g.sort();
         }
@@ -76,17 +76,17 @@ impl Prefix {
     /// Prefix of a chunk, tree node or page serving deltas whose delete keys are `keys`: one
     /// group, one commitment per `(level, key)`, the key blinded by this prefix's salt and the
     /// blob's blind `hb` (its link blind, spec/crypto.md §7). A repeated pair gives one commitment.
-    pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
+    pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<Time>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
         Prefix::new(salt, expiry, vec![commitments(&salt, hb, keys)?])
     }
 
     /// Prefix of a blob whose deltas' delete-key sets are `groups`, in their order.
-    pub fn for_groups(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, groups: &[Vec<(Level, VerifyingKey)>]) -> Result<Prefix, Error> {
+    pub fn for_groups(salt: [u8; 16], hb: &[u8; 16], expiry: Option<Time>, groups: &[Vec<(Level, VerifyingKey)>]) -> Result<Prefix, Error> {
         Prefix::new(salt, expiry, groups.iter().map(|keys| commitments(&salt, hb, keys)).collect::<Result<_, _>>()?)
     }
 
     /// `for_groups` of a commit's delete-key groups (`osis_commit::prefix_groups`).
-    pub fn for_delete_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, groups: &[Vec<osis_commit::DeleteKey>]) -> Result<Prefix, Error> {
+    pub fn for_delete_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<Time>, groups: &[Vec<osis_commit::DeleteKey>]) -> Result<Prefix, Error> {
         let groups = groups.iter().map(|g| g.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<Result<Vec<_>, osis_commit::Error>>()).collect::<Result<Vec<_>, _>>()?;
         Prefix::for_groups(salt, hb, expiry, &groups)
     }
@@ -116,7 +116,7 @@ impl Prefix {
         if self.blocks.len() > MAX_BLOCKS {
             return Err(Error::Malformed("more than 255 claim blocks"));
         }
-        if self.expiry == Some(WallMs(0)) {
+        if self.expiry == Some(Time(0)) {
             return Err(Error::Malformed("expiry 0"));
         }
         Ok(())
@@ -148,7 +148,7 @@ impl Prefix {
     pub fn salt(&self) -> &[u8; 16] {
         &self.salt
     }
-    pub fn expiry(&self) -> Option<WallMs> {
+    pub fn expiry(&self) -> Option<Time> {
         self.expiry
     }
     /// The commitment groups in prefix order.
@@ -234,7 +234,7 @@ impl Prefix {
         let mut e = [0u8; 8];
         e.copy_from_slice(expiry);
         let t = u64::from_le_bytes(e);
-        let p = Prefix { salt: s, expiry: (t != 0).then_some(WallMs(t)), class, groups, blocks };
+        let p = Prefix { salt: s, expiry: (t != 0).then_some(Time(t)), class, groups, blocks };
         p.validate()?;
         Ok(p)
     }
@@ -243,7 +243,7 @@ impl Prefix {
     /// §4, spec/sync-ids.md §1): the same expiry, exactly the commitment groups of `groups` under
     /// this salt and the header's blind `hb`, and the class of the header's ephemeral marker (its
     /// claim blocks are its writer's, judged apart). A mismatch makes the commit blob bad input.
-    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {
+    pub fn agrees(&self, expiry: Option<Time>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {
         Prefix::for_delete_keys(self.salt, hb, expiry, groups).is_ok_and(|p| p.groups == self.groups && p.expiry == self.expiry && class == self.class)
     }
 }
@@ -344,7 +344,7 @@ mod tests {
     // count byte and its commitments.
     #[test]
     fn layout() {
-        let p = Prefix::new([7; 16], Some(WallMs(0x0102)), vec![vec![c(2, 9), c(1, 5)], vec![], vec![c(3, 4)]]).unwrap();
+        let p = Prefix::new([7; 16], Some(Time(0x0102)), vec![vec![c(2, 9), c(1, 5)], vec![], vec![c(3, 4)]]).unwrap();
         let b = p.to_bytes();
         assert_eq!(b.len(), 28 + (1 + 66) + 1 + (1 + 33) + 1);
         assert_eq!(b[0], 1);
@@ -427,7 +427,7 @@ mod tests {
         b[0] = 2;
         assert_eq!(Prefix::parse(&b), Err(Error::UnknownFraming(2)));
         assert_eq!(clear_prefix(&b), Ok(None));
-        assert!(Prefix::new([0; 16], Some(WallMs(0)), vec![]).is_err());
+        assert!(Prefix::new([0; 16], Some(Time(0)), vec![]).is_err());
         // a group count past the bytes
         let mut b = Prefix::new([0; 16], None, vec![]).unwrap().to_bytes();
         b[26] = 5;
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn frame_and_open() {
         let mut rng = SeededRng::from_u64(0);
-        let p = Prefix::new(Prefix::random_salt(&mut rng), Some(WallMs(5)), vec![vec![c(3, 3)]]).unwrap();
+        let p = Prefix::new(Prefix::random_salt(&mut rng), Some(Time(5)), vec![vec![c(3, 3)]]).unwrap();
         let (k, blob) = frame(&p, b"chunk", &mut rng).unwrap();
         assert_eq!(open(&blob, &k).unwrap(), (p.clone(), b"chunk".to_vec()));
         assert_eq!(blob_id(&blob).0, osis_base::hash::hash(&blob));
@@ -461,21 +461,21 @@ mod tests {
         let k3 = osis_crypto::DeleteSecret::write(&Secret32::from_bytes([2; 32])).verifying_key();
         let hb = [6u8; 16];
         let dk = |l, k: &VerifyingKey| osis_commit::DeleteKey::new(l, k);
-        let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
+        let p = Prefix::for_keys(salt, &hb, Some(Time(10)), &[(2, k)]).unwrap();
         let g = |ks: &[osis_commit::DeleteKey]| vec![ks.to_vec()];
-        assert!(p.agrees(Some(WallMs(10)), &hb, &g(&[dk(2, &k)]), Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &g(&[dk(2, &k)]), Class::Ephemeral));
+        assert!(p.agrees(Some(Time(10)), &hb, &g(&[dk(2, &k)]), Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &g(&[dk(2, &k)]), Class::Ephemeral));
         assert!(!p.agrees(None, &hb, &g(&[dk(2, &k)]), Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &g(&[dk(3, &k)]), Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &g(&[dk(2, &k3)]), Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &g(&[dk(2, &k)]), Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[], Class::Durable));
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[vec![]], Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &g(&[dk(3, &k)]), Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &g(&[dk(2, &k3)]), Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &[7; 16], &g(&[dk(2, &k)]), Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &[], Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &[vec![]], Class::Durable));
         // the same keys in two groups is another prefix (a Delete then needs both signed)
-        assert!(!p.agrees(Some(WallMs(10)), &hb, &[vec![dk(2, &k)], vec![dk(2, &k)]], Class::Durable));
+        assert!(!p.agrees(Some(Time(10)), &hb, &[vec![dk(2, &k)], vec![dk(2, &k)]], Class::Durable));
         assert_eq!(p.key_at(0, 2), Some(osis_crypto::blind(&k, &salt, &hb).to_bytes()));
         // Repeated pairs on either side give one commitment; two keys at one level are refused.
-        assert_eq!(Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k), (2, k)]).unwrap(), p);
+        assert_eq!(Prefix::for_keys(salt, &hb, Some(Time(10)), &[(2, k), (2, k)]).unwrap(), p);
         assert!(Prefix::for_keys(salt, &hb, None, &[(2, k), (2, k3)]).is_err());
         // another salt or header blind, another blinded key
         assert_ne!(Prefix::for_keys([5; 16], &hb, None, &[(2, k)]).unwrap().key_at(0, 2), p.key_at(0, 2));
@@ -483,7 +483,7 @@ mod tests {
         // a commit's delete keys give the same prefix; a delete signature under that salt and
         // blind verifies under the committed key
         let d = osis_crypto::DeleteSecret::write(&Secret32::from_bytes([1; 32]));
-        assert_eq!(Prefix::for_delete_keys(salt, &hb, Some(WallMs(10)), &g(&[dk(2, &k)])).unwrap(), p);
+        assert_eq!(Prefix::for_delete_keys(salt, &hb, Some(Time(10)), &g(&[dk(2, &k)])).unwrap(), p);
         assert!(Prefix::for_delete_keys(salt, &hb, None, &g(&[dk(2, &k), dk(2, &k3)])).is_err());
         let key = p.key_at(0, 2).unwrap();
         osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&salt, &hb, &[4; 32])).unwrap();
@@ -498,7 +498,7 @@ mod tests {
     fn for_delete_keys_differential() {
         use osis_commit::DeleteKey;
         use osis_crypto::RngCore;
-        let reference = |salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, groups: &[Vec<DeleteKey>]| -> Option<Prefix> {
+        let reference = |salt: [u8; 16], hb: &[u8; 16], expiry: Option<Time>, groups: &[Vec<DeleteKey>]| -> Option<Prefix> {
             let mut out = Vec::new();
             for keys in groups {
                 let mut cs = Vec::new();
@@ -512,7 +512,7 @@ mod tests {
                 }
                 out.push(cs);
             }
-            if expiry == Some(WallMs(0)) {
+            if expiry == Some(Time(0)) {
                 return None;
             }
             Some(Prefix { salt, expiry, class: Class::Durable, groups: out, blocks: Vec::new() })
@@ -534,8 +534,8 @@ mod tests {
                 .collect();
             let expiry = match r(&mut rng, 4) {
                 0 => None,
-                1 => Some(WallMs(0)),
-                _ => Some(WallMs(u64::from(rng.next_u32()))),
+                1 => Some(Time(0)),
+                _ => Some(Time(u64::from(rng.next_u32()))),
             };
             let (salt, hb) = ([r(&mut rng, 3); 16], [r(&mut rng, 3); 16]);
             // one to three groups, the first the keys above, the others drawn from the pool
@@ -554,7 +554,7 @@ mod tests {
             }
             assert!(p.agrees(expiry, &hb, &rev, Class::Durable));
             assert!(!p.agrees(expiry, &[hb[0] ^ 1; 16], &groups, Class::Durable) || groups.iter().all(Vec::is_empty));
-            assert!(!p.agrees(expiry.map(|t| WallMs(t.0 + 1)).or(Some(WallMs(1))), &hb, &groups, Class::Durable));
+            assert!(!p.agrees(expiry.map(|t| Time(t.0 + 1)).or(Some(Time(1))), &hb, &groups, Class::Durable));
             let mut more = groups.clone();
             more[0].push(DeleteKey::new(r(&mut rng, 3) + 1, &pool[0]));
             assert_eq!(p.agrees(expiry, &hb, &more, Class::Durable), reference(salt, &hb, expiry, &more).as_ref() == Some(&p));

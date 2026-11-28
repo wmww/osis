@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::flows::edges::{History, grant_history};
 use crate::rotation;
 use crate::Mutation;
-use osis_base::{Role, Tid, Value, WallMs};
+use osis_base::{Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::Secret32;
 use osis_keys::{box_holder, roles_up_to};
@@ -44,7 +44,7 @@ pub struct HeldLink {
 pub struct LinkSpec {
     pub target: Tid,
     pub role: Role,
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     pub peers: Vec<osis_blob::DialHint>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §7).
     pub single_use: bool,
@@ -283,7 +283,7 @@ impl Engine {
     /// complete pass of K's sync IDs, so the frontier covers the grants made while the link
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
-    pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
+    pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<Time>)>> {
         let me = self.core.tid();
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();

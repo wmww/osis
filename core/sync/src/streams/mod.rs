@@ -51,7 +51,7 @@ use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Position, RecordId, Result};
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, Mono, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Time};
 use osis_engine::Engine;
 use osis_engine::sync::Opened;
 use osis_proto::{Id, Msg, Wrap};
@@ -200,7 +200,7 @@ pub struct Ctx<'a> {
     pub wire: &'a mut dyn Wire,
     pub shared: &'a dyn Shared,
     /// The wall clock: a relay's expiry and `ts` are judged by it.
-    pub now: WallMs,
+    pub now: Time,
     /// The monotonic clock streams' waits run on.
     pub mono: Mono,
     /// Reported positions for opens (`Opens::reported`).

@@ -322,7 +322,7 @@ fn fragment_fits_its_type_spec_crdt_3_3() {
 aspect n:a.0: struct { tids 0: set<weak>, r 1: role, free 2: any, n 3: counter<int> };",
     );
     let view = Schema::view(&sc, "n:a.0").unwrap();
-    let ts = osis_base::Ts::make(osis_base::WallMs(1), 0).unwrap();
+    let ts = osis_base::Ts::make(osis_base::Time(1), 0).unwrap();
     let w = || Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
     let tid = Value::Weak(Tid::from_bytes([1; 15]));
     let set = |v: Value| Value::Set([v].into_iter().collect());

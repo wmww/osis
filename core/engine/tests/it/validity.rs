@@ -6,7 +6,7 @@
 use crate::common;
 use common::*;
 use osis_base::Classified;
-use osis_base::{Role, Tid, Value, WallMs};
+use osis_base::{Role, Tid, Value, Time};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Event, Ingested, Mutation};
 use osis_engine::DemotionScope;
@@ -149,7 +149,7 @@ fn overlapping_counters_spec_commits_4() {
     let first = put(&mut lp, 1, d, &other, &s("first"));
     let h = lp.peers[1].engine.header(&first).unwrap();
     // Bob's key signs a second commit of the same session reusing those counters
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let second = forge_reg(&mut lp, d, &other, h.aspects[0].lo, ts, "second");
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
@@ -171,7 +171,7 @@ fn a_void_minting_still_creates_spec_commits_4() {
     let h = lp.peers[0].engine.header(&minting).unwrap();
     assert!(h.form == session_of(&lp, 0), "the minting is of Alice's session");
     let lo = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap().lo;
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let second = forge_reg_keyed(&mut lp, 0, t, &ak("t:reg.0"), lo, ts, "second", true);
     assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), Some(s("new")));
     lp.peers[1].receive(&second, Vec::new()).unwrap();
@@ -211,7 +211,7 @@ fn a_delta_listing_a_key_no_step_bears_applies_nowhere_spec_crypto_7() {
     let first = put(&mut lp, 1, d, &x, &s("first"));
     sync(&mut lp, 1, 0);
     let h = lp.peers[1].engine.header(&first).unwrap();
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let forged = forge_reg_keyed(&mut lp, 1, d, &x, h.aspects[0].hi, ts, "forged", false);
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")), "its key is on no step");
@@ -245,7 +245,7 @@ fn a_body_listing_an_unplaced_key_is_not_judged_invalid_spec_commits_4() {
     let first = put(&mut lp, 1, d, &x, &s("first"));
     sync(&mut lp, 1, 0);
     let h = lp.peers[1].engine.header(&first).unwrap();
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let forged = forge_reg_keyed(&mut lp, 1, d, &x, h.aspects[0].hi, ts, "forged", false);
     let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
@@ -263,7 +263,7 @@ fn kept_after_miskeyed(k: u64) -> usize {
     let first = put(&mut lp, 1, d, &x, &s("first"));
     sync(&mut lp, 1, 0);
     let h = lp.peers[1].engine.header(&first).unwrap();
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let kept = |e: &mut osis_engine::Engine| e.commit_ids().len() + e.pending().len();
     let before = kept(&mut lp.peers[0].engine);
     for i in 0..k {
@@ -458,7 +458,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     assert_eq!(h.form, Form::Commit, "role commits use commit form");
     let holders = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "roles.0").unwrap();
     // Alice's key signs a session-form commit on d's roles.0 with the grant's range
-    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(h.ts.wall_ms().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
     let form = crate::common::session_of(&lp, 0);
     let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
@@ -867,7 +867,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     let entries = |lp: &mut LocalPeer| keys_of(lp, 0, d);
     assert_eq!(entries(&mut lp), BTreeSet::from([s("k")]));
     lp.advance(1_000);
-    let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
+    let old = osis_base::Ts::make(Time(T0.0 - DAY), 0).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     // a carried ts for a dot of a held commit other than its own, under another key: its own
     // record, its older creation beaten by the held delta's
@@ -895,7 +895,7 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
     let m_ak = ak("x:m.0");
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
-    let later = osis_base::Ts::make(WallMs(lp.peers[2].engine.now().0 + 1_000), 0).unwrap();
+    let later = osis_base::Ts::make(Time(lp.peers[2].engine.now().0 + 1_000), 0).unwrap();
     let a = lp.peers[0].engine.tid();
     let asrc = crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32]));
     let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(asrc.clone(), later, 1 << 42, "c", "x"));
@@ -1107,7 +1107,7 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
     let (mut lp, d, _, _) = setup();
     let m_ak = ak("x:m.0");
     lp.advance(1_000);
-    let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
+    let old = osis_base::Ts::make(Time(T0.0 - DAY), 0).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let (x, y) = (osis_base::CommitId([0xA1; 32]), osis_base::CommitId([0xB2; 32]));
     let by = |c: osis_base::CommitId, ts, k: &str| {
@@ -1270,7 +1270,7 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let c = lp.peers[1].engine.tid();
-    let until = Some(WallMs(T0.0 + 30 * DAY));
+    let until = Some(Time(T0.0 + 30 * DAY));
     set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
     lp.advance(1_000);
     set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Write) }), None);
@@ -2949,7 +2949,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 /// purgeable by `by`, in a commit expiring at `expires`.
 fn reminting(lp: &mut LocalPeer, rec: &osis_base::CreationRecord, k: u64, lo: u64, by: osis_base::PurgeBy, expires: Option<u64>) -> Vec<u8> {
     use osis_crdt::{Op, PathOp};
-    let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(lp.peers[1].engine.now().0 + k), 0).unwrap();
     forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, by, expires, true).unwrap()
 }
 
@@ -2975,10 +2975,10 @@ fn a_minting_never_extends_an_expiring_thing_spec_commits_5() {
     let (mut lp, d, _, _) = setup();
     let t = lp.peers[0].engine.now().0 + 10_000;
     let mut m = Mutation::new();
-    let x = m.create(lp.peers[0].engine.thing_record(d, Some(WallMs(t))));
+    let x = m.create(lp.peers[0].engine.thing_record(d, Some(Time(t))));
     lp.peers[0].engine.hold_where_it_lives(&mut m, x, d);
     m.set(x, &REG, &s("x")).unwrap();
-    m.expires_all(WallMs(t));
+    m.expires_all(Time(t));
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -3099,7 +3099,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let r = rec.to_value();
     let created = |lp: &mut LocalPeer| lp.peers[0].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap();
-    let ts = |lp: &mut LocalPeer, k: u64| osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
+    let ts = |lp: &mut LocalPeer, k: u64| osis_base::Ts::make(Time(lp.peers[1].engine.now().0 + k), 0).unwrap();
     let padded = [(vec![PathOp { path: Vec::new(), op: Op::Replace(r.clone()) }], true), (vec![PathOp { path: Vec::new(), op: Op::Set(r.clone()) }], false)];
     for (k, (ops, typed)) in padded.into_iter().enumerate() {
         let t = ts(&mut lp, k as u64 + 1);
@@ -3135,7 +3135,7 @@ fn a_minting_listing_unplaced_keys_still_creates_spec_crypto_7() {
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.hold(x);
     let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + 1), 0).unwrap();
+    let ts = osis_base::Ts::make(Time(lp.peers[1].engine.now().0 + 1), 0).unwrap();
     let forged = forge_minting(&mut lp, 1, &rec, ts, 5000, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::PurgeBy::default(), rec.expires(), false).unwrap();
     let id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
@@ -3501,7 +3501,7 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
     let r = write(e, read.clone(), false);
     assert!(matches!(&r, Err(osis_engine::Error::BadInput(m)) if m.contains("audits with no frontier")), "{r:?}");
     write(e, read.clone(), true).unwrap().unwrap();
-    let timed = ct::Edge { until: Some(WallMs(e.now().0 + DAY)), ..read };
+    let timed = ct::Edge { until: Some(Time(e.now().0 + DAY)), ..read };
     assert!(!e.needs_frontier(&d, &b, Some(&timed)));
     let r = write(e, timed.clone(), true);
     assert!(matches!(&r, Err(osis_engine::Error::BadInput(m)) if m.contains("audits nothing")), "{r:?}");
@@ -4990,7 +4990,7 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
 fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
     let (mut lp, chain, t, _) = holders_world(1);
     let b = lp.peers[1].engine.tid();
-    let until = WallMs(lp.peers[0].engine.now().0 + 5_000);
+    let until = Time(lp.peers[0].engine.now().0 + 5_000);
     set_edge(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Write) }), None);
     lp.sync_all().unwrap();
     let write = |lp: &mut LocalPeer, v: &str| {

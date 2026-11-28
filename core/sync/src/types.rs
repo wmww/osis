@@ -3,7 +3,7 @@
 //! the driver makes them, every module's work ends in them.
 
 use crate::store::Store;
-use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Tid, Time};
 use osis_crypto::{NodeRng, Signature};
 use osis_engine::Engine;
 use osis_blob::{Address, Class};
@@ -78,7 +78,7 @@ pub struct Entry {
     /// entries).
     pub role: bool,
     pub class: Class,
-    pub expires: Option<WallMs>,
+    pub expires: Option<Time>,
 }
 
 /// A node's input: what its transport, timer and owner tell it.
@@ -147,7 +147,7 @@ pub struct Cx<'a> {
     pub engine: &'a mut Engine,
     pub store: &'a mut Store,
     /// The wall clock: for stamps and judging stamped values only.
-    pub now: WallMs,
+    pub now: Time,
     /// The monotonic clock: every wait kept in memory.
     pub mono: Mono,
     pub rng: &'a mut dyn NodeRng,

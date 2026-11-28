@@ -4,7 +4,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{CommitId, CreationRecord, Limits, SyncId, Role, Tid, Value, WallMs, decode, encode};
+use osis_base::{CommitId, CreationRecord, Limits, SyncId, Role, Tid, Value, Time, decode, encode};
 use osis_schema::core_types::*;
 use osis_schema::{RawKey, Schema, Type, core_schema, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,7 +20,7 @@ fn epoch(n: u64) -> Epoch {
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5).into(), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), may_grant: true, retain: false, floor: None }),
+        (tid(5).into(), Edge { role: Role::Write, until: Some(Time(1_700_000_000_000)), may_grant: true, retain: false, floor: None }),
         (tid(7).into(), Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }),
     ]);
     let keys = Keys {
@@ -54,7 +54,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("dial", "dial.0", DIAL.encode(&BTreeMap::from([(tid(36).into(), Dial { key: vec![36; 32], urls: vec!["peer://203.0.113.7:4040".to_string()] })]))),
         ("settings", "settings^.0", SETTINGS.encode(&tid(37).into())),
         ("caps", "caps^.0", CAPS.encode(&BTreeMap::from([(tid(38).into(), Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33).into(), ThingCaps { entries: 5, bytes: 6 })]) })]))),
-        ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
+        ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(Time(1_700_000_000_000)) })]))),
     ]
 }
 

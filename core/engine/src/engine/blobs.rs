@@ -1,7 +1,7 @@
 //! Blob ciphertexts in the node's one store (`osis_store::Ciphertext`), behind the traits of
 //! osis-blob (pages, chunks) and osis-commit (header-list chunk trees).
 
-use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid, Time};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_base::memo::Stamps;
 use osis_store::{CipherTx, Ciphertext};
@@ -309,7 +309,7 @@ pub struct ListBlobs<'t, 'a, 'r> {
 impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
     fn put(&mut self, prefix: &osis_commit::Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), osis_commit::Error> {
         let (_, key, blind) = osis_blob::linked_prefix_inputs(self.rng);
-        let p = osis_blob::Prefix::for_delete_keys(prefix.salt, &osis_crypto::thing_blind(&blind, prefix.thing.as_bytes()), prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
+        let p = osis_blob::Prefix::for_delete_keys(prefix.salt, &osis_crypto::thing_blind(&blind, prefix.thing.as_bytes()), prefix.expiry.map(Time), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
         let (key, blob) = osis_blob::frame_under(key, &p, plaintext).map_err(|_| osis_commit::Error::Storage("frame"))?;
         let id = osis_blob::blob_id(&blob);
         osis_blob::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;
@@ -427,7 +427,7 @@ mod tests {
     // releases and none of its holds; a committed release takes effect
     #[test]
     fn a_rolled_back_step_releases_nothing_and_holds_nothing() {
-        let mut p = crate::local_peer::Peer::new(0, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let mut p = crate::local_peer::Peer::new(0, osis_base::Time(1_700_000_000_000)).unwrap();
         let e = &mut p.engine;
         let ((x, xb), (y, yb)) = (blob(1), blob(2));
         e.put_blobs(vec![(x, xb)]).unwrap();

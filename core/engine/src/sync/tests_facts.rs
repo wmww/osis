@@ -10,7 +10,7 @@ use crate::Mutation;
 use osis_base::{Ak, BlobId, CommitId, Tid, Value};
 use osis_schema::core_types as ct;
 
-const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+const T0: osis_base::Time = osis_base::Time(1_700_000_000_000);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -57,7 +57,7 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, d);
     e.commit(m).unwrap().unwrap();
-    let expires = osis_base::WallMs(e.now().0 + 60_000);
+    let expires = osis_base::Time(e.now().0 + 60_000);
     let mut m = Mutation::new();
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     m.expires(t, &ak("x:a.0"), expires).unwrap();
@@ -69,12 +69,12 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     assert_eq!(prefix.expiry(), Some(expires));
     let env = osis_commit::Envelope::decode(&pt).unwrap();
     let groups = osis_commit::prefix_groups(&env.header, env.ais().iter().copied()).unwrap();
-    let mut framed = |at: Option<osis_base::WallMs>| {
+    let mut framed = |at: Option<osis_base::Time>| {
         let p = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(rng), &env.header.blind, at, &groups).unwrap().with_class(osis_blob::Class::Durable);
         let (key, blob) = osis_blob::frame(&p, &pt, rng).unwrap();
         e.open_commit(&blob, &key)
     };
-    assert!(framed(Some(osis_base::WallMs(expires.0 + 1))).is_err(), "a later expiry");
+    assert!(framed(Some(osis_base::Time(expires.0 + 1))).is_err(), "a later expiry");
     assert!(framed(None).is_err(), "no expiry");
     assert!(framed(Some(expires)).is_ok(), "the commit's own");
 }

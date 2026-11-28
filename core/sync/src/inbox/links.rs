@@ -47,7 +47,7 @@
 use super::Here;
 use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
-use osis_base::{CommitId, Tid, WallMs};
+use osis_base::{CommitId, Tid, Time};
 use osis_engine::Engine;
 use osis_blob::{DialHint, Link, Locator, ShareLink};
 use osis_store::Shred;
@@ -61,7 +61,7 @@ const PEERS: &[u8] = b"I/p/";
 struct Pending {
     link: ShareLink,
     /// When this node started redeeming it (node clock): its follow time runs from here.
-    since: WallMs,
+    since: Time,
     /// Whom the join grants K (spec/permissions.md §7 Redeem: an own thing or a thing its own
     /// things administer, such as the node's account).
     joiner: Tid,
@@ -75,18 +75,18 @@ fn link_hints(link: &ShareLink) -> Vec<DialHint> {
 
 /// A redeem's durable row (`I/r/`, keyed by K or a locator's target), either kind of link:
 /// `[joined: 0 | 1 commit][since][joiner][link text]`.
-fn encode_row(link: &Link, since: WallMs, joiner: &Tid, joined: Option<CommitId>) -> Result<Vec<u8>> {
+fn encode_row(link: &Link, since: Time, joiner: &Tid, joined: Option<CommitId>) -> Result<Vec<u8>> {
     let text = link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
     let joined = joined.map_or(vec![0], |c| [&[1u8][..], &c.0].concat());
     Ok([joined, since.0.to_be_bytes().to_vec(), joiner.as_bytes().to_vec(), text.into_bytes()].concat())
 }
 
-fn decode_row(v: &[u8]) -> Option<(Link, WallMs, Tid, Option<CommitId>)> {
+fn decode_row(v: &[u8]) -> Option<(Link, Time, Tid, Option<CommitId>)> {
     let (joined, rest) = match v.first()? {
         0 => (None, v.get(1..)?),
         _ => (Some(CommitId(v.get(1..33)?.try_into().ok()?)), v.get(33..)?),
     };
-    let since = WallMs(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
+    let since = Time(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
     let joiner = Tid::from_bytes(rest.get(8..8 + osis_base::format::TID_LEN)?.try_into().ok()?);
     let link = Link::from_text(std::str::from_utf8(rest.get(8 + osis_base::format::TID_LEN..)?).ok()?).ok()?;
     Some((link, since, joiner, joined))
@@ -141,7 +141,7 @@ enum Stage {
 #[derive(Clone, Debug)]
 struct PublicPending {
     link: Locator,
-    since: WallMs,
+    since: Time,
     joiner: Tid,
 }
 
@@ -268,7 +268,7 @@ impl Redemptions {
                 continue;
             };
             let engine = &mut *h.engine;
-            let until = WallMs(p.since.0.saturating_add(h.policy.follow_link_ms()));
+            let until = Time(p.since.0.saturating_add(h.policy.follow_link_ms()));
             let stage = || match () {
                 _ if engine.closure_holds(&t) && engine.reaches(&t) => PublicStage::Held,
                 _ if engine.reaches(&t) => PublicStage::Ready,
@@ -305,7 +305,7 @@ impl Redemptions {
                 continue;
             };
             let engine = &mut *h.engine;
-            let until = WallMs(since.0.saturating_add(h.policy.follow_link_ms()));
+            let until = Time(since.0.saturating_add(h.policy.follow_link_ms()));
             let Some((_, stage)) = self.ready.settle(&k, || link_stage(engine, &link, until)) else { continue };
             if stage == Stage::Waiting {
                 continue;
@@ -384,7 +384,7 @@ impl Redemptions {
 
 /// The account joined K already, the link has ended, the join can be written (`Engine::redeemable`), or the follow time ran out
 /// at `until` (the engine's clock read up to `until`, so its passing moves this).
-fn link_stage(engine: &mut Engine, link: &ShareLink, until: WallMs) -> Stage {
+fn link_stage(engine: &mut Engine, link: &ShareLink, until: Time) -> Stage {
     if engine.joined_link(&link.k) {
         return Stage::Joined;
     }

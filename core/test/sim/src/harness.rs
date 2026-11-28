@@ -5,7 +5,7 @@
 use crate::check::{self, Checker};
 use crate::dice::Dice;
 use crate::workload;
-use osis_base::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, WallMs};
+use osis_base::{Classified, Clock, CommitId, ErrorClass, ManualClock, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::SeededRng;
 use osis_engine::local_peer::{Package, Peer};
@@ -203,7 +203,7 @@ impl History {
     }
 }
 
-fn boot(seed: u64, t: WallMs) -> osis_engine::Result<(Peer, Faults)> {
+fn boot(seed: u64, t: Time) -> osis_engine::Result<(Peer, Faults)> {
     let faults = Faults::new();
     let clock = Arc::new(ManualClock::new(t));
     let backend = MemoryBackend::with_faults(faults.clone());
@@ -236,7 +236,7 @@ impl Sim {
         };
         for i in 0..s.cfg.nodes {
             let clock = s.cfg.clocks.get(i).copied().unwrap_or_default();
-            let (mut peer, faults) = boot(s.dice.u64(), WallMs(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
+            let (mut peer, faults) = boot(s.dice.u64(), Time(wall_of(clock, 0))).map_err(|e| s.fail(format!("node {i} create: {e}")))?;
             let (made, _) = osis_engine::local_peer::make_account(&mut peer.engine).map_err(|e| s.fail(format!("node {i} account: {e}")))?;
             s.nodes.push(Node { peer, account: made.thing, profile: made.profile, faults, clock, up: true });
         }
@@ -420,7 +420,7 @@ impl Sim {
     pub fn advance(&mut self, ms: u64) -> Res<()> {
         self.elapsed = self.elapsed.saturating_add(ms);
         for n in &self.nodes {
-            n.peer.clock.set(WallMs(wall_of(n.clock, self.elapsed)));
+            n.peer.clock.set(Time(wall_of(n.clock, self.elapsed)));
         }
         for i in 0..self.nodes.len() {
             if !self.node(i)?.up {

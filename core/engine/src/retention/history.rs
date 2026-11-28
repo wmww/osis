@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn kept_by_the_current_setting_spec_commits_5() {
-        let ts = |w: u64, l: u64| Ts::make(osis_base::WallMs(w), l).unwrap();
+        let ts = |w: u64, l: u64| Ts::make(osis_base::Time(w), l).unwrap();
         let z = Ts::ZERO;
         // a role-class body is kept `ROLE_KEEP` after replaced, whatever the settings
         let role = Kept { role: true, ..Kept::default() };

@@ -8,7 +8,7 @@ use super::Store;
 use crate::set::SyncsFollow;
 use crate::types::{Holding, Result};
 use osis_base::memo::{Effects, Feed, Removals};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Time};
 use osis_engine::Engine;
 use osis_engine::sync::{Caps, Opened, Path};
 use std::collections::{BTreeMap, BTreeSet};
@@ -329,7 +329,7 @@ impl std::fmt::Debug for Follow {
 impl Follow {
     /// Follows what moved, then the store's own time (`Store::settle_at`): whether anything
     /// acted.
-    pub fn settle(&mut self, engine: &mut Engine, store: &mut Store, now: WallMs) -> Result<bool> {
+    pub fn settle(&mut self, engine: &mut Engine, store: &mut Store, now: Time) -> Result<bool> {
         // entries added or gone since: parked or unparked before any read secret is looked at,
         // so a secret that came after an entry failed to open finds it parked
         match self.entries.as_mut() {

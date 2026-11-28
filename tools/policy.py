@@ -538,6 +538,7 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "entry block": r"(?i)\bentry[ _-]?blocks?\b|\bENTRY_BLOCK\w*",
     "entry page": r"(?i)\bentry[ _-]?pages?\b|\bENTRY_PAGE\b",
     "EntryKeys": r"\bEntryKeys\b",
+    "WallMs": r"\bWallMs\b",
     "minter": r"(?i)\bminters?\b",
     "making commit": r"(?i)\bmaking[ _-]commits?\b",
     "way in": r"(?i)\bways? in\b(?=\s*([.,;:()]|$|\b(from|is|are|at|to|for|it|they|of)\b))",

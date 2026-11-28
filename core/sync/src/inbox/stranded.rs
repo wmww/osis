@@ -225,7 +225,7 @@ impl Reports {
 mod tests {
     use super::*;
     use crate::store::Store;
-    use osis_base::WallMs;
+    use osis_base::Time;
     use crate::store::Source;
     use crate::types::SourceClass;
     use osis_proto::Code;
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn a_stranded_node_with_no_writer_connected_fires_once_spec_sync_inbox_5() {
         use osis_engine::local_peer::LocalPeer;
-        let mut lp = LocalPeer::new(2, 0, WallMs(1_000_000)).unwrap();
+        let mut lp = LocalPeer::new(2, 0, Time(1_000_000)).unwrap();
         lp.sync_all().unwrap();
         let m = lp.peers[1].engine.tid();
         let mut mu = osis_engine::Mutation::new();
@@ -326,7 +326,7 @@ mod tests {
         let policy = crate::types::Policy::default();
         let fired = |e: &mut osis_engine::Engine, store: &mut Store, r: &mut Reports| {
             let before = e.fires_owed().len();
-            let mut h = Here { engine: e, status: None, store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy };
+            let mut h = Here { engine: e, status: None, store, now: Time(1_000_000), mono: osis_base::Mono(0), policy: &policy };
             r.now = Arc::new(BTreeMap::from([(s, st.clone())]));
             r.dirty = true;
             r.settle(&mut h, &mut NoNet).unwrap();
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(fired(e, &mut store, &mut r), 0, "once at this key");
         let mut store = Store::open(Box::new(backend), Box::new(root), Box::new(osis_crypto::SeededRng::from_u64(2))).unwrap();
         let mut r = Reports::default();
-        r.start(&mut Here { engine: e, status: None, store: &mut store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy }).unwrap();
+        r.start(&mut Here { engine: e, status: None, store: &mut store, now: Time(1_000_000), mono: osis_base::Mono(0), policy: &policy }).unwrap();
         assert_eq!(fired(e, &mut store, &mut r), 0, "nor again after a start");
     }
 }

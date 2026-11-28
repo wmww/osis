@@ -256,7 +256,7 @@ fn a_copy_is_purged_only_by_what_every_snapshot_states() {
     let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
     let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
     let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-    stated.insert(model_cid(&w, d), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(B), purge_by: osis_base::PurgeBy::Admin });
+    stated.insert(model_cid(&w, d), Stated { ts: osis_base::Ts::make(osis_base::Time(2), 0).unwrap(), purge_author: tid(B), purge_by: osis_base::PurgeBy::Admin });
     let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
     assert!(p.copies().contains(&model_cid(&w, d)) && p.purged_copies().is_empty());
 }
@@ -363,7 +363,7 @@ fn a_misstated_fact_steers_a_purge_only_where_the_original_is_not_held() {
         let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
         let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
         let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-        stated.insert(model_cid(&w, h), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), purge_by: osis_base::PurgeBy::Writer });
+        stated.insert(model_cid(&w, h), Stated { ts: osis_base::Ts::make(osis_base::Time(2), 0).unwrap(), purge_author: tid(W), purge_by: osis_base::PurgeBy::Writer });
         let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
         (inp, p)
     };

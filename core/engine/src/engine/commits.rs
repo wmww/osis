@@ -10,7 +10,7 @@ use super::journal::Journaled;
 use super::{Dropped, DropFor, Hold, Missing, View, index};
 use crate::events::Origin;
 use osis_base::memo::{Reader, UndoableStamps};
-use osis_base::{Ak, BlobId, CommitId, Tid, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Tid, Time};
 use osis_commit::Header;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
@@ -61,7 +61,7 @@ pub struct Meta {
     /// What the per-commit indexes read of the header, with what this node decided of its paths.
     pub view: Arc<View>,
     pub header: Arc<Header>,
-    pub received: WallMs,
+    pub received: Time,
     pub origin: Origin,
     /// An own commit a repair wrote (`Engine::relink`, spec/sync-ids.md §1 Repair), with the blobs
     /// it encrypted afresh: those are never repaired by way of it (the chunks it reused are).
@@ -84,7 +84,7 @@ impl Meta {
     }
     /// A meta of its fields.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn of(view: Arc<View>, header: Arc<Header>, received: WallMs, origin: Origin, repair: Option<Arc<BTreeSet<BlobId>>>, signed: osis_commit::Signed, valid: Vec<bool>, hold: Vec<Hold>) -> Meta {
+    pub(crate) fn of(view: Arc<View>, header: Arc<Header>, received: Time, origin: Origin, repair: Option<Arc<BTreeSet<BlobId>>>, signed: osis_commit::Signed, valid: Vec<bool>, hold: Vec<Hold>) -> Meta {
         Meta { view, header, received, origin, repair, signed, valid, hold, rec: Rec::default() }
     }
     /// How many parts the commit has (fixed by its header).
@@ -488,11 +488,11 @@ mod tests {
     use crate::engine::Dropped;
     use crate::local_peer::LocalPeer;
     use osis_base::memo::Effects;
-    use osis_base::{Ak, CommitId, Value, WallMs};
+    use osis_base::{Ak, CommitId, Value, Time};
 
     /// A held commit's meta with a part on each of two things.
     fn two_parts() -> (CommitId, Meta) {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let (t, u) = (lp.peers[0].engine.new_thing(&mut m, a), lp.peers[0].engine.new_thing(&mut m, a));
@@ -512,7 +512,7 @@ mod tests {
     /// one still to arrive (which would read as a body not dropped).
     #[test]
     fn a_dropped_piece_stands_for_its_body_spec_wire_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
@@ -557,7 +557,7 @@ mod tests {
     // reader reads the record's row too, so the record's write (here its undo) moves it.
     #[test]
     fn a_part_read_while_its_record_disagrees_moves_with_the_record() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);

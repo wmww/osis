@@ -42,7 +42,7 @@ use crate::engine::DropFor;
 use crate::error::Result;
 use crate::sync_ids::{Certs, HeadKeys};
 use crate::{Engine, Ingested};
-use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Time};
 use osis_crypto::{Secret32, SigningSecret, WRAP_LEN};
 use osis_blob::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -208,7 +208,7 @@ impl FromIterator<BodyEntry> for Bodies {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BodyMeta {
     pub parts: PartSet,
-    pub expires: Option<WallMs>,
+    pub expires: Option<Time>,
     /// Fetch order (spec/wire.md §5).
     pub order: u64,
     /// A per-sync-ID copy, not the shared blob.
@@ -931,18 +931,18 @@ impl Engine {
 
     /// When the memo clock next moves a value read with an `until` (`memo::Clock::next`): the
     /// driver folds it into the node's wake.
-    pub fn clock_next(&self) -> Option<WallMs> {
-        self.core.time.next().map(WallMs)
+    pub fn clock_next(&self) -> Option<Time> {
+        self.core.time.next().map(Time)
     }
 
     /// Whether the memo clock reached `t`, read up to `t`: a value judged by it moves when `t`
     /// passes, and `clock_next` wakes the driver then.
-    pub fn reached(&self, t: WallMs) -> bool {
+    pub fn reached(&self, t: Time) -> bool {
         self.core.time.until(Some(t.0)) >= t.0
     }
 
     /// Moves the memo clock to `now`.
-    pub fn set_now(&mut self, now: WallMs) {
+    pub fn set_now(&mut self, now: Time) {
         self.core.time.set(now.0);
     }
 
@@ -951,17 +951,17 @@ impl Engine {
 #[cfg(test)]
 mod tests_clock {
     use crate::local_peer::LocalPeer;
-    use osis_base::WallMs;
+    use osis_base::Time;
 
     // `reached` (sync's deadlines, e.g. a link's follow time, spec/sync-inbox.md §6): read before
     // `t`, it sets a wake at `t`, and holds once the clock is there.
     #[test]
     fn reached_wakes_at_its_time_spec_sync_inbox_6() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let now = e.now();
         e.set_now(now);
-        let t = WallMs(now.0 + 10_000);
+        let t = Time(now.0 + 10_000);
         assert!(!e.reached(t));
         assert_eq!(e.clock_next(), Some(t), "a wake at t");
         e.set_now(t);

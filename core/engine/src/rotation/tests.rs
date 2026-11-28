@@ -4,12 +4,12 @@
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid, Time};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The wall time every rotation test starts at.
-pub(super) const T0: WallMs = WallMs(1_700_000_000_000);
+pub(super) const T0: Time = Time(1_700_000_000_000);
 
 /// `n` fresh peers (`LocalPeer::new`, seed 0, at `T0`), synced: built once per test process, each
 /// caller handed a copy (notes/test-harnesses.md, Copied worlds).
@@ -1146,7 +1146,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
 fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
@@ -1181,7 +1181,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 fn a_finalize_rotates_only_what_its_writer_can_wrap_spec_permissions_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Sync)]);
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Sync) };
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
@@ -1218,7 +1218,7 @@ fn a_later_default_changes_no_timed_ending_spec_permissions_3() {
         lp.peers[0].engine.commit(m).unwrap();
     };
     set_default(&mut lp, true);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let retain = lp.peers[0].engine.retains_by_default(&g);
     assert!(retain, "the default when written");
     lp.peers[0].engine.grant(&g, &tids[1], &ct::Edge { until: Some(until), retain, ..edge(Role::Read) }).unwrap();
@@ -1259,7 +1259,7 @@ pub(super) fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
 #[test]
 fn concurrent_removals_fork_once_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Write), (3, Role::Write), (4, Role::Write)]);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[4], new: Some(ct::Edge { until: Some(until), ..edge(Role::Write) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(rounds_to_settle(&mut lp, g), vec![0], "settled before the end");
@@ -1332,7 +1332,7 @@ fn forks_stand(lp: &mut LocalPeer, g: Tid, roles: &[Role], forks: usize, what: &
 #[test]
 fn finalize_without_its_until_unmet_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
     let u: BTreeSet<_> = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap().commits.into_iter().collect();
     lp.peers[0].clock.advance(1_000);
@@ -1363,7 +1363,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
 #[test]
 fn finalize_applies_whole_or_not_spec_permissions_2() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Admin), (3, Role::Write), (4, Role::Write)]);
-    let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
+    let timed = ct::Edge { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
     let mut u1 = BTreeSet::new();
     for d in [3, 4] {
         let c = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap().commits;
@@ -1474,7 +1474,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
 #[test]
 fn newest_event_names_departure_spec_crypto_4() {
     for g_below in [false, true] {
-        let mut lp = LocalPeer::new(3, 0, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(3, 0, Time(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
         let o = independent_thing(&mut lp, 0);
@@ -1667,7 +1667,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
 #[test]
 fn finalize_beside_renewal_settles_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Write), (3, Role::Write)]);
-    let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
+    let timed = ct::Edge { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
     for d in [2, 3] {
         lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap();
     }
@@ -1694,7 +1694,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
 #[test]
 fn renewed_holder_resealed_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
-    let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
+    let timed = ct::Edge { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
@@ -1850,7 +1850,7 @@ fn grant_rotates_first_boxes_grantee_only_spec_crypto_4() {
 fn ended_holder_not_resealed_spec_permissions_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
@@ -1877,7 +1877,7 @@ fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
     let g = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     lp.peers[0].engine.grant(&g, &x, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[2]);

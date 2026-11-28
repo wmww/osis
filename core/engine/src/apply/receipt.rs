@@ -5,7 +5,7 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid, WallMs};
+use osis_base::{Ak, CommitId, Tid, Time};
 use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,13 +17,13 @@ impl Engine {
     /// below write, its held commits acting for that thing; and every purge request whose right
     /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
     /// of now; an earlier `as_of` gives the frontier as of then.
-    pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
+    pub fn frontier(&mut self, scope: &DemotionScope, as_of: Time) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)
     }
 
     /// `frontier_and_requests` fitted to the list bound (`fit`): what is left out of content the
     /// demoter's own addenda list instead.
-    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: WallMs, keep: &BTreeSet<CommitId>) -> Result<Frontier> {
+    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: Time, keep: &BTreeSet<CommitId>) -> Result<Frontier> {
         let (mut f, content, requests) = self.frontier_and_requests(scope, as_of)?;
         f.commits.extend(keep.iter().copied());
         let out: Vec<CommitId> = content.into_iter().chain(requests).filter(|c| !keep.contains(c)).collect();
@@ -86,7 +86,7 @@ impl Engine {
     /// `frontier`, the plain-content commits it lists (what addenda may list, received last
     /// first) and the requests it lists (received last first): what `fit` leaves out when it is
     /// over the list bound, in that order.
-    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
+    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: Time) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
         let aspects = self.scope_aspects(scope);
         self.run(|tx| {

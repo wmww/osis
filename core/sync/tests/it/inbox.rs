@@ -6,7 +6,7 @@
 
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, SyncId, Tid, Time};
 use osis_crypto::{RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
 use osis_engine::sync::{Holding, Path, SyncSet};
 use osis_blob::{Class, Prefix, Step, StepId, StepKeys};
@@ -53,7 +53,7 @@ fn deposit_seed(n: u8) -> Secret32 {
 /// A blob of `n` payload bytes with prefix expiry `expiry` (`tag` makes it distinct).
 fn blob(tag: u64, n: usize, expiry: Option<u64>) -> (BlobId, Vec<u8>) {
     let mut rng = SeededRng::from_u64(tag ^ 0x5eed);
-    let p = Prefix::new(Prefix::random_salt(&mut rng), expiry.map(WallMs), vec![]).unwrap();
+    let p = Prefix::new(Prefix::random_salt(&mut rng), expiry.map(Time), vec![]).unwrap();
     let (_, bytes) = osis_blob::frame(&p, &vec![tag as u8; n], &mut rng).unwrap();
     (osis_blob::blob_id(&bytes), bytes)
 }
@@ -243,7 +243,7 @@ impl T {
             // an own deposit, or (on given connections) an entry stamped under another step
             Target::Stores | Target::On(_) => {
                 let on = matches!(target, Target::On(_));
-                let e = Entry { blob: b, wrap: [5; 57], stamp: on.then_some(osis_crypto::Signature([7; 64])), deposited: !on, own: true, role: false, class: Class::Durable, expires: Some(WallMs(T0 + INBOX_LIFETIME_MS)) };
+                let e = Entry { blob: b, wrap: [5; 57], stamp: on.then_some(osis_crypto::Signature([7; 64])), deposited: !on, own: true, role: false, class: Class::Durable, expires: Some(Time(T0 + INBOX_LIFETIME_MS)) };
                 assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
                 self.offers.add(s, b, target);
             }
@@ -823,7 +823,7 @@ fn a_deposit_flood_leaves_the_bounds_spec_sync_inbox_4() {
         b[..8].copy_from_slice(&(i as u64).to_be_bytes());
         BlobId(b)
     };
-    let entry = |i: usize, expires: Option<u64>| Entry { blob: blob_of(i), wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: expires.map(WallMs) };
+    let entry = |i: usize, expires: Option<u64>| Entry { blob: blob_of(i), wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: expires.map(Time) };
     let under: Vec<(Entry, u64)> = (0..DEPOSITS_WAITING).map(|i| (entry(i, None), 1)).collect();
     assert!(osis_sync::inbox::to_clear(under).is_empty(), "under the bounds nothing goes");
     for flood in [DEPOSITS_WAITING + 1, 10 * DEPOSITS_WAITING] {

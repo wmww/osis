@@ -32,7 +32,7 @@ use dials::{Dials, NodePeers, Why};
 use crate::unread::Unread;
 use crate::leave::Leave;
 use crate::life::Life;
-use osis_base::{Mono, SyncId, WallMs};
+use osis_base::{Mono, SyncId, Time};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_blob::Address;
@@ -156,7 +156,7 @@ pub struct Node {
     cfg: SyncConfig,
     /// The wall clock, for stamps and what judges them: the latest reading, so it never goes
     /// back for the node (spec/sync-streams.md §1 Waits).
-    now: WallMs,
+    now: Time,
     /// The monotonic clock every wait kept in memory runs on.
     mono: Mono,
     /// Settle rounds of the last step (tests: `rounds`).
@@ -934,7 +934,7 @@ impl Node {
     /// every time a stamped value is judged by (on the wall clock, as far ahead of the wall
     /// clock's reading now: a wall clock moved before it comes is followed at the next step).
     fn next_wake(&mut self) -> Option<Mono> {
-        let engine = self.engine.next_timer().ok().flatten().map(WallMs);
+        let engine = self.engine.next_timer().ok().flatten().map(Time);
         let clock = self.engine.clock_next();
         let wall = [self.store.next_wake(), self.read.next_wake(), engine, clock].into_iter().flatten().min();
         let (wall_now, mono) = (self.engine.now(), self.engine.mono());

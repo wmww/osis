@@ -5,7 +5,7 @@
 //! keys let it, so what it reads shows what the writers' keys gave it.
 
 use crate::flows::{edge_of, newest_read, people, sealed_write, spread, thing_of};
-use osis_base::{Clock, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Clock, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 /// A timed share: `t` (mint admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
 /// (`role`: G's role). Returns (lp, t, accounts, until).
 /// Built once per `role` (`LocalPeer::cached`).
-fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
+fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, Time) {
     let (lp, (t, ps, until)) = LocalPeer::cached(&format!("finalize::shared/{role:?}"), || {
         let (lp, t, ps, until) = shared_built(role);
         (lp, (t, ps, until))
@@ -23,13 +23,13 @@ fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
     (lp, t, ps, until)
 }
 
-fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
+fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, Time) {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 0, ps[0]);
     for w in [1, 3] {
         lp.peers[0].engine.grant(&t, &ps[w], &edge_of(Role::Write)).unwrap();
     }
-    let until = WallMs(lp.peers[0].engine.now().0 + 5_000);
+    let until = Time(lp.peers[0].engine.now().0 + 5_000);
     lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(until), ..edge_of(role) }).unwrap();
     spread(&mut lp);
     assert_eq!(sealed_write(&mut lp, 1, t, "before"), BTreeSet::from([0, 2, 3]));
@@ -37,9 +37,9 @@ fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
 }
 
 /// Every peer but G (2) past `until`.
-fn past(lp: &mut LocalPeer, until: WallMs, by: u64) {
+fn past(lp: &mut LocalPeer, until: Time, by: u64) {
     for i in [0, 1, 3] {
-        lp.peers[i].clock.set(WallMs(until.0 + by));
+        lp.peers[i].clock.set(Time(until.0 + by));
     }
 }
 
@@ -97,13 +97,13 @@ fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     raw_finalize(&mut lp, 1, t, ps[2]);
     past(&mut lp, until, 1_000);
-    lp.peers[2].clock.set(WallMs(until.0 + 1_000));
+    lp.peers[2].clock.set(Time(until.0 + 1_000));
     spread(&mut lp);
     for i in 0..4 {
         assert!(holds(&lp, i, t, ps[2]), "peer {i}: the early removal applies nothing");
     }
     // a renewal keeps it a holder by the clock too
-    lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(WallMs(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
     spread(&mut lp);
     reseal(&mut lp, t);
     assert!(sealed_write(&mut lp, 0, t, "later").contains(&2));
@@ -153,9 +153,9 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
 fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
-    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(WallMs(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Edge { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
     assert_eq!(renewed.commits.len(), 1, "a renewal finalizes nothing first");
-    lp.peers[1].clock.set(WallMs(until.0 + 2_000));
+    lp.peers[1].clock.set(Time(until.0 + 2_000));
     assert_eq!(sealed_write(&mut lp, 1, t, "unaware"), BTreeSet::from([0, 3]), "the writer finalized, not knowing");
     spread(&mut lp);
     for i in 0..4 {
@@ -172,7 +172,7 @@ fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
 fn concurrent_finalizes_converge_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
-    lp.peers[3].clock.set(WallMs(until.0 + 1_500));
+    lp.peers[3].clock.set(Time(until.0 + 1_500));
     for w in [1, 3] {
         let (done, _) = lp.peers[w].engine.ensure_rotated(&t).unwrap();
         assert_eq!(done.commits.len(), 1, "peer {w} finalizes, not knowing the other's");
@@ -203,7 +203,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
     use osis_engine::rotation::LostScope;
     let (mut lp, t, _, until) = shared(Role::Write);
     past(&mut lp, until, 1_000);
-    lp.peers[2].clock.set(WallMs(until.0 + 1_000));
+    lp.peers[2].clock.set(Time(until.0 + 1_000));
     let (done, _) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert_eq!(done.commits.len(), 1, "finalized");
     spread(&mut lp);

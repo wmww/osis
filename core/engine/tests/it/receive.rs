@@ -6,7 +6,7 @@ use crate::common;
 use common::*;
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind};
 use osis_base::Classified;
-use osis_base::{Role, Tid, Ts, Value, WallMs};
+use osis_base::{Role, Tid, Ts, Value, Time};
 use osis_engine::{Event, Ingested, Mutation, Origin, Reason};
 
 /// The index among `pks` of the commit creating `t`.
@@ -322,7 +322,7 @@ fn parked_spec_versioning_2() {
     let t = new_thing(&mut lp, 0);
     share(&mut lp, 0, t);
     sync(&mut lp, 0, 1);
-    let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
+    let ts = Ts::make(Time(T0.0 + 10), 0).unwrap();
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.purge_by = osis_base::PurgeBy::Writer;

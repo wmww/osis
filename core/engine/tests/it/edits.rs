@@ -2,7 +2,7 @@
 //! fire it replaces reads in that fire's place, for the same verified actor, in every arrival order.
 
 use crate::common::*;
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, WallMs};
+use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Time};
 use osis_commit::PurgeItem;
 use osis_engine::engine::listing::{CommitFrom, PartBody};
 use osis_engine::local_peer::LocalPeer;
@@ -313,7 +313,7 @@ fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
         if let Some(o) = of {
             m.replaces(d, &log(), o).unwrap();
         }
-        m.expires_all(WallMs(t + at));
+        m.expires_all(Time(t + at));
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let o = timed(&mut lp, "one", 6 * HOUR, None);
@@ -336,7 +336,7 @@ fn an_edit_takes_its_originals_expiry_spec_commits_5() {
     let mut m = Mutation::new();
     m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("one")).unwrap();
-    m.expires_all(WallMs(t + HOUR));
+    m.expires_all(Time(t + HOUR));
     let o = lp.peers[0].commit(m).unwrap().unwrap();
     let v = edit(&mut lp, 0, d, r, "two", o);
     assert_eq!(lp.peers[0].engine.header(&v).unwrap().expires, lp.peers[0].engine.header(&o).unwrap().expires);
@@ -399,7 +399,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
         m.purge_by(d, &log(), r).unwrap();
         m.set(d, &log(), &s(v)).unwrap();
         if let Some(x) = at {
-            m.expires_all(WallMs(x));
+            m.expires_all(Time(x));
         }
         lp.peers[0].commit(m).unwrap().unwrap()
     };
@@ -415,7 +415,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     for c in [permanent, brief, later] {
         m.purge(named(&lp, d, c));
     }
-    m.expires_all(WallMs(t + 2 * HOUR));
+    m.expires_all(Time(t + 2 * HOUR));
     // a writer refuses a request naming what it would not reach: this one is written anyway
     lp.peers[0].engine.core.skip_writer_rules = true;
     let rq = lp.peers[0].commit(m).unwrap().unwrap();
@@ -469,7 +469,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let mut m = Mutation::new();
     m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("one")).unwrap();
-    m.expires_all(WallMs(t + HOUR));
+    m.expires_all(Time(t + HOUR));
     let o = lp.peers[0].commit(m).unwrap().unwrap();
     edit(&mut lp, 0, d, r, "two", o);
     let rx = lp.peers[0].engine.subscribe();
@@ -486,7 +486,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
-    m.expires_all(WallMs(t + HOUR));
+    m.expires_all(Time(t + HOUR));
     lp.peers[0].commit(m).unwrap().unwrap();
     let rx = lp.peers[0].engine.subscribe();
     lp.peers[0].engine.watch_commits();
@@ -605,7 +605,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_plain_spec_commits_5()
                 0 | 1 => {
                     m.set(d, &log(), &s(&format!("f{step}"))).unwrap();
                     if g.below(3) == 0 {
-                        m.expires_all(WallMs(now + (1 + g.below(4) as u64) * HOUR));
+                        m.expires_all(Time(now + (1 + g.below(4) as u64) * HOUR));
                     }
                 }
                 2 | 3 if !fires.is_empty() => {

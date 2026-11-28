@@ -3,7 +3,7 @@
 //! durable write of an operation, and its costs counted at n and 10n.
 
 use osis_base::format::{MAX_DRIFT_MS, TOMBSTONE_LIFETIME_MS};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, SyncId, Time};
 use osis_crypto::{DeleteSecret, RoleKey, Secret32, SeededRng, SigningSecret, WRAP_LEN, deposit_key, role_key};
 use osis_engine::sync::{Caps, Holding, SyncSet};
 use osis_blob::{Class, DeleteItem, Prefix, Step};
@@ -61,7 +61,7 @@ fn unread(dev: &Dev, s: &Sid) -> Store {
 /// A blob of `class` with `n` bytes of payload, `expiry`, and delete-key commitments `keys`.
 fn blob(n: usize, class: Class, expiry: Option<u64>, keys: &[(u8, osis_crypto::VerifyingKey)]) -> (BlobId, Vec<u8>) {
     let mut rng = SeededRng::from_u64(n as u64 ^ 0x5eed ^ expiry.unwrap_or(0));
-    let p = Prefix::for_keys([n as u8; 16], &[1; 16], expiry.map(WallMs), keys).unwrap().with_class(class);
+    let p = Prefix::for_keys([n as u8; 16], &[1; 16], expiry.map(Time), keys).unwrap().with_class(class);
     let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
     (osis_blob::blob_id(&bytes), bytes)
 }
@@ -336,7 +336,7 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     let mut bad = stamped(&s, b, false);
     bad.wrap = wrap(9);
     assert_eq!(st.take_stamped(&s.id, &bad, bytes.clone(), &[]).unwrap(), Code::REFUSED, "bad stamp");
-    st.settle_at(WallMs(500)).unwrap();
+    st.settle_at(Time(500)).unwrap();
     let (xb, xbytes) = blob(101, Class::Durable, Some(400), &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, xb, false), xbytes, &[]).unwrap(), Code::EXPIRED);
     let mut big = stamped(&s, b, false);
@@ -359,7 +359,7 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let (e, ebytes) = blob(101, Class::Ephemeral, Some(10_000), &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone(), &[]).unwrap(), Code::OK);
-    assert_eq!(st.take_stamped(&s.id, &Entry { class: Class::Ephemeral, expires: Some(WallMs(10_000)), ..stamped(&s, e, false) }, ebytes, &[]).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &Entry { class: Class::Ephemeral, expires: Some(Time(10_000)), ..stamped(&s, e, false) }, ebytes, &[]).unwrap(), Code::OK);
     let events = events_of(&st, &s.id).len();
     st.set_unheld(&s.id, true).unwrap();
     assert!(st.entries(&s.id).unwrap().is_empty() && st.entry(&s.id, &e).unwrap().is_none(), "its copy dropped");
@@ -498,7 +498,7 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
         assert!(st.room_grew().unwrap().is_empty());
     }
     assert_eq!(judged(), 0, "nothing moved: nothing judged");
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "the tombstones left: room for it");
     assert!(!st.waits_room(&s.id));
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
@@ -528,7 +528,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     // an entry in memory counts what it holds there, about 1.5 KB beside its blob
     st.set_caps(&caps(used + x.len() as u64, 2300));
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     let (ob, ox) = blob(150, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox, &[]).unwrap(), Code::OK, "o fills the freed room");
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's entry gives way: room for S's");
@@ -538,7 +538,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     let exp = Some(TOMBSTONE_LIFETIME_MS + 10 * MAX_DRIFT_MS);
     let eph = |sid: &Sid, n: usize| {
         let (b, x) = blob(n, Class::Ephemeral, exp, &[]);
-        (b, Entry { class: Class::Ephemeral, expires: exp.map(WallMs), ..stamped(sid, b, false) }, x)
+        (b, Entry { class: Class::Ephemeral, expires: exp.map(Time), ..stamped(sid, b, false) }, x)
     };
     let (_, big, bx) = eph(&s, 1200);
     assert_eq!(st.take_stamped(&s.id, &big, bx.clone(), &[]).unwrap(), Code::STORAGE_CAP, "larger than the memory total");
@@ -587,10 +587,10 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
             st.set_caps(&caps);
         }
         assert!(st.room_grew().unwrap().is_empty() && st.waits_room(&s.id));
-        assert_eq!(st.next_wake(), (!forever).then_some(WallMs(20_000)), "woken at the latest expiry");
-        st.settle_at(WallMs(19_999)).unwrap();
+        assert_eq!(st.next_wake(), (!forever).then_some(Time(20_000)), "woken at the latest expiry");
+        st.settle_at(Time(19_999)).unwrap();
         assert!(st.room_grew().unwrap().is_empty(), "one it refused not expired");
-        st.settle_at(WallMs(20_000)).unwrap();
+        st.settle_at(Time(20_000)).unwrap();
         assert_eq!(st.room_grew().unwrap(), if forever { vec![] } else { vec![s.id] }, "restart: {restart}, forever: {forever}");
         assert_eq!(st.waits_room(&s.id), forever);
     }
@@ -947,8 +947,8 @@ fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
     let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, Some(1000), &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
-    assert_eq!(st.next_wake(), Some(WallMs(1000)));
-    st.settle_at(WallMs(1000)).unwrap();
+    assert_eq!(st.next_wake(), Some(Time(1000)));
+    st.settle_at(Time(1000)).unwrap();
     assert!(st.entry(&s.id, &b).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b).unwrap().is_none());
     assert!(st.kept_bytes(&b).unwrap().is_none());
@@ -970,7 +970,7 @@ fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
             st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
         }
         osis_base::costs::take();
-        st.settle_at(WallMs(500)).unwrap();
+        st.settle_at(Time(500)).unwrap();
         osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store rows read").map(|(.., n)| n).sum::<u64>()
     };
     let (small, large) = (rows(10), rows(100));
@@ -986,9 +986,9 @@ fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
     let e = stamped(&s, b, false);
     st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap();
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS - 1)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS - 1)).unwrap();
     assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::TOMBSTONED);
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS)).unwrap();
     assert_eq!(st.take_stamped(&s.id, &e, x, &[]).unwrap(), Code::OK);
 }
 
@@ -1073,7 +1073,7 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     assert!(st.tombstone(&s.id, &b).unwrap().is_none(), "the own drop's tombstone ended");
     assert!(st.tombstone(&s.id, &b2).unwrap().is_some_and(|t| t.deleted), "the Delete's stays");
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2.clone(), &[]).unwrap(), Code::TOMBSTONED);
-    st.settle_at(WallMs(MAX_DRIFT_MS)).unwrap();
+    st.settle_at(Time(MAX_DRIFT_MS)).unwrap();
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2, &[]).unwrap(), Code::OK, "its tombstone lasted MAX_DRIFT");
     assert_eq!(dev.faults.forbidden(), 0, "no durable write");
     dev.faults.forbid_writes(false);
@@ -1102,7 +1102,7 @@ fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
         let (held, used) = (st.memory_held(), st.usage(&s.id).unwrap().1.bytes);
         let blobs: Vec<_> = (0..n).map(|i| blob(64, Class::Ephemeral, Some(10 * MAX_DRIFT_MS + i as u64), &[])).collect();
         for (b, x) in &blobs {
-            let e = Entry { class: Class::Ephemeral, expires: Some(WallMs(10 * MAX_DRIFT_MS)), ..stamped(&s, *b, false) };
+            let e = Entry { class: Class::Ephemeral, expires: Some(Time(10 * MAX_DRIFT_MS)), ..stamped(&s, *b, false) };
             assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::OK);
             // counted from the start: written, it adds nothing to the count
             st.set_elsewhere(&s.id, b).unwrap();
@@ -1160,7 +1160,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, eb, false), ex, &[]).unwrap(), Code::STORAGE_CAP, "past S's memory cap");
     // r kept unread from now: counted again, it passes the total and, using most, gives way
     st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Unread)])).unwrap();
-    assert!(st.settle_at(WallMs(0)).unwrap());
+    assert!(st.settle_at(Time(0)).unwrap());
     assert!(st.entry(&r.id, &rb).unwrap().is_none(), "r gave way");
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3, "within the total again: nothing else went");
 }
@@ -1175,7 +1175,7 @@ fn a_held_ephemeral_body_counts_its_charge_under_each_sync_id_spec_sync_compacti
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&r1, Holding::Read), (&r2, Holding::Read)])).unwrap();
     let (b, x) = blob(300, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
-    let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: false, role: false, class: Class::Ephemeral, expires: Some(WallMs(10 * MAX_DRIFT_MS)) };
+    let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: false, role: false, class: Class::Ephemeral, expires: Some(Time(10 * MAX_DRIFT_MS)) };
     let mem = |st: &Store, s: &Sid| st.usage(&s.id).unwrap().1.bytes;
     st.log(&r1.id, e.clone(), Some(x.clone()), None).unwrap();
     let bare = mem(&st, &r1);
@@ -1186,7 +1186,7 @@ fn a_held_ephemeral_body_counts_its_charge_under_each_sync_id_spec_sync_compacti
     for s in [&r1, &r2] {
         st.drop_entry(&s.id, &b, Vec::new()).unwrap();
     }
-    st.settle_at(WallMs(2 * MAX_DRIFT_MS)).unwrap();
+    st.settle_at(Time(2 * MAX_DRIFT_MS)).unwrap();
     assert_eq!(st.log(&r1.id, e, Some(x), None).unwrap(), Code::OK);
     assert_eq!(mem(&st, &r1), bare, "the charge went with its entries");
 }
@@ -1233,7 +1233,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
 fn stands_live_in_the_record_spec_sync_judgement_4() {
     let (dev, s, mut st) = one_unread();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
-    let stand = Stand { at: WallMs(5), logged: BlobId([2; 32]), head: s.head().id(), fall: 3 };
+    let stand = Stand { at: Time(5), logged: BlobId([2; 32]), head: s.head().id(), fall: 3 };
     let (src, conn) = (Source::Record(rec), Source::Conn(ConnId(9)));
     st.set_stand(src, &s.id, b"body", Some(&stand)).unwrap();
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
@@ -1251,7 +1251,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "and with its close");
     assert_eq!(st.memory_held(), held, "with its rows' aging rows: memory holds nothing of it");
     st.set_stand(conn, &s.id, b"body", Some(&stand)).unwrap();
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 5)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS + 5)).unwrap();
     assert_eq!(st.stand(src, &s.id, b"body").unwrap(), None, "aged out");
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "a connection's too, however long it lasts");
     assert!(!st.seen_deleted(src, &s.id, &BlobId([3; 32])).unwrap());
@@ -1309,24 +1309,24 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &Step, step: usize) {
         1 => st.take_deposit(&deposit(s, &b(1).1, false), Some(Source::Record(rec))).unwrap(),
         2 => st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b(0).0)], true).unwrap()[0],
         3 => {
-            let e = Entry { own: true, expires: Some(WallMs(5_000)), ..stamped(s, b(3).0, false) };
+            let e = Entry { own: true, expires: Some(Time(5_000)), ..stamped(s, b(3).0, false) };
             st.log(&s.id, e, Some(b(3).1), None).unwrap()
         }
         4 => code_of(st.drop_entry(&s.id, &b(3).0, b"note".to_vec()).unwrap()),
         5 => code_of(st.lift_tombstone(&s.id, &b(3).0).unwrap()),
         6 => code_of(st.uncharge(&s.id, &b(1).0).is_ok()),
-        7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: WallMs(0), logged: b(7).0, head: s.head().id(), fall: 0 })).is_ok()),
+        7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: Time(0), logged: b(7).0, head: s.head().id(), fall: 0 })).is_ok()),
         8 => code_of(st.saw_deleted(Source::Record(rec), &s.id, &b(8).0).is_ok()),
         9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1, &[]).unwrap(),
         10 => {
             // the total cap gives way: S's oldest entries go
             st.set_caps(&caps(&[("total_bytes", 1)]));
-            let acted = st.settle_at(WallMs(1_000)).unwrap();
+            let acted = st.settle_at(Time(1_000)).unwrap();
             st.set_caps(&Caps::default());
             code_of(acted)
         }
         11 => st.reg(s, std::slice::from_ref(child)),
-        12 => code_of(st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
+        12 => code_of(st.settle_at(Time(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
         _ => code_of(st.shred(&s.id).is_ok()),
     };
     assert_eq!(code, Code::OK, "op {step}");
@@ -1473,11 +1473,11 @@ fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
     };
     let (a, b) = (del(&mut small), del(&mut large));
     assert_eq!(a, b, "a delete with its blob's reference check: {a} rows at n, {b} at 10n");
-    let a = rows_read(|| assert!(small.settle_at(WallMs(1_000)).unwrap()));
-    let b = rows_read(|| assert!(large.settle_at(WallMs(1_000)).unwrap()));
+    let a = rows_read(|| assert!(small.settle_at(Time(1_000)).unwrap()));
+    let b = rows_read(|| assert!(large.settle_at(Time(1_000)).unwrap()));
     assert_eq!(a, b, "expiring two entries: {a} rows at n, {b} at 10n");
-    let a = rows_read(|| assert!(small.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
-    let b = rows_read(|| assert!(large.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
+    let a = rows_read(|| assert!(small.settle_at(Time(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
+    let b = rows_read(|| assert!(large.settle_at(Time(TOMBSTONE_LIFETIME_MS + 1_000)).unwrap()));
     assert_eq!(a, b, "ending a tombstone: {a} rows at n, {b} at 10n");
 }
 
@@ -1726,6 +1726,6 @@ fn a_blobs_tombstones_are_known_by_the_blob_until_they_end_spec_commits_5() {
     assert_eq!(st.tombstoned_under(&b).unwrap(), both);
     st.lift_tombstone(&s1.id, &b).unwrap();
     assert_eq!(st.tombstoned_under(&b).unwrap(), vec![s2.id]);
-    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    st.settle_at(Time(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     assert!(st.tombstoned_under(&b).unwrap().is_empty(), "ended with its tombstone");
 }

@@ -590,7 +590,7 @@ mod tests {
     use crate::Mutation;
     use crate::error::Error;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_base::{Ak, Role, Value, Time};
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
     
@@ -652,7 +652,7 @@ mod tests {
         let x = Ak::new(if shape == "map" { "x:m.0" } else { "k:t.0" }).unwrap();
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
         let keep = osis_schema::PurgeBy::Writer;
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
@@ -728,7 +728,7 @@ mod tests {
         lp.peers[who].commit(m).unwrap().unwrap()
     }
 
-    fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::PurgeBy, expires: Option<WallMs>) -> osis_base::CommitId {
+    fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::PurgeBy, expires: Option<Time>) -> osis_base::CommitId {
         lp.advance(10);
         let mut m = Mutation::new();
         m.op(t, x, PathOp { path: vec![], op: Op::Replace(v) }).unwrap().purge_by(t, x, keep).unwrap();
@@ -751,7 +751,7 @@ mod tests {
         let (m_k, l) = (|| vec![osis_crdt::PathSeg::Field(0), osis_crdt::PathSeg::Key(Value::Str("k".into()))], || vec![osis_crdt::PathSeg::Field(1)]);
         let k = || Value::Str("k".into());
         for removed_k in [false, true] {
-            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
             let me = lp.peers[0].engine.tid();
             let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
             lp.hold(t);
@@ -817,7 +817,7 @@ mod tests {
     fn pre_state_at_a_reset_gone_or_invalid() {
         for case in ["expired", "purged", "invalid"] {
             let (mut lp, t, x, keep) = two();
-            let expires = (case == "expired").then(|| WallMs(lp.peers[0].engine.now().0 + 100));
+            let expires = (case == "expired").then(|| Time(lp.peers[0].engine.now().0 + 100));
             replace(&mut lp, 0, t, &x, map_of(&[("j", 1)]), keep, None);
             lp.sync_all().unwrap();
             let r = replace(&mut lp, 1, t, &x, map_of(&[("r", 1)]), keep, expires);
@@ -864,7 +864,7 @@ mod tests {
     }
 
     fn two_build() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::PurgeBy) {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let keep = osis_schema::PurgeBy::Writer;
@@ -958,7 +958,7 @@ mod tests {
     // undoes its removal of `k`.
     #[test]
     fn invalid_commit_blocks_no_undo_spec_crdt_4_6() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.tid();
         let keep = osis_schema::PurgeBy::Writer;
@@ -1011,7 +1011,7 @@ mod tests {
     }
 
     fn writable_build(n: usize) -> (LocalPeer, Vec<osis_base::Tid>, Ak, Ak) {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
         let ts: Vec<_> = (0..n).map(|_| lp.peers[0].engine.create_with_admin(&a).unwrap().0).collect();
@@ -1073,7 +1073,7 @@ mod tests {
             let mut m = Mutation::new();
             m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
             if expiring {
-                m.expires(t, &x, WallMs(1_800_000_000_000)).unwrap();
+                m.expires(t, &x, Time(1_800_000_000_000)).unwrap();
             }
             lp.peers[1].commit(m).unwrap().unwrap();
             lp.advance(10);

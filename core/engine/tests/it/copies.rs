@@ -4,7 +4,7 @@
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
 use osis_engine::local_peer::LocalPeer;
-use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use crate::common::edge;
@@ -19,7 +19,7 @@ fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Optio
 /// Three nodes: 0 admin of `t`, 1 a writer later demoted (a rotation), 2 an admin; writes
 /// synced and one left unsynced.
 fn history() -> (LocalPeer, Tid, Ak) {
-    let mut lp = LocalPeer::new(3, 0, WallMs(1_700_000_000_000)).unwrap();
+    let mut lp = LocalPeer::new(3, 0, Time(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let x = Ak::new("x:m.0").unwrap();
     let me = lp.peers[0].engine.tid();

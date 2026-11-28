@@ -330,12 +330,12 @@ mod tests {
     use super::*;
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Role, WallMs};
+    use osis_base::{Role, Time};
 
     /// Alice's thing `g`, made independent with its sync ID by a grant to bob, and `t`
     /// minted with admin `g` (dependent: `g` is its delete base).
     fn world() -> (LocalPeer, Tid, Tid) {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();

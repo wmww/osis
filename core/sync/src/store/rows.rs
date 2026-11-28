@@ -47,7 +47,7 @@
 //!   the end of a listing from the start; gone with S (`shred`).
 
 use crate::types::{Error, Result};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, SyncId, Time};
 use osis_crypto::{Signature, WRAP_LEN};
 use osis_blob::Class;
 use osis_store::RecordId;
@@ -165,10 +165,10 @@ pub(crate) fn conn_total_key(c: crate::types::ConnId) -> Vec<u8> {
 pub(crate) fn tomb_key(s: &SyncId, b: &BlobId) -> Vec<u8> {
     [TOMB, &s.0, &b.0].concat()
 }
-pub(crate) fn tomb_at_key(at: WallMs, s: &SyncId, b: &BlobId) -> Vec<u8> {
+pub(crate) fn tomb_at_key(at: Time, s: &SyncId, b: &BlobId) -> Vec<u8> {
     [TOMB_AT, &at.0.to_be_bytes(), &s.0, &b.0].concat()
 }
-pub(crate) fn expiry_key(t: WallMs, s: &SyncId, b: &BlobId) -> Vec<u8> {
+pub(crate) fn expiry_key(t: Time, s: &SyncId, b: &BlobId) -> Vec<u8> {
     [EXPIRY, &t.0.to_be_bytes(), &s.0, &b.0].concat()
 }
 pub(crate) fn step_key(s: &SyncId, i: u32) -> Vec<u8> {
@@ -186,7 +186,7 @@ pub(crate) fn usage_key(s: &SyncId) -> Vec<u8> {
 pub(crate) fn by_use_key(bytes: u64, s: &SyncId) -> Vec<u8> {
     [BY_USE, &(u64::MAX - bytes).to_be_bytes(), &s.0].concat()
 }
-pub(crate) fn aging_key(at: WallMs, s: &SyncId, tag: u8, key: &[u8], src: Source) -> Vec<u8> {
+pub(crate) fn aging_key(at: Time, s: &SyncId, tag: u8, key: &[u8], src: Source) -> Vec<u8> {
     [AGING, &at.0.to_be_bytes(), &s.0, &[tag], &(key.len() as u32).to_be_bytes(), key, &source_bytes(src)].concat()
 }
 
@@ -297,7 +297,7 @@ pub(crate) struct EntryRow {
     /// Its stamp or deposit signature is a role entry's: outside the caps.
     pub role: bool,
     pub class: Class,
-    pub expires: Option<WallMs>,
+    pub expires: Option<Time>,
     /// The blob's size, 0 until its bytes are held.
     pub size: u64,
     /// Charged to this source (spec/sync-ids.md §5 Peer budget) while it gives nothing held.
@@ -389,7 +389,7 @@ impl EntryRow {
             _ => return Err(corrupt()),
         };
         r.end()?;
-        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged, brought, vouch })
+        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(Time(t)), size, charged, brought, vouch })
     }
 }
 
@@ -398,7 +398,7 @@ impl EntryRow {
 /// the entry was), opaque here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tombstone {
-    pub at: WallMs,
+    pub at: Time,
     pub deleted: bool,
     pub note: Vec<u8>,
 }
@@ -409,7 +409,7 @@ impl Tombstone {
     }
     pub(crate) fn decode(v: &[u8]) -> Result<Tombstone> {
         let mut r = R::new(v);
-        Ok(Tombstone { at: WallMs(r.u64()?), deleted: r.u8()? != 0, note: r.rest().to_vec() })
+        Ok(Tombstone { at: Time(r.u64()?), deleted: r.u8()? != 0, note: r.rest().to_vec() })
     }
 }
 

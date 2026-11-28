@@ -691,7 +691,7 @@ pub struct Leaving {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimedLoss {
     /// When it drops whatever is heard (`LOST_HEARD_WAIT_MS` after it was first judged).
-    pub wait_end: osis_base::WallMs,
+    pub wait_end: osis_base::Time,
     /// Each sync ID of the actor read here, and whether a complete pass of it begun after the
     /// loss was first judged ended.
     pub ids: Vec<(osis_base::SyncId, bool)>,
@@ -771,7 +771,7 @@ impl Engine {
         let since = self.run(|tx| timed_since(tx, a))?;
         let place = self.judge_cause(crate::sync::held::Cause::Lost(a), true)?;
         let ids = self.read_ids(&a)?.into_iter().map(|s| (s, self.passed_after(std::iter::once(&s), place))).collect();
-        Ok(Some(TimedLoss { wait_end: osis_base::WallMs(since.saturating_add(LOST_HEARD_WAIT_MS)), ids }))
+        Ok(Some(TimedLoss { wait_end: osis_base::Time(since.saturating_add(LOST_HEARD_WAIT_MS)), ids }))
     }
 
     /// Whether a complete pass of each sync ID of `a` read here began after the loss

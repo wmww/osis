@@ -8,7 +8,7 @@
 use crate::harness::history::Gives;
 use crate::harness::lies::Lie;
 use crate::harness::{DiskFault, Loss, Seen, Step, World, bare_pair, play, two_nodes};
-use osis_base::{Ak, Value, WallMs};
+use osis_base::{Ak, Value, Time};
 use osis_engine::Mutation;
 use osis_sync::session::STALL_TIMEOUT_MS;
 use osis_sync::{ConnId, Out};
@@ -147,7 +147,7 @@ fn a_skewed_node_ticks_on_its_monotonic_clock_spec_sync_streams_1() {
         assert!(!w.seen.iter().any(|s| matches!(s, Seen::Tick { node: 1, .. })), "skew {skew}: not yet");
         w.advance(1);
         assert!(w.seen.contains(&Seen::Tick { node: 1, at }), "skew {skew}: {:?}", w.seen);
-        assert_eq!(w.now(), WallMs(start.0 + 5_000));
+        assert_eq!(w.now(), Time(start.0 + 5_000));
     }
 }
 

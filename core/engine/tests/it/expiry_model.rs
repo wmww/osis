@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_base::{Ak, CommitId, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -126,7 +126,7 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
     let at = |x: Option<u64>| x.map(|x| now0 + x);
     let mut m = Mutation::new();
     if let Some(x) = at(e1) {
-        m.expires(t, &k, WallMs(x)).unwrap();
+        m.expires(t, &k, Time(x)).unwrap();
     }
     m.op(t, h.aspect, (h.create)()).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
@@ -136,7 +136,7 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
     if let Some(e2) = c2 {
         let mut m = Mutation::new();
         if let Some(x) = at(e2) {
-            m.expires(t, &k, WallMs(x)).unwrap();
+            m.expires(t, &k, Time(x)).unwrap();
         }
         m.op(t, h.aspect, (h.edit)()).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
@@ -264,7 +264,7 @@ fn forged_copies(lp: &mut LocalPeer, t: Tid, copy: &Value) -> Vec<Value> {
     lp.advance(1_000);
     let now0 = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(now0 + HOUR)).unwrap();
+    m.expires(t, &k, Time(now0 + HOUR)).unwrap();
     m.op(t, &k, PathOp { path: vec![PathSeg::Key(s("m0399"))], op: Op::Set(s("secret")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();

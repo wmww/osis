@@ -70,7 +70,7 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     sync(&mut lp, 0, 1);
     let before = lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap();
     assert_ne!(before, Some(s("held")));
-    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let at = osis_base::Time(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("gone soon")).unwrap();
     m.set(t, &REG, &s("held")).unwrap();

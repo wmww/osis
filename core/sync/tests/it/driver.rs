@@ -5,7 +5,7 @@
 //! run on `Dials` with a table of dial peers.
 
 use crate::harness::{Seen, World, contacts, two_nodes};
-use osis_base::{BlobId, Mono, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Time};
 use osis_blob::{Address, Class, Prefix};
 use osis_store::Fault;
 use osis_sync::driver::dials::{DISCOVERED_KEEP, Dials, Peers, State, Why};
@@ -220,13 +220,13 @@ fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
 /// A blob of `class` expiring at `expiry`.
 fn blob(n: usize, class: Class, expiry: u64) -> (BlobId, Vec<u8>) {
     let mut rng = osis_crypto::SeededRng::from_u64(n as u64);
-    let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(class);
+    let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(Time(expiry)), &[]).unwrap().with_class(class);
     let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
     (osis_blob::blob_id(&bytes), bytes)
 }
 
 fn own(b: BlobId, class: Class, expiry: u64) -> Entry {
-    Entry { blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class, expires: Some(WallMs(expiry)) }
+    Entry { blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class, expires: Some(Time(expiry)) }
 }
 
 const SID: SyncId = SyncId([7; 16]);

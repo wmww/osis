@@ -11,7 +11,7 @@ use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_EDGE};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
 use crate::types::{Edge, EdgeOp, Point, RoleCommit, WriteId};
 use osis_base::format::MAX_CHAIN_DEPTH;
-use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, WallMs};
+use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -707,7 +707,7 @@ impl<S: Store> Timeline<S> {
 
     /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
     /// answer holds at any later ts before it.
-    pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<WallMs>) {
+    pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<Time>) {
         let edges = self.edges_at(None);
         let (r, u) = View::at(&edges, Some(ts)).roles_to(thing, &BTreeSet::new());
         (Arc::new(r), u)
@@ -728,7 +728,7 @@ impl<S: Store> Timeline<S> {
     /// Every thing's way into `thing` giving `need` on the current edges at `ts`
     /// (`graph::Ways`), and the earliest `until` the search followed: the answer holds at any
     /// later ts before it, while no edge changes.
-    pub fn ways_now(&self, thing: &Tid, need: Need, ts: Ts) -> (crate::graph::Ways, Option<WallMs>) {
+    pub fn ways_now(&self, thing: &Tid, need: Need, ts: Ts) -> (crate::graph::Ways, Option<Time>) {
         let edges = self.edges_at(None);
         View::at(&edges, Some(ts)).ways_to(thing, need)
     }

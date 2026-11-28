@@ -16,7 +16,7 @@ use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
-use osis_base::{CommitId, Role, Tid, WallMs};
+use osis_base::{CommitId, Role, Tid, Time};
 use osis_crypto::Epoch;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -445,7 +445,7 @@ fn rotation_history(seed: u64) -> Reached {
     let mut reached = Reached::default();
     let emphasis = seed % 4;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-    let mut lp = LocalPeer::new(N, seed, WallMs(1_700_000_000_000)).unwrap();
+    let mut lp = LocalPeer::new(N, seed, Time(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
@@ -546,7 +546,7 @@ fn rotation_history(seed: u64) -> Reached {
                 }
                 // an `until` soon on a holder's edge, at its role now
                 5 if ri == Role::Admin && j != o && j != i => {
-                    let until = WallMs(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
+                    let until = Time(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
                     if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) {
                         lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Edge { role: r, until: Some(until), may_grant: false, retain: false, floor: None }), retain: None }).is_ok();
                     }
@@ -1244,7 +1244,7 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
-    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let until = Time(lp.peers[0].engine.core.now().0 + 100);
     lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Edge { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0)], Rng(1));

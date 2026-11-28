@@ -5,7 +5,7 @@
 use crate::common;
 use common::*;
 use osis_commit::CommitBlob;
-use osis_base::{Tid, Value, WallMs};
+use osis_base::{Tid, Value, Time};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Ingested, Mutation, Reason};
 use osis_schema::{PurgeBy};
@@ -126,7 +126,7 @@ fn one_writer(n: usize) -> (LocalPeer, Tid) {
 /// Peer 0 inserts `items` at the start of list `a` on `t`, expiring at T0 + 1 h.
 fn put_expiring(lp: &mut LocalPeer, t: Tid, a: &osis_schema::Aspect<Value>, items: &[&str]) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.expires(t, a, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.expires(t, a, Time(T0.0 + 3_600_000)).unwrap();
     m.op(t, a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: items.iter().map(|x| s(x)).collect() } }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap()
 }
@@ -159,14 +159,14 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
             let map = ak("t:gonemap.0");
             m.purge_by(t, &map, by_writer().unwrap()).unwrap();
             if exp {
-                m.expires(t, &map, WallMs(far)).unwrap();
+                m.expires(t, &map, Time(far)).unwrap();
             }
             m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
             if reg {
                 m.set(t, &REG, &s("1")).unwrap();
                 // one expiry per commit (spec/commits.md §6)
                 if exp {
-                    m.expires(t, &REG, WallMs(far)).unwrap();
+                    m.expires(t, &REG, Time(far)).unwrap();
                 }
             }
         })
@@ -221,7 +221,7 @@ fn expired_entry_takes_nested_write_alike_spec_crdt_4_7() {
     let put = |v: &str| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s(v)) };
     let mut m = Mutation::new();
     m.purge_by(t, &map, r).unwrap();
-    m.expires(t, &map, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.expires(t, &map, Time(T0.0 + 3_600_000)).unwrap();
     m.op(t, &map, put("a")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
     let p1 = package_for(&mut lp, 0, 1, c1);
@@ -977,7 +977,7 @@ fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
     let mut expire = |at: u64| {
         let mut m = Mutation::new();
         m.set(mine, &REG, &s(&at.to_string())).unwrap();
-        m.expires_all(WallMs(at));
+        m.expires_all(Time(at));
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.peers[1].engine.next_timer().unwrap()
     };
@@ -1112,7 +1112,7 @@ fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("brief")).unwrap();
     let at = lp.peers[0].engine.now().0 + 3_600_000;
-    m.expires(t, &REG, WallMs(at)).unwrap();
+    m.expires(t, &REG, Time(at)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = packages_to(&mut lp, 0, 1).into_iter().find(|p| p.id == c).unwrap();
     // nor has its grant's fire come

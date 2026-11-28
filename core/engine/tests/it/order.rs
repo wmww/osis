@@ -23,7 +23,7 @@
 use crate::common;
 use common::*;
 use osis_base::testenv::{Permit, caught, par_map, pooled_map, threads};
-use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::Mutation;
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
@@ -252,7 +252,7 @@ fn by_of(op: u8) -> Option<PurgeBy> {
 /// setting): the kept aspects, the map and the text 30 min after replaced, the gone ones purged on
 /// replace, the list until half an hour after `now` (a bound passing while held), messages for
 /// good, the signal for good or 30 min after each fire (`odd`).
-fn base_setting(now: WallMs, odd: bool) -> osis_schema::core_types::RetentionSetting {
+fn base_setting(now: Time, odd: bool) -> osis_schema::core_types::RetentionSetting {
     let d = History::Keep { until: None, after: Some(HOUR / 2) };
     let until = History::Keep { until: Some(now.0 + HOUR / 2), after: None };
     let on = |a: &str, h: History| (ak(a), osis_schema::core_types::RetentionEntry { history: Some(h), ..Default::default() });
@@ -527,7 +527,7 @@ fn write_op(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, k: u8
         m.purge_by(t, &a, r).unwrap();
     }
     if let Some(ms) = expiry_of(op, v) {
-        let at = WallMs(e.now().0 + ms);
+        let at = Time(e.now().0 + ms);
         m.expires(t, &a, at).unwrap();
         if k == 2 {
             // one expiry per commit (spec/commits.md §6): the second aspect shares it
@@ -568,7 +568,7 @@ pub(crate) struct Played {
     /// How many of `packs` are the setup (identities, G, the first grants).
     pub(crate) base: usize,
     pub(crate) things: Vec<Tid>,
-    pub(crate) now: WallMs,
+    pub(crate) now: Time,
     /// What each step made.
     tally: Tally,
     /// Keys a node showed differently after its sync exchange than before (`Seen::restored`).
@@ -614,7 +614,7 @@ pub(crate) struct Played {
     /// history's end (`Access`), each with its commit and the
     /// wall time it is stamped: a node under test takes those on its account's inbox before each
     /// ingest once its clock reaches them (`take_fires`).
-    pub(crate) fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
+    pub(crate) fires: Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)>,
     /// What enters the node closure of a node under test, from the history (`held::Walk`).
     pub(crate) walk: std::sync::Arc<crate::held::Walk>,
     /// A written history (`play_in`): what `reader` and the setup's commits are a function of
@@ -716,7 +716,7 @@ fn made(played: &Played) -> Peer {
 /// A fresh node of its own for a history played by hand: it answers removals with no addenda
 /// (`fresh`), holds `g` and reads it once given the grant `grant_fresh` wrote. Its account is
 /// forked from one made once per process (making one costs about a tenth of `held_set_decides`).
-fn fresh_holding(now: WallMs, g: Tid) -> Peer {
+fn fresh_holding(now: Time, g: Tid) -> Peer {
     let mut p = under_test(fresh_base().fork(FRESH).unwrap(), now);
     p.engine.hold(osis_base::Strong(g)).unwrap();
     p
@@ -724,7 +724,7 @@ fn fresh_holding(now: WallMs, g: Tid) -> Peer {
 
 /// The account every node under test is (`fresh_base`), forked at `now`, holding nothing yet:
 /// the judging node of the judgment vectors (tests/it/judgment.rs), granted in the setup.
-pub(crate) fn judge_at(now: WallMs) -> Peer {
+pub(crate) fn judge_at(now: Time) -> Peer {
     under_test(fresh_base().fork(FRESH).unwrap(), now)
 }
 
@@ -733,7 +733,7 @@ pub(crate) fn judge_at(now: WallMs) -> Peer {
 /// opens (one stamped ahead of its clock waits there as any commit does). A grant fire on a
 /// thing whose setting enables no `grant@~0` (a node thing's) is refused as invalid
 /// (spec/sync-inbox.md §1).
-pub(crate) fn take_fires(p: &mut Peer, fires: &[(CommitId, WallMs, osis_engine::sync::SealedFireOut)]) {
+pub(crate) fn take_fires(p: &mut Peer, fires: &[(CommitId, Time, osis_engine::sync::SealedFireOut)]) {
     for (f, opened) in p.offer_fires(fires.iter().map(|(c, _, f)| (c, f))).unwrap() {
         let enabled = p.engine.enables(&f.thing, osis_schema::core_types::INBOX_SIGNALS[0]);
         assert!(!enabled || !matches!(opened, osis_engine::sync::Opened::Bad), "a fire refused");
@@ -741,7 +741,7 @@ pub(crate) fn take_fires(p: &mut Peer, fires: &[(CommitId, WallMs, osis_engine::
 }
 
 /// The fires `e` owes, sealed, each with its commit and the time it is stamped (`take_fires`).
-pub(crate) fn owed_fires(e: &mut osis_engine::Engine) -> Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)> {
+pub(crate) fn owed_fires(e: &mut osis_engine::Engine) -> Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)> {
     let mut fires = Vec::new();
     for id in e.fires_owed() {
         if let Some(out) = e.sealed_fire(&id).unwrap() {
@@ -781,16 +781,16 @@ fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
 
 /// When a node under test makes its account: its commits date from before any clock under test,
 /// so none parks for drift.
-const ACCOUNT_AT: WallMs = WallMs(T0.0 - 2 * 86_400_000);
+const ACCOUNT_AT: Time = Time(T0.0 - 2 * 86_400_000);
 
-fn under_test(mut p: Peer, now: WallMs) -> Peer {
+fn under_test(mut p: Peer, now: Time) -> Peer {
     p.clock.set(now);
     p.engine.write_addenda(false);
     p
 }
 
 /// `LocalPeer::new` with every peer answering removals with no addenda (`fresh`).
-fn local_peer_off(n: usize, seed: u64, t: WallMs) -> LocalPeer {
+fn local_peer_off(n: usize, seed: u64, t: Time) -> LocalPeer {
     let mut lp = LocalPeer::new(n, seed, t).unwrap();
     for p in &mut lp.peers {
         p.engine.write_addenda(false);
@@ -881,12 +881,12 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
 #[derive(Default)]
 struct Access {
     grants: Vec<(Tid, Package)>,
-    fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
+    fires: Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)>,
 }
 
 impl Access {
     /// Keeps each of `fires` not kept yet.
-    fn fire(&mut self, fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>) {
+    fn fire(&mut self, fires: Vec<(CommitId, Time, osis_engine::sync::SealedFireOut)>) {
         for f in fires {
             if !self.fires.iter().any(|x| x.0 == f.0) {
                 self.fires.push(f);
@@ -964,7 +964,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     // things held from their admin by a strong in a commit of their own (`RecordOnly` with one as admin)
     let mut strong_in: Vec<(Tid, Tid, CommitId)> = Vec::new();
     // wall times of each peer's commits (frontier points)
-    let mut marks: Vec<Vec<WallMs>> = vec![Vec::new(); 3];
+    let mut marks: Vec<Vec<Time>> = vec![Vec::new(); 3];
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
@@ -1042,7 +1042,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 Some(by)
             }
             Step::Grant { by, t, holder, role, until, may_grant, flow } => {
-                let e = osis_schema::core_types::Edge { until: until.map(|ms| WallMs(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
+                let e = osis_schema::core_types::Edge { until: until.map(|ms| Time(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
                 if flow {
                     lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
@@ -1063,7 +1063,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 }
                 let ms = &marks[holder];
                 let as_of = match (at as usize).checked_sub(1) {
-                    None => WallMs(ms.first().map_or(T0.0, |x| x.0 - 1)),
+                    None => Time(ms.first().map_or(T0.0, |x| x.0 - 1)),
                     Some(i) => ms.get(i).copied().unwrap_or_else(|| lp.peers[by].engine.now()),
                 };
                 let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], below)]) };
@@ -1251,7 +1251,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         write_op(&mut m, &mut lp.peers[by].engine, b, op / 2, k, v, true);
                         // one expiry per commit (spec/commits.md §6): `b`'s write shares `a`'s
                         if let Some(ms) = expiry_of(op, v) {
-                            let at = WallMs(lp.peers[by].engine.now().0 + ms);
+                            let at = Time(lp.peers[by].engine.now().0 + ms);
                             m.expires(b, &aspect_of(op / 2), at).unwrap();
                         }
                     }
@@ -1437,7 +1437,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                     write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
                     m.purge_by(th(t), &o, if v % 4 == 1 { if fits { PurgeBy::default() } else { writer } } else { PurgeBy::Admin }).unwrap();
                     if let Some(ms) = expiry_of(op, v) {
-                        m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
+                        m.expires(th(t), &o, Time(lp.peers[by].engine.now().0 + ms)).unwrap();
                     }
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
@@ -1525,7 +1525,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 let dels = [one(&mut lp, by, &LIST, po(vec![], Op::Delete { at: 0, len: 1 })), one(&mut lp, by, &TEXT, po(vec![], Op::Delete { at: 1, len: 2 }))];
                 // later than the deletes' stamps, which a seen future commit may hold above `by`'s clock
                 let deleted = dels.iter().map(|d| lp.peers[by].engine.header(d).unwrap().ts.wall_ms().0).max().unwrap();
-                lp.peers[other].clock.set(WallMs(deleted.max(lp.peers[other].engine.now().0) + 1));
+                lp.peers[other].clock.set(Time(deleted.max(lp.peers[other].engine.now().0) + 1));
                 one(&mut lp, other, &LIST, po(vec![PathSeg::Index(0)], Op::Set(s(&format!("x{v}")))));
                 one(&mut lp, other, &TAGS, po(vec![], Op::Remove(tag)));
                 lp.peers[by].clock.advance(1);
@@ -1804,8 +1804,8 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
 
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
 /// enough that a body held long past its bound shows.
-fn later_than(played: &Played) -> WallMs {
-    WallMs(played.now.0 + 2 * HOUR)
+fn later_than(played: &Played) -> Time {
+    Time(played.now.0 + 2 * HOUR)
 }
 
 /// The sync exchange, as a node's sync makes it: every held
@@ -1906,7 +1906,7 @@ fn pass_end(p: &mut Peer) {
 
 /// P3: no value of a delta past its expiry, or that a held purge request drops, is left in
 /// the state or in a held body (spec/requirements.md Purge, spec/commits.md §5, §6).
-fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> {
+fn value_past_end(p: &mut Peer, played: &Played, now: Time) -> Option<String> {
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
     ids.sort();
@@ -2230,7 +2230,7 @@ fn deliver(played: &Played, order: &[usize]) -> Peer {
 #[derive(Clone, Copy, Debug)]
 struct Clock {
     at: usize,
-    early: WallMs,
+    early: Time,
 }
 
 /// A seeded clock for delivering `order` (`deliver_with`): a split after 1 to all of its
@@ -2249,7 +2249,7 @@ fn clock_of(played: &Played, order: &[usize], rng: &mut Rng) -> Clock {
         2 => last + rng.below(HOUR),
         _ => first + rng.below(played.now.0.saturating_sub(first) + 1),
     };
-    Clock { at, early: WallMs(early.min(played.now.0)) }
+    Clock { at, early: Time(early.min(played.now.0)) }
 }
 
 /// Covered drops (`crate::covered::drop_all_covered`), run where a node would drop: after each ingest and each tick, so the judged nodes drop what the snapshots and
@@ -3743,7 +3743,7 @@ fn held_set_decides_at(size: Size) {
 fn shrink_keeps_the_failures_kind_and_prints_rust() {
     use Step::*;
     let a = failure_class("held [0, 1, 2] of 31 commits (base 24), order #3 [2, 0, 1]: now: held-model differs: commit c0ffee (#91) on Tid(7a) t:reg.0: the node holds its body, a held right holder's snapshot covers it\nmodel input ...");
-    let b = failure_class("held [0, 2] of 12 commits (base 9): order #0 at an earlier clock Clock { at: 5 } [0, 2]: after 4 ingests at WallMs(17): held-model differs: commit beef12 (#7) on Tid(01) t:reg.0: the node holds its body, a held right holder's snapshot covers it");
+    let b = failure_class("held [0, 2] of 12 commits (base 9): order #0 at an earlier clock Clock { at: 5 } [0, 2]: after 4 ingests at Time(17): held-model differs: commit beef12 (#7) on Tid(01) t:reg.0: the node holds its body, a held right holder's snapshot covers it");
     assert_eq!(a, b);
     assert_eq!(a, "held-model differs: commit # … on Tid… t:reg.#: the node holds its body, a held right holder's snapshot covers it");
     assert_ne!(a, failure_class("held [0] of 3 commits (base 2), order #0 [0]: later: the permission index differs from its walk from scratch"));
@@ -4352,7 +4352,7 @@ fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
     lp.advance(10);
     // peer 2 demoted as of before its write: w is invalid
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
-    let before = WallMs(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
+    let before = Time(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
     let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(osis_perm::Frontier::new(f.commits));
@@ -4427,7 +4427,7 @@ fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     lp.advance(10);
     // peer 2 demoted as of before its snapshot: it turns invalid
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
-    let before = WallMs(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
+    let before = Time(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
     let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(osis_perm::Frontier::new(f.commits));
@@ -4488,9 +4488,9 @@ fn expired_late_part_reads_alike_spec_crdt_4_7() {
     let mut m = Mutation::new();
     let now = lp.peers[0].engine.now();
     m.set(g, &REG, &s("brief")).unwrap();
-    m.expires(g, &REG, WallMs(now.0 + 1000)).unwrap();
+    m.expires(g, &REG, Time(now.0 + 1000)).unwrap();
     m.set(g, &KEPT, &s("k")).unwrap();
-    m.expires(g, &KEPT, WallMs(now.0 + 1000)).unwrap();
+    m.expires(g, &KEPT, Time(now.0 + 1000)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(2000);
@@ -4978,7 +4978,7 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
     let (creation, write) = (&played.packs[played.base], &played.packs[played.base + 1]);
     let ts = osis_commit::CommitBlob::decode_stored(&creation.bytes).unwrap().header.ts.wall_ms().0;
     let mut p = fresh_early(&played);
-    p.clock.set(WallMs(ts - osis_base::format::MAX_DRIFT_MS - 1));
+    p.clock.set(Time(ts - osis_base::format::MAX_DRIFT_MS - 1));
     // the fires of its grants come at that clock: one stamped ahead waits as the creation does
     take_fires(&mut p, &played.fires);
     for pk in &played.packs[..played.base] {
@@ -5004,7 +5004,7 @@ fn caught_up(h: &[Step], first: usize, then: usize, late: bool) {
     for pk in &played.packs[..played.base] {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
-    p.clock.set(WallMs(ts(a).min(ts(b)) - osis_base::format::MAX_DRIFT_MS - 1));
+    p.clock.set(Time(ts(a).min(ts(b)) - osis_base::format::MAX_DRIFT_MS - 1));
     assert!(matches!(p.receive(&a.bytes, a.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(..)), "a part thrown out, the rest waits for its `ts`");
     if !late {
         assert!(matches!(p.receive(&b.bytes, b.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(..)));

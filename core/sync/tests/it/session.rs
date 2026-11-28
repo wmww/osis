@@ -4,7 +4,7 @@
 
 use crate::harness::{Seen, World, bare_pair};
 use osis_base::copying::{cached, copying};
-use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
+use osis_base::{Clock, ManualClock, Mono, Tid, Time};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
 use osis_engine::Engine;
 use osis_proto::limits::{MAX_MESSAGE, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
@@ -15,7 +15,7 @@ use osis_sync::types::Cx;
 use osis_sync::{ConnId, NodeKey, Out, Store};
 use std::sync::Arc;
 
-const T0: WallMs = WallMs(1_700_000_000_000);
+const T0: Time = Time(1_700_000_000_000);
 /// The key the listener listens with (dialed by the dialer).
 const LISTEN: NodeKey = NodeKey([7; 32]);
 /// The dialer's ephemeral key.
@@ -26,7 +26,7 @@ struct End {
     engine: Engine,
     store: Store,
     rng: SeededRng,
-    now: WallMs,
+    now: Time,
     out: Vec<Out>,
 }
 
@@ -446,7 +446,7 @@ fn stall_clock_spec_sync_streams_1() {
     let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
     let b = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
     assert_eq!(p.ds.deadline(), stall(0), "sent with none other out");
-    p.d.now = WallMs(T0.0 + 10);
+    p.d.now = Time(T0.0 + 10);
     let ins = p.ds.receive(&frame(&Msg::Pong { id: b, wall_ms: 0 }), &mut p.d.cx()).expect("kept");
     assert_eq!(ins.len(), 1);
     assert_eq!(p.ds.deadline(), stall(0), "a reply to another request moves nothing");
@@ -454,7 +454,7 @@ fn stall_clock_spec_sync_streams_1() {
     assert_eq!(p.ds.deadline(), stall(20), "the transport took its frame");
     p.ds.taken(u64::MAX, Mono(T0.0 + 25));
     assert_eq!(p.ds.deadline(), stall(20), "once");
-    p.d.now = WallMs(T0.0 + 30);
+    p.d.now = Time(T0.0 + 30);
     let reply = frame(&pull_reply(a));
     p.ds.receive(&reply[..12], &mut p.d.cx()).expect("kept");
     assert_eq!(p.ds.deadline(), stall(30), "bytes of a reply to it");
@@ -487,7 +487,7 @@ fn clock_offset_from_pings_spec_sync_streams_1() {
     for (ahead, reported) in [(7_000u64, 1), (OFFSET_DIAGNOSTIC_MS, 0)] {
         let mut p = Pair::new();
         let events = p.d.engine.subscribe();
-        p.l.now = WallMs(T0.0 + ahead);
+        p.l.now = Time(T0.0 + ahead);
         let mut pings = 0;
         loop {
             let db = p.ds.take_bytes();
@@ -583,7 +583,7 @@ fn trickled_and_other_bytes_spec_sync_streams_1() {
     // one byte a millisecond
     let trickle = |p: &mut Pair, bytes: &[u8]| {
         for x in bytes {
-            p.d.now = WallMs(p.d.now.0 + 1);
+            p.d.now = Time(p.d.now.0 + 1);
             p.ds.receive(&[*x], &mut p.d.cx()).expect("kept");
         }
         p.d.now.0 - T0.0
@@ -599,14 +599,14 @@ fn trickled_and_other_bytes_spec_sync_streams_1() {
     let big = frame(&big_push(8_000_000));
     let mut moves = 0;
     for i in 0..10u64 {
-        p.d.now = WallMs(T0.0 + 1000 + i);
+        p.d.now = Time(T0.0 + 1000 + i);
         p.ds.receive(&big, &mut p.d.cx()).expect("kept");
         if p.ds.deadline() == stall(1000 + i) {
             moves += 1;
         }
     }
     assert_eq!(moves, 8, "eight 8 MB pushes move it, the ninth passes the bound");
-    p.d.now = WallMs(T0.0 + 2000);
+    p.d.now = Time(T0.0 + 2000);
     p.ds.receive(&frame(&pull_reply(a)), &mut p.d.cx()).expect("kept");
     assert_eq!(p.ds.deadline(), None, "answered: nothing out");
 }

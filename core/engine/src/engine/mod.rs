@@ -51,7 +51,7 @@ use crate::identity::Identity;
 use crate::sync::units::Written;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
-use osis_base::{Ak, BlobId, Clock, CommitId, SyncId, Tid, Ts, WallMs};
+use osis_base::{Ak, BlobId, Clock, CommitId, SyncId, Tid, Ts, Time};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
@@ -1526,7 +1526,7 @@ impl Core {
 
     /// `bound_to_horizon`'s deadline, after `now`.
     fn horizon_at(&self, now: u64, actors: impl Iterator<Item = Tid>) -> Option<u64> {
-        let at = osis_perm::At::now(osis_base::Ts::make(WallMs(now), 0).unwrap_or_default());
+        let at = osis_perm::At::now(osis_base::Ts::make(Time(now), 0).unwrap_or_default());
         let mut seen: BTreeSet<Tid> = BTreeSet::new();
         let mut out: Option<u64> = None;
         let mut later = |t: u64| {
@@ -2341,9 +2341,9 @@ impl Core {
     /// bounded by the `until` the judgement read, else a read of it whole), so a judgement
     /// moves when the time passes what it judged by; elsewhere the wall clock, which the memo
     /// clock follows (set at each transaction and read).
-    pub fn now(&self) -> WallMs {
+    pub fn now(&self) -> Time {
         if osis_base::memo::computing() {
-            return WallMs(self.time.now());
+            return Time(self.time.now());
         }
         self.hlc.wall()
     }
@@ -3219,7 +3219,7 @@ impl Engine {
     }
 
     /// The wall clock.
-    pub fn now(&self) -> WallMs {
+    pub fn now(&self) -> Time {
         self.core.now()
     }
 
@@ -3598,7 +3598,7 @@ impl Engine {
         }
         // the index is as of the last transaction: a timer due since has not run
         #[cfg(debug_assertions)]
-        let clock: Arc<dyn Clock> = Arc::new(osis_base::ManualClock::new(WallMs(self.last_tx_wall.unwrap_or(self.now().0))));
+        let clock: Arc<dyn Clock> = Arc::new(osis_base::ManualClock::new(Time(self.last_tx_wall.unwrap_or(self.now().0))));
         #[cfg(not(debug_assertions))]
         let clock = self.clock.clone();
         for rebuild in [false, true] {
@@ -3827,7 +3827,7 @@ mod tests {
     use super::journal::Journaled;
     use crate::local_peer::{LocalPeer, Peer};
     use crate::Mutation;
-    use osis_base::{Ak, Role, Tid, Value, WallMs};
+    use osis_base::{Ak, Role, Tid, Value, Time};
     use std::collections::BTreeSet;
 
     // spec/commits.md §5 (Dropping a body): what each part state answers. One state per part, so
@@ -3835,7 +3835,7 @@ mod tests {
     #[test]
     fn each_part_state_answers_alone() {
         use super::{Dropped, Hold, Missing};
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let a = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         lp.peers[0].engine.new_thing(&mut m, a);
@@ -3900,7 +3900,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "Engine::read changed")]
     fn a_read_that_writes_is_caught() {
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, Time(1_700_000_000_000));
         let p = &mut lp.peers[0];
         let a = p.engine.tid();
         let mut m = Mutation::new();
@@ -3918,7 +3918,7 @@ mod tests {
     // commits and for received ones, applied or pending.
     #[test]
     fn failed_transaction_restores_indexes_spec_commits_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut failed = 0;
@@ -3971,7 +3971,7 @@ mod tests {
     #[test]
     fn failed_transaction_restores_indexes_retention_spec_commits_4() {
         use osis_schema::{PurgeBy};
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let (reg, kept) = (Ak::new("t:reg.0").unwrap(), Ak::new("t:kept.0").unwrap());
@@ -4004,8 +4004,8 @@ mod tests {
             m.purge_by(g, &kept, keep0).unwrap();
             m.set(g, &kept, &Value::Str("w".into())).unwrap();
             write(&mut m, g, "w");
-            m.expires(g, &reg, WallMs(now.0 + 60_000)).unwrap();
-            m.expires(g, &kept, WallMs(now.0 + 60_000)).unwrap();
+            m.expires(g, &reg, Time(now.0 + 60_000)).unwrap();
+            m.expires(g, &kept, Time(now.0 + 60_000)).unwrap();
             e.commit(m).map(Option::unwrap)
         });
         lp.advance(10);
@@ -4048,7 +4048,7 @@ mod tests {
     fn local_schema_keeps_highest_version() {
         let parse = |rev: u64, ty: &str| std::sync::Arc::new(osis_schema::parse("t.osis", &format!("revision {rev};\naspect t:a.0: {ty};\n")).unwrap());
         let rev = |p: &Peer| p.engine.core.schemas.get("t:a.0").map(|s| (s.revision, s.aspects["t:a.0"].ty.clone()));
-        let mut p = Peer::new(0, WallMs(1_700_000_000_000)).unwrap();
+        let mut p = Peer::new(0, Time(1_700_000_000_000)).unwrap();
         let (v2, v1, v2b) = (parse(2, "int"), parse(1, "string"), parse(2, "bool"));
         p.engine.register_schema(v2.clone()).unwrap();
         p.engine.register_schema(v1).unwrap();

@@ -14,7 +14,7 @@ use super::rows::{self, EntryRow, Source, Tombstone, Usage, R, W};
 use super::{Env, ENTRY_OVERHEAD, TOMB_OVERHEAD};
 use crate::types::{Entry, Result};
 use osis_base::format::{MAX_DRIFT_MS, TOMBSTONE_LIFETIME_MS};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, SyncId, Time};
 use osis_engine::sync::Holding;
 use osis_store::{Shred, Transaction};
 
@@ -169,8 +169,8 @@ fn log(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, ev: E
 }
 
 /// When a tombstone made at `at` in `t`'s part ends.
-fn tomb_ends(t: &Transaction<'_>, at: WallMs) -> WallMs {
-    WallMs(at.0.saturating_add(if t.is_memory() { MAX_DRIFT_MS } else { TOMBSTONE_LIFETIME_MS }))
+fn tomb_ends(t: &Transaction<'_>, at: Time) -> Time {
+    Time(at.0.saturating_add(if t.is_memory() { MAX_DRIFT_MS } else { TOMBSTONE_LIFETIME_MS }))
 }
 
 /// The sync IDs whose entries in `t`'s part name blob `b`.

@@ -8,7 +8,7 @@
 use super::rows::Source;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::Stamps;
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, SyncId, Time};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a `BTreeMap<K, V>` element holds: twice its key and value (B-tree nodes at worst half
@@ -19,8 +19,8 @@ const fn slot<K, V>() -> u64 {
 
 /// What a memory log event holds (`Memory::held`): its log, slot and counter elements, and once
 /// it is a removal its aging element.
-pub(crate) const EVENT: u64 = slot::<(SyncId, u64), (BlobId, Option<WallMs>)>() + slot::<(SyncId, BlobId), u64>() + slot::<u64, SyncId>();
-pub(crate) const REMOVAL: u64 = EVENT + slot::<(WallMs, SyncId, BlobId), ()>();
+pub(crate) const EVENT: u64 = slot::<(SyncId, u64), (BlobId, Option<Time>)>() + slot::<(SyncId, BlobId), u64>() + slot::<u64, SyncId>();
+pub(crate) const REMOVAL: u64 = EVENT + slot::<(Time, SyncId, BlobId), ()>();
 
 /// The stamp key of S's memory log.
 #[derive(Hash)]
@@ -29,14 +29,14 @@ struct Listing<'a>(&'a SyncId);
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
     /// The memory log: per S, by counter, an entry added (`None`) or removed at a time.
-    log: BTreeMap<(SyncId, u64), (BlobId, Option<WallMs>)>,
+    log: BTreeMap<(SyncId, u64), (BlobId, Option<Time>)>,
     /// Each entry's latest memory log event.
     slot: BTreeMap<(SyncId, BlobId), u64>,
     /// The memory log by counter alone: which sync IDs moved past a mark (`since`).
     by_n: BTreeMap<u64, SyncId>,
     pub next: u64,
     /// Removal events by when they were made, for the sweep.
-    aging: BTreeSet<(WallMs, SyncId, BlobId)>,
+    aging: BTreeSet<(Time, SyncId, BlobId)>,
     /// What a blob of a held ephemeral commit from another node costs held here, past its bytes
     /// (`Engine::memory_charge`; spec/sync-compaction.md §2 Caps): every entry naming it, under
     /// any sync ID, counts the larger. Kept while an entry names the blob.
@@ -65,7 +65,7 @@ pub(crate) struct Memory {
 
 impl Memory {
     /// Logs entry `b` of S added (`gone` none) or removed at `gone`, over its earlier event.
-    pub(crate) fn event(&mut self, s: &SyncId, b: &BlobId, gone: Option<WallMs>) {
+    pub(crate) fn event(&mut self, s: &SyncId, b: &BlobId, gone: Option<Time>) {
         self.unlog(s, b);
         self.next += 1;
         self.log.insert((*s, self.next), (*b, gone));
@@ -82,7 +82,7 @@ impl Memory {
         fn of<K, V>(m: &BTreeMap<K, V>) -> u64 {
             m.len() as u64 * slot::<K, V>()
         }
-        let aging = self.aging.len() as u64 * slot::<(WallMs, SyncId, BlobId), ()>();
+        let aging = self.aging.len() as u64 * slot::<(Time, SyncId, BlobId), ()>();
         of(&self.log) + of(&self.slot) + of(&self.by_n) + aging + of(&self.estimate) + of(&self.charges)
     }
 
@@ -122,7 +122,7 @@ impl Memory {
     }
 
     /// Sweeps removal events past `MAX_DRIFT`; whether any.
-    pub(crate) fn sweep(&mut self, now: WallMs) -> bool {
+    pub(crate) fn sweep(&mut self, now: Time) -> bool {
         let mut acted = false;
         while let Some(&(t, s, b)) = self.aging.first() {
             if t.0.saturating_add(MAX_DRIFT_MS) > now.0 {
@@ -139,7 +139,7 @@ impl Memory {
         acted
     }
 
-    pub(crate) fn next_due(&self) -> Option<WallMs> {
-        self.aging.first().map(|x| WallMs(x.0.0.saturating_add(MAX_DRIFT_MS)))
+    pub(crate) fn next_due(&self) -> Option<Time> {
+        self.aging.first().map(|x| Time(x.0.0.saturating_add(MAX_DRIFT_MS)))
     }
 }

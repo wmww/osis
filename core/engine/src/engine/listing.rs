@@ -13,7 +13,7 @@
 
 use super::{Engine, Tx};
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, Value, Time};
 use osis_commit::{Header, Kind};
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -87,7 +87,7 @@ pub struct CommitRow {
     pub purge_author: Tid,
     pub node: Tid,
     pub ts: Ts,
-    pub received: WallMs,
+    pub received: Time,
     pub parts: Vec<PartRow>,
 }
 

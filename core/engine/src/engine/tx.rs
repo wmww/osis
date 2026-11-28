@@ -3,7 +3,7 @@
 
 use super::{Core, Hold, Meta, Step, blobs, decode_commit_record, index, large, pages, records, refs, state};
 use crate::error::{Error, Result};
-use osis_base::{Ak, CommitId, Tid, WallMs};
+use osis_base::{Ak, CommitId, Tid, Time};
 use osis_commit::CommitBlob;
 use osis_crdt::Fragment;
 use osis_crypto::CryptoRngCore;
@@ -816,7 +816,7 @@ impl Tx<'_> {
         self.scan_rows(prefix, |k, _| Ok(of(k.try_into().map_err(|_| Error::Corrupt(what))?)))
     }
 
-    pub fn now(&self) -> WallMs {
+    pub fn now(&self) -> Time {
         self.core.now()
     }
 }

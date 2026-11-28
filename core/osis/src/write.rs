@@ -299,7 +299,7 @@ impl<'d> Write<'d> {
     pub fn create(&mut self, admin: Tid, expires: Option<Expiry>) -> Result<Tid> {
         let admin = self.known(admin)?;
         let at = expires.map(|e| expiry_at(self.db, e)).transpose()?;
-        let rec = self.db.engine(|e| e.thing_record(admin, at.map(|t| osis_base::WallMs(t.0))));
+        let rec = self.db.engine(|e| e.thing_record(admin, at.map(|t| osis_base::Time(t.0))));
         let t = rec.tid();
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);

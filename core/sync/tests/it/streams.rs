@@ -5,7 +5,7 @@
 //! 10n.
 
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, SyncId, Time};
 use osis_crypto::{RoleKey, Secret32, SeededRng, WRAP_LEN, role_key};
 use osis_engine::sync::{Holding, SyncSet};
 use osis_blob::{Class, Prefix};
@@ -244,7 +244,7 @@ impl Side {
 
     fn with<T>(&mut self, now: u64, f: impl FnOnce(&mut Streams, &mut Ctx) -> T) -> T {
         let Side { store, streams, table, pipe, open, reported, folded, .. } = self;
-        let mut ctx = Ctx { store, ground: table, wire: pipe, shared: &*open, now: WallMs(now), mono: osis_base::Mono(now), reported };
+        let mut ctx = Ctx { store, ground: table, wire: pipe, shared: &*open, now: Time(now), mono: osis_base::Mono(now), reported };
         let out = f(streams, &mut ctx);
         // opens folds the reports (and keeps them for the test to read)
         for r in reported.drain(*folded..).collect::<Vec<_>>() {
@@ -716,7 +716,7 @@ fn absence_is_no_deletion_but_from_the_start_spec_sync_streams_4() {
     p.a.store.drop_entry(&s, &x, Vec::new()).unwrap();
     p.a.log(s, 101);
     p.now += TOMBSTONE_LIFETIME_MS + 1;
-    p.a.store.settle_at(WallMs(p.now)).unwrap();
+    p.a.store.settle_at(Time(p.now)).unwrap();
     p.join(s);
     p.run();
     let replies: Vec<_> = p.sent_by_a(42).into_iter().filter_map(|m| if let Msg::PullReply(r) = m { Some(r.clone()) } else { None }).collect();
@@ -1702,14 +1702,14 @@ fn a_refusal_ends_when_its_entry_leaves_unannounced_spec_sync_streams_4() {
         for restart in [false, true] {
             let (mut p, k) = Pair::kept();
             let exp = 50_000;
-            let pre = Prefix::for_keys([9; 16], &[1; 16], Some(WallMs(exp)), &[]).unwrap().with_class(class);
+            let pre = Prefix::for_keys([9; 16], &[1; 16], Some(Time(exp)), &[]).unwrap().with_class(class);
             let (_, bytes) = osis_blob::frame(&pre, &[9; 300], &mut SeededRng::from_u64(9)).unwrap();
             let b = osis_blob::blob_id(&bytes);
             let w = [3u8; WRAP_LEN];
             let stamp = osis_blob::sign_stamp(&role_key(RoleKey::Write, &k.write), &k.id, &b, &w, false);
-            let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class, expires: Some(WallMs(exp)) };
+            let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class, expires: Some(Time(exp)) };
             assert_eq!(p.a.store.take_stamped(&k.id, &e, bytes, &[]).unwrap(), Code::OK);
-            p.b.store.settle_at(WallMs(exp)).unwrap();
+            p.b.store.settle_at(Time(exp)).unwrap();
             p.join(k.id);
             p.run();
             assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &b), Some(Code::EXPIRED), "{class:?}");
@@ -1718,7 +1718,7 @@ fn a_refusal_ends_when_its_entry_leaves_unannounced_spec_sync_streams_4() {
                 p.b.streams.closed(C);
             }
             if !restart || class == Class::Durable {
-                p.a.store.settle_at(WallMs(exp)).unwrap();
+                p.a.store.settle_at(Time(exp)).unwrap();
             }
             assert!(p.a.store.entry(&k.id, &b).unwrap().is_none(), "gone from a");
             if restart {
@@ -2955,7 +2955,7 @@ fn a_join_from_the_start_replaces_presence_spec_sync_streams_4() {
     p.a.leave(p.now, s);
     p.a.store.drop_entry(&s, &y, Vec::new()).unwrap();
     p.now += TOMBSTONE_LIFETIME_MS + 1;
-    p.a.store.settle_at(WallMs(p.now)).unwrap();
+    p.a.store.settle_at(Time(p.now)).unwrap();
     p.a.log(t, 102);
     p.run();
     // a digest difference: b rejoins S from the start
@@ -3498,7 +3498,7 @@ fn relay_side(x: &Sid, h: Holding) -> (Side, ConnId) {
 /// unstamped), as a Stream with no cursor.
 fn relay_stream(x: &Sid, n: usize, expiry: u64, stamp: Option<&Secret32>) -> (BlobId, Msg) {
     let mut rng = SeededRng::from_u64(n as u64);
-    let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(Class::Relay);
+    let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(Time(expiry)), &[]).unwrap().with_class(Class::Relay);
     let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
     let b = osis_blob::blob_id(&bytes);
     let wrap = [0; WRAP_LEN];

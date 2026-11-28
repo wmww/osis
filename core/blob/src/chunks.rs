@@ -87,7 +87,7 @@ pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params
 mod tests {
     use super::*;
     use crate::tree::{BlobReader, BlobWriter, Framing, HashSink, MemoryBlobs};
-    use osis_base::WallMs;
+    use osis_base::Time;
     use osis_crypto::SeededRng;
 
     // min above the 64-byte gear window, so cuts are content-defined as with the format.
@@ -100,7 +100,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))], class: crate::blob::Class::Durable }
+        Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(Time(99)), keys: vec![(3, dk(3))], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -301,7 +301,7 @@ mod tests {
     // that author could delete a blob the delta's purge-by gives it no right over.
     #[test]
     fn reencryption_rule() {
-        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };
+        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(Time), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };
         let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
         let d = data(5_000, 0);
         let cases = [

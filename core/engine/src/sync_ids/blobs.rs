@@ -5,7 +5,7 @@ use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
-use osis_base::{BlobId, CommitId, Role, Tid, WallMs};
+use osis_base::{BlobId, CommitId, Role, Tid, Time};
 use osis_crypto::{CryptoRngCore, Epoch, RoleKey, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_blob::Step;
@@ -118,7 +118,7 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_comm
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
     let salt = osis_blob::Prefix::random_salt(rng);
-    let expiry = osis_commit::prefix_expiry(resolved, &ais).map(WallMs);
+    let expiry = osis_commit::prefix_expiry(resolved, &ais).map(Time);
     // a claim page: the blob's prefix under the page's own salt, carrying its one block
     // (spec/wire.md §5 Claim pages)
     let mut pages = Vec::new();
@@ -458,12 +458,12 @@ impl Engine {
         // whether or not its lists resolve here: a blob framed under another expiry is no
         // encryption of the commit (it would outlive the commit, or expire with a smaller blob
         // dropped beside it as losing as needed)
-        if prefix.expiry() != osis_commit::prefix_expiry(&env.header, &ais).map(WallMs) {
+        if prefix.expiry() != osis_commit::prefix_expiry(&env.header, &ais).map(Time) {
             return Err(Error::BadInput("blob prefix expiry is not its commit's"));
         }
         if let Some(h) = &header {
             let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
-            if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(WallMs), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
+            if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(Time), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
                 return Err(Error::BadInput("blob prefix disagrees with its header"));
             }
         }
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn derives_through_a_mint_admin_spec_crypto_3() {
         use crate::Mutation;
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
         let (o, _) = e.create_with_admin(&me).unwrap();
@@ -1097,7 +1097,7 @@ mod tests {
     #[test]
     fn a_things_rows_go_with_it() {
         use crate::Mutation;
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, Time(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let n = e.tid();
         let mut m = Mutation::new();

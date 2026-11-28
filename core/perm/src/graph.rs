@@ -6,7 +6,7 @@
 
 use crate::types::{earliest, mark, Edge};
 use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
-use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, WallMs};
+use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -364,8 +364,8 @@ impl<'a> View<'a> {
 
     /// `roles_from`, not walking over an edge in `skip` (target, holder), and the earliest
     /// `until` of an edge it followed.
-    fn roles_walk(&self, x: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        let mut expires: Option<WallMs> = None;
+    fn roles_walk(&self, x: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<Time>) {
+        let mut expires: Option<Time> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in Role::ALL.into_iter().rev() {
             let mut stack: Vec<Tid> = best.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
@@ -394,8 +394,8 @@ impl<'a> View<'a> {
     /// searched backward from `y` over the edges not in `skip`, each named (target, holder), and
     /// the earliest `until` of an edge it followed: the answer holds at any later ts before that,
     /// while no edge into a node it reaches changes.
-    pub(crate) fn roles_to(&self, y: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        let mut expires: Option<WallMs> = None;
+    pub(crate) fn roles_to(&self, y: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<Time>) {
+        let mut expires: Option<Time> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*y, Role::Admin)]);
         let mut stack = vec![*y];
         while let Some(t) = stack.pop() {
@@ -427,8 +427,8 @@ impl<'a> View<'a> {
     /// edges (a descent counts each record edge), then the fewest marked hops, so a far mint
     /// ancestor's direct edge is stated wherever it gives the need: a write rests on the one
     /// edge rather than the record chain. The breadth-first search, ties to fewer marks. O(things reaching `y` × their edges into it × log).
-    pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<WallMs>) {
-        let mut expires: Option<WallMs> = None;
+    pub(crate) fn ways_to(&self, y: &Tid, need: Need) -> (Ways, Option<Time>) {
+        let mut expires: Option<Time> = None;
         let mut next: BTreeMap<Tid, Tid> = BTreeMap::new();
         let mut settled: BTreeSet<Tid> = BTreeSet::new();
         // (edges, marked hops, order met) → (thing, the thing it reaches next)

@@ -10,7 +10,7 @@ use crate::apply::validity::perm_edge;
 use crate::rotation;
 use crate::Mutation;
 use crate::apply::validity::Grants;
-use osis_base::{CommitId, Holder, Role, Tid, WallMs};
+use osis_base::{CommitId, Holder, Role, Tid, Time};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
 
 use osis_perm::{At, Edge as PermEdge};
@@ -31,13 +31,13 @@ pub struct Demotion {
 /// saying retain the value that says so (spec/permissions.md §3, Retain).
 fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: &Demotion) -> Result<Option<Edge>> {
     if d.new.is_some() {
-        return match d.retain.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::WallMs(0))) {
+        return match d.retain.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::Time(0))) {
             true => Err(Error::Misuse("only a removal says retain or erase, by `retain`")),
             false => Ok(d.new.clone()),
         };
     }
     let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), may_grant: false, retain: false, floor: None }))
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::Time(0)), may_grant: false, retain: false, floor: None }))
 }
 
 /// What a grant hands its holder of what was written before it (spec/crypto.md §4, Floors).
@@ -60,7 +60,7 @@ pub enum History {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
-    if edge.until == Some(osis_base::WallMs(0)) {
+    if edge.until == Some(osis_base::Time(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
     // the writer's check on a grant to the public (spec/permissions.md §2; no validity rule):
@@ -388,7 +388,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), may_grant: false, retain: false, floor: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(Time(0)), may_grant: false, retain: false, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -448,7 +448,7 @@ impl Engine {
     /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
     /// delivery. `key` then signs as `target` (`Mutation::sign_as`) where its key store holds it.
     pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, edge: Option<&Edge>) -> Result<Done> {
-        if edge.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(WallMs(0))) {
+        if edge.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(Time(0))) {
             return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
         }
         let (t, holder) = (*target, Holder::Key(*key));

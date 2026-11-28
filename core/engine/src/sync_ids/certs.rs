@@ -606,7 +606,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
     use crate::local_peer::LocalPeer;
-    use osis_base::{Ak, Role, Tid, Value, WallMs};
+    use osis_base::{Ak, Role, Tid, Value, Time};
     use osis_schema::core_types as ct;
 
     // spec/permissions.md §4 (current `keys.0` commits): certificates and cards are the current valid writes, §5.2: a
@@ -615,7 +615,7 @@ mod tests {
     // delete the real one as superseded.
     #[test]
     fn invalid_later_write_never_newest_spec_permissions_4() {
-        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(3, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let b = lp.peers[1].engine.tid();

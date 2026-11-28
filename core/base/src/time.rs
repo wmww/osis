@@ -8,8 +8,6 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Time(pub u64);
 
-/// `Time` by its older name, which the layers below the API still use.
-pub use self::Time as WallMs;
 
 impl Time {
     pub fn saturating_add(self, ms: u64) -> Time {
@@ -41,7 +39,7 @@ impl Ts {
     /// Exclusive bound on `wall_ms`.
     pub const WALL_LIMIT: u64 = 1 << 47;
     /// `None` if `wall_ms >= 2^47` or `logical >= 2^16`.
-    pub fn make(wall: WallMs, logical: u64) -> Option<Ts> {
+    pub fn make(wall: Time, logical: u64) -> Option<Ts> {
         if wall.0 < Self::WALL_LIMIT && logical <= 0xffff { Some(Ts((wall.0 << 16) | logical)) } else { None }
     }
     /// From the integer on the wire; `None` if `wall_ms` is out of range.
@@ -51,8 +49,8 @@ impl Ts {
     pub fn to_u64(self) -> u64 {
         self.0
     }
-    pub fn wall_ms(self) -> WallMs {
-        WallMs(self.0 >> 16)
+    pub fn wall_ms(self) -> Time {
+        Time(self.0 >> 16)
     }
     pub fn logical(self) -> u64 {
         self.0 & 0xffff
@@ -62,7 +60,7 @@ impl Ts {
 /// Clock source, injected so tests and the simulator control time: the wall clock, which may
 /// jump either way, and a monotonic one (`Mono`).
 pub trait Clock: Send + Sync {
-    fn now_wall_ms(&self) -> WallMs;
+    fn now_wall_ms(&self) -> Time;
     fn mono(&self) -> Mono;
 }
 
@@ -75,10 +73,10 @@ pub struct ManualClock {
 }
 
 impl ManualClock {
-    pub fn new(start: WallMs) -> ManualClock {
+    pub fn new(start: Time) -> ManualClock {
         ManualClock { wall: AtomicU64::new(start.0), mono: AtomicU64::new(start.0) }
     }
-    pub fn set(&self, t: WallMs) {
+    pub fn set(&self, t: Time) {
         let was = self.wall.swap(t.0, Ordering::SeqCst);
         add(&self.mono, t.0.saturating_sub(was));
     }
@@ -97,8 +95,8 @@ fn add(x: &AtomicU64, ms: u64) {
 }
 
 impl Clock for ManualClock {
-    fn now_wall_ms(&self) -> WallMs {
-        WallMs(self.wall.load(Ordering::SeqCst))
+    fn now_wall_ms(&self) -> Time {
+        Time(self.wall.load(Ordering::SeqCst))
     }
     fn mono(&self) -> Mono {
         Mono(self.mono.load(Ordering::SeqCst))
@@ -111,9 +109,9 @@ impl Clock for ManualClock {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now_wall_ms(&self) -> WallMs {
+    fn now_wall_ms(&self) -> Time {
         let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        WallMs(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        Time(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
     }
     fn mono(&self) -> Mono {
         static ORIGIN: OnceLock<Instant> = OnceLock::new();
@@ -128,13 +126,13 @@ mod tests {
     // spec/crdt.md §2.2: ts = wall_ms * 2^16 + logical, wall_ms < 2^47.
     #[test]
     fn ts_layout() {
-        let t = Ts::make(WallMs(5), 3).unwrap();
+        let t = Ts::make(Time(5), 3).unwrap();
         assert_eq!(t.to_u64(), 5 * 65536 + 3);
-        assert_eq!((t.wall_ms(), t.logical()), (WallMs(5), 3));
-        assert!(Ts::make(WallMs(1 << 47), 0).is_none());
-        assert!(Ts::make(WallMs(0), 1 << 16).is_none());
+        assert_eq!((t.wall_ms(), t.logical()), (Time(5), 3));
+        assert!(Ts::make(Time(1 << 47), 0).is_none());
+        assert!(Ts::make(Time(0), 1 << 16).is_none());
         assert!(Ts::from_u64(u64::MAX).is_none());
-        assert_eq!(Ts::from_u64((1 << 63) - 1).map(Ts::wall_ms), Some(WallMs((1 << 47) - 1)));
-        assert!(Ts::make(WallMs(1), 0).unwrap() > Ts::make(WallMs(0), 0xffff).unwrap());
+        assert_eq!(Ts::from_u64((1 << 63) - 1).map(Ts::wall_ms), Some(Time((1 << 47) - 1)));
+        assert!(Ts::make(Time(1), 0).unwrap() > Ts::make(Time(0), 0xffff).unwrap());
     }
 }

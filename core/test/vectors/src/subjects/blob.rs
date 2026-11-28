@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{Del, Link, Value, WallMs, encode};
+use osis_base::{Del, Link, Value, Time, encode};
 use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad, thing_blind};
 use osis_blob::{Error, Prefix, frame, open, tree::node_plaintext};
 
@@ -50,7 +50,7 @@ fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
 pub fn prefixes() -> VecFile {
     let salt = [0x21; 16];
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
-    cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![vec![c(2, 0x22)]]).unwrap()));
+    cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(Time(1_700_000_000_000)), vec![vec![c(2, 0x22)]]).unwrap()));
     cases.push(prefix_case("two groups", &Prefix::new(salt, None, vec![vec![c(2, 0x22), c(3, 0x27)], vec![c(1, 0x29)]]).unwrap()));
     cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Ephemeral)));
     cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Relay)));
@@ -119,7 +119,7 @@ pub fn blobs() -> VecFile {
     // its commitment is blinded by the link blind of its blob key bound to its thing (spec/crypto.md §7)
     let thing = [0x2b; 15];
     let lb = link_blind(&[0x28; 32]);
-    let p = Prefix::for_keys(salt, &thing_blind(&lb, &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    let p = Prefix::for_keys(salt, &thing_blind(&lb, &thing), Some(Time(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
     let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, Del::from_keys([(1, dk.to_bytes())]).unwrap(), &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
@@ -133,7 +133,7 @@ pub fn blobs() -> VecFile {
     );
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();
-    let p = Prefix::for_keys(salt, &thing_blind(&link_blind(&[0x29; 32]), &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    let p = Prefix::for_keys(salt, &thing_blind(&link_blind(&[0x29; 32]), &thing), Some(Time(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, Del::from_keys([(1, dk.to_bytes())]).unwrap(), &node, [0x29; 32], link_tree_hash(&dedup, 1, &[(l1.hash, chunk.len() as u64)]));
     cases.push(r.with("dedup", hex(dedup.expose())));
     // Page: the canonical array of its elements.

@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{cid, own, t};
-use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Holder, PurgeBy, Role, Tid, Ts, Time};
 use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
 use std::ops::Bound;
@@ -43,7 +43,7 @@ fn records() -> BTreeMap<Tid, Holder> {
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(List::default()));
     let ew = EdgeWrite { holder: Holder::Thing(t(holder)), value: role.map(Edge::new), frontier };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
+    Commit { id: cid(id), ts: Ts::make(Time(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
 }
 
 fn delta(a: Counts, b: Counts) -> Counts {
@@ -353,7 +353,7 @@ fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option
     };
     let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();
     let d = Delta { aspect, needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class };
-    Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
+    Commit { id: cid(id), ts: Ts::make(Time(ts), 0).unwrap(), signer: t(signer), key: own(t(signer)), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
 }
 
 /// H grants X admin on A at 1; X writes n deltas on C (minted with A) along [A] at 10..; the

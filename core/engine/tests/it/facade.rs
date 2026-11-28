@@ -622,7 +622,7 @@ fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
 fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 100);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 100);
     lp.peers[0].engine.grant(&t, &ps[1], &ct::Edge { until: Some(until), ..edge_of(Role::Read) }).unwrap();
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();

@@ -444,7 +444,7 @@ mod tests {
 
     /// `three_replaces` of a value of `n` bytes.
     fn replaces_of(n: usize) -> (LocalPeer, Tid, Ak, Vec<CommitId>) {
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(1, osis_base::Time(1_700_000_000_000));
         let me = lp.peers[0].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -688,7 +688,7 @@ mod tests {
         use crate::flows::Demotion;
         use osis_base::Role;
         use osis_schema::core_types::Edge;
-        let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, osis_base::Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (me, v) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let mut m = Mutation::new();

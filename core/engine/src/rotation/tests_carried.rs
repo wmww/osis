@@ -19,7 +19,7 @@ use super::tests::{commit_ids, edge, independent_thing, held_by, newest_read, op
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
+use osis_base::{CommitId, Role, Tid, Ts, Time};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{HolderKeys, Recipient};
 use std::collections::BTreeSet;
@@ -313,7 +313,7 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
         }
         Attack::Backdated => {
             let at = s.lp.peers[B].engine.core.ix.commits.get(&rm.rm).unwrap().view.ts;
-            let ts = Ts::make(WallMs(at.wall_ms().0 - 1), 0).unwrap();
+            let ts = Ts::make(Time(at.wall_ms().0 - 1), 0).unwrap();
             let k = knowing(s);
             known.extend(forged(s, g, x1, Some(k), Some(ts)).1);
         }

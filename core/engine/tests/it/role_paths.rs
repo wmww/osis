@@ -76,7 +76,7 @@ pub(crate) fn world() -> World {
     grant(&mut lp, 0, t4, pc, may_grant(Role::Write));
     grant(&mut lp, 2, t4, pb, edge_of(Role::Read));
     // a finalize of an ended grant
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 500);
+    let until = osis_base::Time(lp.peers[0].engine.now().0 + 500);
     grant(&mut lp, 0, t1, pd, ct::Edge { until: Some(until), ..edge_of(Role::Read) });
     lp.advance(2000);
     lp.peers[1].engine.ensure_rotated(&t1).unwrap();

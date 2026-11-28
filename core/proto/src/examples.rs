@@ -6,7 +6,7 @@
 use crate::api::{Outcome, Payload};
 use crate::msg::*;
 use crate::{Proof, Prover, SyncId};
-use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
+use osis_base::{BlobId, CreationRecord, Tid, Value, Time, cbor};
 use osis_crypto::{RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
 use osis_blob::{Prefix, StepKeys, genesis, genesis_sync_id, register, sign_stamp};
 
@@ -56,7 +56,7 @@ impl Fixture {
     }
 
     pub fn blob_with(n: u8, expiry: Option<u64>, commitments: Vec<[u8; 33]>) -> Vec<u8> {
-        let p = Prefix::new([n; 16], expiry.map(WallMs), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("fixed prefix");
+        let p = Prefix::new([n; 16], expiry.map(Time), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("fixed prefix");
         osis_blob::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
     }
 

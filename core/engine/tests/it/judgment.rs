@@ -6,7 +6,7 @@
 //! fails each case, and a shorter order some case of each file.
 
 use crate::order::{Played, Step, play};
-use osis_base::{CommitId, Role, WallMs};
+use osis_base::{CommitId, Role, Time};
 use osis_crypto::{Secret32, SeededRng};
 use osis_engine::local_peer::{LocalPeer, Package};
 use osis_vectors::file::{Record as Rec, VecFile};
@@ -136,7 +136,7 @@ fn hash_hex(b: &[u8]) -> String {
 /// `replay`, once per input in this process: generating a file judges each case, and replaying it
 /// from its text then finds the same inputs (the text carries all of them exactly) or judges anew.
 /// `setup`: the length of the file's setup, the first entries of `bytes`.
-fn judged(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+fn judged(bytes: &[u8], setup: usize, reads: &[Secret32], now: Time, order: &[Tok]) -> Vec<(String, String)> {
     type Key = (String, Vec<String>, u64, String);
     static SEEN: std::sync::Mutex<BTreeMap<Key, Vec<(String, String)>>> = std::sync::Mutex::new(BTreeMap::new());
     let key = (hash_hex(bytes), reads.iter().map(|r| osis_base::hex::encode(r.expose())).collect(), now.0, render_order(order));
@@ -157,7 +157,7 @@ fn judged(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[
 /// `bytes`) as laid starts from a copy of the node that received them so, made once per
 /// (`now`, setup, read secrets, held things) in this process (notes/test-harnesses.md, Copied
 /// worlds).
-fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: Time, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
@@ -862,7 +862,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
             let b = osis_base::hex::decode(x).ok_or("bad read-secret")?;
             reads.push(Secret32::from_bytes(b.try_into().map_err(|_| "read-secret length")?));
         }
-        let now = WallMs(c.req("now")?.parse().map_err(|_| "bad now")?);
+        let now = Time(c.req("now")?.parse().map_err(|_| "bad now")?);
         let mut got = judged(&bytes, setup.len(), &reads, now, &parse_order(c.req("order")?));
         if let Some(f) = shared.iter().find(|f| !got.contains(f)) {
             return Err(format!("{path}, case `{name}`: judged no `{}: {}` (a header line)", f.0, f.1));

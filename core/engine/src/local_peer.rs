@@ -10,7 +10,7 @@ use crate::engine::{Config, Engine};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
-use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, WallMs};
+use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, Time};
 use crate::engine::Kept;
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
@@ -288,7 +288,7 @@ impl Peer {
     }
 
     /// A fresh node at wall time `t`.
-    pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
+    pub fn new(seed: u64, t: Time) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
@@ -799,7 +799,7 @@ pub fn make_account(e: &mut Engine) -> Result<(Account, crate::flows::Done)> {
 impl LocalPeer {
     /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`,
     /// each keeping the others' accounts (`of`).
-    pub fn new(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
+    pub fn new(n: usize, seed: u64, t: Time) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         LocalPeer::of(peers, seed)
     }
@@ -809,7 +809,7 @@ impl LocalPeer {
     /// (`Peer::import_contact`, holding the accounts' cards), as a contact's node does: the peers
     /// and the accounts.
     #[allow(clippy::indexing_slicing)] // i, j < n
-    pub fn accounts(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, Vec<osis_base::Tid>)> {
+    pub fn accounts(n: usize, seed: u64, t: Time) -> Result<(LocalPeer, Vec<osis_base::Tid>)> {
         let mut lp = LocalPeer::new(n, seed, t)?;
         let mut accs = Vec::new();
         for p in lp.peers.iter_mut() {
@@ -834,7 +834,7 @@ impl LocalPeer {
     /// `n` nodes of one account (spec/permissions.md §8): peer 0 makes it, each other is paired
     /// in at admin by peer 0 (`pair_into`), then all sync: the peers and the account.
     #[allow(clippy::indexing_slicing)] // peer 0 of n ≥ 1
-    pub fn one_account(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, Account)> {
+    pub fn one_account(n: usize, seed: u64, t: Time) -> Result<(LocalPeer, Account)> {
         let mut peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         let rest = peers.split_off(1);
         let mut lp = LocalPeer::apart(peers, seed);
@@ -852,7 +852,7 @@ impl LocalPeer {
     /// Its index and account.
     #[allow(clippy::indexing_slicing)] // indices of the net
     pub fn add_account(&mut self, seed: u64) -> Result<(usize, Account)> {
-        let t = self.peers.first().map_or(WallMs(0), |p| p.engine.now());
+        let t = self.peers.first().map_or(Time(0), |p| p.engine.now());
         let mut p = Peer::new(seed, t)?;
         let (acc, _) = make_account(&mut p.engine)?;
         self.peers.push(p);
@@ -890,7 +890,7 @@ impl LocalPeer {
     }
 
     /// `new` whose accounts have met no other: none keeps another's chain.
-    pub fn new_apart(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
+    pub fn new_apart(n: usize, seed: u64, t: Time) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         Ok(LocalPeer::apart(peers, seed))
     }
@@ -909,7 +909,7 @@ impl LocalPeer {
     /// `new(n, 0, t)`, a copy of the one built per test process (`cached`): a copy costs about
     /// a hundredth of building the nodes.
     #[allow(clippy::panic)] // test harness: a build that fails fails the test
-    pub fn fresh(n: usize, t: WallMs) -> LocalPeer {
+    pub fn fresh(n: usize, t: Time) -> LocalPeer {
         LocalPeer::cached(&format!("LocalPeer::fresh/{n}/{}", t.0), || (LocalPeer::new(n, 0, t).unwrap_or_else(|e| panic!("{e}")), ())).0
     }
 

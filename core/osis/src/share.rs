@@ -681,7 +681,7 @@ impl Osis {
         }
         self.local_at(target, "make_link")?;
         let peers = self.link_peers();
-        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
+        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::Time(t.0)), peers, single_use: opts.single_use };
         let (link, _, _) = self.engine(|e| e.create_link(&admin, &spec))?;
         Ok(Link(link.to_text().map_err(bad("link"))?))
     }

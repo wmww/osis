@@ -2,7 +2,7 @@
 //! values and held valid fires, each with its kind; a fire's leave with it.
 
 use crate::common::*;
-use osis_base::{CommitId, RefKind, Tid, Value, WallMs};
+use osis_base::{CommitId, RefKind, Tid, Value, Time};
 use osis_engine::local_peer::{LocalPeer, Package};
 use osis_engine::{Engine, Mutation};
 use std::collections::{BTreeMap, BTreeSet};
@@ -453,13 +453,13 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
                 }
                 6 => {
                     m.set(t, &ak("x:e.0"), &nested(&mut rng, 2)).unwrap();
-                    m.expires(t, &ak("x:e.0"), WallMs(now.0 + 1_000)).unwrap();
+                    m.expires(t, &ak("x:e.0"), Time(now.0 + 1_000)).unwrap();
                     expiring = true;
                 }
                 7..=8 => {
                     m.set(t, &sig, &nested(&mut rng, 2)).unwrap();
                     if rng.below(3) == 0 {
-                        m.expires(t, &sig, WallMs(now.0 + 1_000)).unwrap();
+                        m.expires(t, &sig, Time(now.0 + 1_000)).unwrap();
                         expiring = true;
                     }
                     let own: Vec<CommitId> = fires.iter().filter(|f| f.0 == by && f.1 == t).map(|f| f.2).collect();
@@ -645,7 +645,7 @@ fn an_expired_fires_references_go_spec_data_model_8() {
     let now = lp.peers[0].engine.now();
     let mut m = Mutation::new();
     m.set(t, &ak(SIG), &Value::Weak(t)).unwrap();
-    m.expires(t, &ak(SIG), WallMs(now.0 + 1_000)).unwrap();
+    m.expires(t, &ak(SIG), Time(now.0 + 1_000)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     assert_eq!(rows(&mut lp, 0, &t).into_iter().filter(|r| r.1 == SIG).count(), 1, "the fire's weak");
     lp.advance(1_500);

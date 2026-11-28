@@ -9,7 +9,7 @@
 
 use super::incremental::{reading, Reading, Tracked};
 use super::{cid, commit, ms, own, t};
-use osis_base::{Ak, Holder, PurgeBy, Role, SignKey, Tid, Ts, WallMs};
+use osis_base::{Ak, Holder, PurgeBy, Role, SignKey, Tid, Ts, Time};
 use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
@@ -114,7 +114,7 @@ fn a_part_is_taken_before_its_commits_own_path_part() {
 #[test]
 fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
     const N5: u32 = 4;
-    let timed = Some(Edge { until: Some(WallMs(3)), ..Edge::new(Role::Admin) });
+    let timed = Some(Edge { until: Some(Time(3)), ..Edge::new(Role::Admin) });
     let commits = [
         commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]))]),
         commit(2, ms(1), H, vec![edge(T1, &[A], Z, timed, Some(&[]))]),
@@ -166,7 +166,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
     ];
     robust(&cyc, &holders, &mut rng);
     // extreme times: ts 0 and the greatest; an `until` in the past, at the ts, far ahead
-    let until = |u: u64| Some(Edge { until: Some(WallMs(u)), ..Edge::new(Role::Admin) });
+    let until = |u: u64| Some(Edge { until: Some(Time(u)), ..Edge::new(Role::Admin) });
     let times = [
         commit(1, Ts::ZERO, H, vec![edge(A, &[], Y, until(0), Some(&[]))]),
         commit(2, Ts::ZERO, H, vec![edge(A, &[], Z, until(u64::MAX), Some(&[]))]),
@@ -223,7 +223,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Holder>, Vec<Commit>) {
             } else {
                 let value = (r.below(4) > 0).then(|| Edge {
                     role: role(&mut r),
-                    until: (r.below(3) == 0).then(|| WallMs(r.below(8) as u64)),
+                    until: (r.below(3) == 0).then(|| Time(r.below(8) as u64)),
                     may_grant: r.below(2) == 0,
                     retain: false,
                     floor: (r.below(6) == 0).then(|| r.below(3) as u64),

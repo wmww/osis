@@ -2,7 +2,7 @@
 //! Writing path end to end: identity, creation, ops to commits, local apply, events, restart.
 
 use crate::common;
-use osis_base::{Ak, Value, WallMs};
+use osis_base::{Ak, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::Peer;
 use osis_engine::{Event, Mutation, Origin};
@@ -15,7 +15,7 @@ fn ak(s: &str) -> Ak {
 
 /// A node; `seed`s that differ make different nodes.
 fn peer(seed: u64) -> Peer {
-    Peer::new(seed, WallMs(1_700_000_000_000)).unwrap()
+    Peer::new(seed, Time(1_700_000_000_000)).unwrap()
 }
 
 // spec/sync-set.md §1, spec/permissions.md §3: a new node holds its node thing, minted with its

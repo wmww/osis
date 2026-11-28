@@ -439,7 +439,7 @@ impl Engine {
 
     /// Owed fire `id`'s commit once built (`sealed_fire`): its ID and the wall time it is stamped, which a receiver's clock must have reached but for
     /// `MAX_DRIFT`.
-    pub fn fire_commit(&self, id: &FireId) -> Option<(CommitId, osis_base::WallMs)> {
+    pub fn fire_commit(&self, id: &FireId) -> Option<(CommitId, osis_base::Time)> {
         let o = self.core.ix.fires.get(id)?;
         let b = osis_commit::CommitBlob::decode(o.commit.as_ref()?).ok()?;
         Some((b.id(), b.header.ts.wall_ms()))
@@ -520,7 +520,7 @@ impl Engine {
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
         let seed = self.run(|tx| Ok(osis_crypto::Secret32::random(&mut *tx.rng)))?;
         let mut rng = osis_crypto::SeededRng::from_seed(*seed.expose());
-        let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, ais).map(osis_base::WallMs), &groups)?;
+        let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(h, ais).map(osis_base::Time), &groups)?;
         Ok((prefix, rng))
     }
 
@@ -531,7 +531,7 @@ impl Engine {
         let ak = o.ak.clone();
         let (value, expires) = match &o.what {
             Fire::Value(v) => (v.clone(), None),
-            Fire::Expiring(v, t) => (v.clone(), Some(osis_base::WallMs(*t))),
+            Fire::Expiring(v, t) => (v.clone(), Some(osis_base::Time(*t))),
         };
         let o = o.clone();
         self.run(|tx| {
@@ -656,7 +656,7 @@ impl Engine {
         }
         let ais: Vec<usize> = (0..h.aspects.len()).collect();
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
-        if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
+        if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(osis_base::Time), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
             return Ok(Opened::Bad);
         }
         if let (Some(r), Some(p)) = (self.core.created(t), commit.parts.first())

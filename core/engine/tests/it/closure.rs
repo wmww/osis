@@ -964,7 +964,7 @@ fn a_release_keeps_the_leftover_of_a_commit_on_a_thing_still_held_spec_sync_set_
     let mut m = Mutation::new();
     m.set(x, &crate::common::REG, &Value::Str("v".into())).unwrap();
     m.set(t, &crate::common::LIST, &Value::List(vec![Value::Str("e".into())])).unwrap();
-    m.expires_all(osis_base::WallMs(now + 1_000));
+    m.expires_all(osis_base::Time(now + 1_000));
     lp.peers[0].engine.commit(m).unwrap();
     lp.advance(2_000);
     lp.peers[0].tick().unwrap();

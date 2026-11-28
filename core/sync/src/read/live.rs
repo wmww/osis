@@ -14,7 +14,7 @@ use crate::streams::Streams;
 use crate::unread::Unread;
 use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::{Cutoff, Feed};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Time};
 use osis_crypto::SigningSecret;
 use osis_engine::sync::{BodyId, BodyMeta, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
 use osis_blob::{Class, DeleteItem};
@@ -407,7 +407,7 @@ impl Ground for Live<'_, '_> {
         let held: Vec<BlobId> = self.held_blobs(&c.commit)?.into_iter().map(|(b, _, _)| b).collect();
         Ok(self.cx.engine.may_log(s, c, &held)?)
     }
-    fn now(&self) -> WallMs {
+    fn now(&self) -> Time {
         self.cx.now
     }
     fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>> {

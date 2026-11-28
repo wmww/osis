@@ -155,7 +155,7 @@ fn until_granted() -> (LocalPeer, Tid, Vec<Tid>) {
         let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, 0);
         let until = lp.peers[0].engine.now().0 + 1_000;
-        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::Time(until)), ..edge(Role::Read) }).unwrap();
         lp.sync_all().unwrap();
         (lp, (g, tids))
     });
@@ -654,7 +654,7 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     let ais: Vec<usize> = (0..h.aspects.len()).collect();
     let groups = osis_commit::prefix_groups(&h, ais.iter().copied()).unwrap();
     let mut rng = osis_crypto::SeededRng::from_seed([7; 32]);
-    let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(&h, &ais).map(osis_base::WallMs), &groups).unwrap();
+    let prefix = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(&mut rng), &h.blind, osis_commit::prefix_expiry(&h, &ais).map(osis_base::Time), &groups).unwrap();
     let commit = osis_base::decode(&fire.encode(), &limits).unwrap();
     let blob = osis_blob::seal_fire(&prefix, &inbox, &epoch, &kem, &osis_blob::Sealed { commit, evidence: chain, records, pages: Vec::new() }, &mut rng).unwrap();
     let e1 = &mut lp.peers[1].engine;

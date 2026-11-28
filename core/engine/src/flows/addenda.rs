@@ -88,7 +88,7 @@ pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
 /// candidates are held deltas stated along R's edges.
 fn wake(core: &mut Core, c: &osis_perm::Changed) {
     let mut due: BTreeSet<CommitId> = BTreeSet::new();
-    let on = |core: &Core, (holder, target): (osis_base::Holder, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::WallMs>| {
+    let on = |core: &Core, (holder, target): (osis_base::Holder, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::Time>| {
         osis_base::costs::count("addenda: wake lookups", 1);
         let lo = (target, holder, from, CommitId([0; 32]));
         let hi = (target, holder, Ts::MAX, CommitId([0xff; 32]));
@@ -142,7 +142,7 @@ pub(crate) fn all_due(core: &mut Core) {
 /// both by the wall clock; the same millisecond is not before). The second bound keeps a
 /// remover's fast clock from lengthening the window past R's arrival: what arrives after a
 /// witness holds R is never vouched for, however far R's `ts` is ahead.
-pub(crate) fn window(got: osis_base::WallMs, r_ts: Ts, r_got: osis_base::WallMs) -> bool {
+pub(crate) fn window(got: osis_base::Time, r_ts: Ts, r_got: osis_base::Time) -> bool {
     got.0 <= r_ts.wall_ms().0 && got.0 < r_got.0
 }
 

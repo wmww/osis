@@ -250,7 +250,7 @@ mod floor_tests {
     #[test]
     fn floors_order_settings_within_one_ms_spec_commits_5() {
         let keep = RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
-        let ms = |w: u64, l: u64| Ts::make(osis_base::WallMs(w), l).unwrap();
+        let ms = |w: u64, l: u64| Ts::make(osis_base::Time(w), l).unwrap();
         let p = RetentionSetting::of(ak("x.0"), History::PurgeOnReplace);
         let mut k = RetentionSetting::from_iter([(ak("x.0"), keep)]);
         carry_floors(&mut k, &[(ms(10, 0), &p)], ms(10, 1));

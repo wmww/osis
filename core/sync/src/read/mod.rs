@@ -51,7 +51,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result};
 use judge::{Act, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, Time};
 use osis_engine::sync::{BodyId, BodyMeta};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -805,8 +805,8 @@ impl Read {
     }
 
     /// When a judgement read up to a time (an expiry) moves next.
-    pub fn next_wake(&self) -> Option<WallMs> {
-        self.clock.next().map(WallMs)
+    pub fn next_wake(&self) -> Option<Time> {
+        self.clock.next().map(Time)
     }
 
 
