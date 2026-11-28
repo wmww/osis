@@ -760,8 +760,7 @@ fn node_trace_prints_a_daemons_frames() {
     S::dir(&d).ok(&["init"]);
     let xdg = tmp("nodetrace-xdg");
     std::fs::create_dir_all(&*xdg).unwrap();
-    let bin = env!("CARGO_BIN_EXE_osis");
-    let mut c = Command::new(bin).env("XDG_RUNTIME_DIR", &*xdg).env("OSIS_NODE_TRACE", "all").args(["--no-lan", "-s", ds, "serve"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &*xdg).env("OSIS_NODE_TRACE", "all").args(["--no-lan", "-s", ds, "serve"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let out = std::io::BufReader::new(c.stdout.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(out.lines().map_while(Result::ok).next()));
@@ -770,7 +769,7 @@ fn node_trace_prints_a_daemons_frames() {
     let (tx, rx) = std::sync::mpsc::channel();
     // the reader stops at the first: a closed stderr ends no daemon
     std::thread::spawn(move || tx.send(err.lines().map_while(Result::ok).find(|l| l.contains(" <- ") && l.contains(": Call {"))));
-    let client = Command::new(bin).env("XDG_RUNTIME_DIR", &*xdg).args(["-s", ds, "whoami"]).output().unwrap();
+    let client = Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &*xdg).args(["--no-lan", "-s", ds, "whoami"]).output().unwrap();
     let line = rx.recv_timeout(std::time::Duration::from_secs(60)).ok().flatten();
     let _ = c.kill();
     let _ = c.wait();
