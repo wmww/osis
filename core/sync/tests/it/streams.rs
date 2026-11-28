@@ -2405,7 +2405,7 @@ fn a_join_left_in_pages_keeps_s_busy_spec_sync_status_1() {
     assert!(!p.a.streams.caught_up(C, &s), "S's join is left in pages");
 }
 
-// spec/sync-compaction.md §2 (Caps, at a node for what it reads: an entry refused for room is
+// spec/sync-compaction.md §2 (Caps: at a node for what it reads, an entry refused for room is
 // fetched again once there is room), spec/sync-streams.md §4 (Full): b, reading S, opens a's
 // ephemeral entry to a commit refused for room. It keeps no entry of it, and once its memory cap
 // has the room the commit needs, S is pulled again from the start and the entry taken. Fails
