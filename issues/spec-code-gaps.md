@@ -6,7 +6,6 @@
 Judgement in brackets. Line numbers drift; grep the quoted words.
 
 ## spec/commits.md
-- §7 undo: "parts on the things it created excepted: the undo writes nothing on those things". `undo/mod.rs` reverts other parts on a created thing; `check_revertible_changes_nothing` relies on it. [Contradiction; judge against the model which side goes.]
 - §5 the setting: `history` keep "until T and/or for D after replaced, at least one". `History::Keep { until: None, after: None }` decodes, fits and is written. [Small: refuse it at the writer, or drop "at least one".]
 - §2 ephemeral shape (no purge request, no list by link, content kind only): checks in `commit/src/validate.rs`, no test. [Small test.]
 - Code only: the builder refuses an aspect list by link on a commit carrying its signer's `created.0` (`commit/src/builder.rs`, the list key needs the signer's record). [State in spec/wire.md §4 Inline or link, add a test.]
@@ -23,7 +22,6 @@ Judgement in brackets. Line numbers drift; grep the quoted words.
 - §5.1 Sides, the counter-removal told beside its disputes: only roles-model builds it (`countered`); `Engine::disputes` lists none. [Medium: port the model's rule.]
 - §5.1 Sides, "cannot stand beside" and choosing R dropping the others: unbuilt (`sides.rs` comment); "Its own" records lazily, equivalent only while that is unbuilt. [Medium/large, together; notes/perm-paths.md Read short of the spec.]
 - §5.1 The list (leave out what moves `end(F)` earlier): unbuilt, the frontier lists everything; so the writer refuses a removed admin's counter-removal, a writer rule no spec states (the test needs `skip_writer_rules`). [Large.]
-- §5.2 Addenda: the walk reads one entry per `addenda.0` delta (`validity.rs`, "one entry is read"); the spec puts no limit on entries. [Small: make more than one bad input in spec, or read them all.]
 - §7 a link ended once every route refused L's claim key: unbuilt (issues/sync-link-first-contact.md). [Medium.]
 - §7 K's `retain` default written at link making, and §2 "`until` 0 for nothing else": code, no test. [Small tests.]
 - §5.2 "A part on a core aspect is invalid" (ephemeral parts): no check; a core-form ephemeral AK may not be reachable. [Unsure: delete the clause if unreachable.]

@@ -348,7 +348,7 @@ fn from_scratch_is_linear_in_the_parts() {
 /// removal listing `list`).
 fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option<(u64, &[u64])>) -> Commit {
     let class = match against {
-        Some((r, l)) => DeltaClass::Addendum { removal: cid(r), list: Frontier::new(l.iter().map(|&i| cid(i))) },
+        Some((r, l)) => DeltaClass::Addendum { entries: BTreeMap::from([(cid(r), Frontier::new(l.iter().map(|&i| cid(i))))]) },
         None => DeltaClass::Plain,
     };
     let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();

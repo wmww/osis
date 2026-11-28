@@ -279,9 +279,16 @@ fn write_as(lp: &mut LocalPeer, by: usize, actor: Tid, t: Tid, a: &str, v: i64) 
 /// Peer `by` writes an addendum on `t` naming removal `r` and listing `lists`, whatever it
 /// received (a lying witness).
 fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[CommitId]) -> CommitId {
+    forge_entries(lp, by, t, &[(r, lists)])
+}
+
+/// `forge_addendum` of one delta creating an entry per removal and list.
+fn forge_entries(lp: &mut LocalPeer, by: usize, t: Tid, entries: &[(CommitId, &[CommitId])]) -> CommitId {
     let mut m = Mutation::new();
-    let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::bytes(&r.0))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Frontier { commits: lists.iter().copied().collect() })) };
-    m.op(t, &ct::ADDENDA, op).unwrap();
+    for (r, lists) in entries {
+        let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::bytes(&r.0))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Frontier { commits: lists.iter().copied().collect() })) };
+        m.op(t, &ct::ADDENDA, op).unwrap();
+    }
     m.unchecked = true;
     lp.peers[by].engine.core.skip_writer_rules = true;
     let id = lp.peers[by].commit(m).unwrap().unwrap();
@@ -333,6 +340,22 @@ fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     lp.sync(0, 2).unwrap();
     assert!(!valid(&lp, 2, &e, n, "x:e.0"), "Mallory received it after the removal");
     let a = forge_addendum(&mut lp, 2, n, r, &[e]);
+    lp.sync_all().unwrap();
+    for p in holding(&lp, n) {
+        assert!(valid(&lp, p, &a, n, ct::ADDENDA_AK), "peer {p}");
+        assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: vouched on N");
+    }
+}
+
+// spec/permissions.md §5.2 (Addenda): every entry an addenda delta creates is an addendum: Mallory's
+// one delta keys entries by two commits that are no removal around R's, each listing Bob's write;
+// R's entry vouches for it, wherever it falls among them.
+#[test]
+fn every_entry_of_an_addenda_delta_vouches_spec_perm_5_2() {
+    let (mut lp, n, _, r, e) = holder_world();
+    lp.sync(1, 2).unwrap();
+    lp.sync(0, 2).unwrap();
+    let a = forge_entries(&mut lp, 2, n, &[(CommitId([0; 32]), &[e]), (r, &[e]), (CommitId([0xff; 32]), &[e])]);
     lp.sync_all().unwrap();
     for p in holding(&lp, n) {
         assert!(valid(&lp, p, &a, n, ct::ADDENDA_AK), "peer {p}");

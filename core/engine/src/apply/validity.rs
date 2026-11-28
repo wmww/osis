@@ -1049,12 +1049,13 @@ fn read(core: &Core, id: &CommitId, h: &Header, view: &View, carries: bool) -> o
             let carries = if carries && view.aspect(&a.tid, ak) == Some(ai) { Frontier::new(crate::retention::snapshot::carried(core, id, &a.tid, &a.ak)) } else { Frontier::default() };
             DeltaClass::Snapshot { carries, stated: BTreeMap::new(), own: h.own_cover }
         } else if ct::is_addenda(ak) && h.kind == Kind::Content {
-            // one entry is read (a node writes one per thing and removal, spec/permissions.md
-            // §5.2 Writing); without its body it lists nothing
-            match core.ix.addenda.get(&(a.tid, *id)).and_then(|x| x.entries.first().cloned()) {
-                Some((removal, list)) => DeltaClass::Addendum { removal, list: Frontier::new(list.iter().copied()) },
-                None => DeltaClass::Addendum { removal: CommitId([0; 32]), list: Frontier::default() },
+            // every entry it creates is an addendum, two keyed by one removal listing both
+            // lists; without its body it lists nothing
+            let mut lists: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+            for (r, l) in core.ix.addenda.get(&(a.tid, *id)).map(|x| x.entries.as_slice()).unwrap_or_default() {
+                lists.entry(*r).or_default().extend(l.iter().copied());
             }
+            DeltaClass::Addendum { entries: lists.into_iter().map(|(r, l)| (r, Frontier::new(l))).collect() }
         } else if ct::is_role_class(ak) {
             DeltaClass::RoleClass
         } else {

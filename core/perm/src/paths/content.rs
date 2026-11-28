@@ -53,10 +53,21 @@ pub enum FactClass {
     /// What it states of each commit it carries, and whether it is its signer's own cover. The
     /// commits it carries are the store's (`Store::carried`).
     Snapshot { stated: BTreeMap<CommitId, Stated>, own: bool },
-    /// Its removal and list.
-    Addendum(CommitId, Frontier),
+    /// Its entries: per removal, the list.
+    Addendum(BTreeMap<CommitId, Frontier>),
     /// A purge request.
     Purge(Names),
+}
+
+impl FactClass {
+    /// An addendum's listed commits, over all its entries (one listed by two, twice).
+    fn listed(&self) -> impl Iterator<Item = &CommitId> {
+        let entries = match self {
+            FactClass::Addendum(es) => Some(es.values()),
+            _ => None,
+        };
+        entries.into_iter().flatten().flat_map(|l| l.commits())
+    }
 }
 
 impl Fact {
@@ -185,8 +196,8 @@ impl MemStore {
             set(&mut self.through, *e, (f.pos, f.id), add);
         }
         match &f.class {
-            FactClass::Addendum(_, list) => {
-                for x in list.commits() {
+            FactClass::Addendum(_) => {
+                for x in f.class.listed() {
                     set(&mut self.listing, *x, f.id, add);
                 }
                 for e in &f.hops {
@@ -382,7 +393,7 @@ impl<S: Store> Facts<S> {
             DeltaClass::Plain => FactClass::Plain,
             DeltaClass::RoleClass => FactClass::Role,
             DeltaClass::Snapshot { stated, own, .. } => FactClass::Snapshot { stated: stated.clone(), own: *own },
-            DeltaClass::Addendum { removal, list } => FactClass::Addendum(*removal, list.clone()),
+            DeltaClass::Addendum { entries } => FactClass::Addendum(entries.clone()),
             DeltaClass::Purge { names } => FactClass::Purge(*names),
         };
         Fact { id, ts: c.ts, signer: c.signer, pos: Key::start(c.ts), on: p.on, aspect: d.aspect.clone(), needs: d.needs, class, hops: sh.hops, well: sh.well && purge_author.is_some(), purge_author, purge_by: d.purge_by, chain }
@@ -507,7 +518,7 @@ impl<S: Store> Facts<S> {
                 let carried = self.store.carried(&id);
                 let Some(f) = self.store.remove(&id) else { continue };
                 match &f.class {
-                    FactClass::Addendum(_, list) => out.listed.extend(list.commits()),
+                    FactClass::Addendum(_) => out.listed.extend(f.class.listed()),
                     FactClass::Snapshot { .. } => out.snapshots.push((*c, f.on, carried)),
                     FactClass::Purge(_) if right.any() => out.scopes.extend(f.scope()),
                     _ => {}
@@ -588,6 +599,18 @@ impl<S: Store> Facts<S> {
     /// The namers of delta `d`: the frontiers and addenda listing its commit, or a snapshot of
     /// its thing and aspect carrying it.
     fn namers(&self, d: &Fact, counts: &mut Counts) -> Vec<Namer> {
+        let mut out = vec![];
+        for c in self.named_as(d, counts) {
+            out.extend(self.named_on(&c, &d.on).map(Namer::Write));
+            out.extend(self.addenda_listing(&c).into_iter().map(Namer::Addendum));
+        }
+        counts.content += out.len() as u64;
+        out
+    }
+
+    /// The commits a list names `d` by: its own, and those of the snapshots on its thing and
+    /// aspect carrying it (draft §5.2 Copies).
+    fn named_as(&self, d: &Fact, counts: &mut Counts) -> Vec<CommitId> {
         let mut commits = vec![d.commit()];
         for s in self.carriers(&d.commit()) {
             counts.content += 1;
@@ -599,13 +622,7 @@ impl<S: Store> Facts<S> {
                 commits.push(sd.commit());
             }
         }
-        let mut out = vec![];
-        for c in commits {
-            out.extend(self.named_on(&c, &d.on).map(Namer::Write));
-            out.extend(self.addenda_listing(&c).into_iter().map(Namer::Addendum));
-        }
-        counts.content += out.len() as u64;
-        out
+        commits
     }
 
     /// Whether `id` is an applied cut, below `r`, of a grant of `hops`: that grant and its key.
@@ -677,7 +694,7 @@ impl<S: Store> Facts<S> {
     /// Addenda): its removal's parts cutting the path below what `d` needs, ordered after `d` and
     /// before `a`, where its other conditions hold.
     fn vouches(&self, tl: &Walk, a: &Fact, d: &Fact, counts: &mut Counts) -> Vec<WriteId> {
-        let FactClass::Addendum(removal, _) = &a.class else { return vec![] };
+        let FactClass::Addendum(entries) = &a.class else { return vec![] };
         if a.on != d.on || a.signer == d.signer || !self.vouchable(d) || !d.well {
             return vec![];
         }
@@ -689,7 +706,10 @@ impl<S: Store> Facts<S> {
         if !path {
             return vec![];
         }
-        tl.parts_of(removal).into_iter().filter(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos)).collect()
+        // each entry naming `d`, against its own removal
+        let named = self.named_as(d, counts);
+        let removals = entries.iter().filter(|(_, l)| named.iter().any(|c| l.commits().binary_search(c).is_ok())).map(|(r, _)| r);
+        removals.flat_map(|r| tl.parts_of(r)).filter(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos)).collect()
     }
 
     /// (d): its path is re-granted for `r` and it is positioned after the latest of each grant's
@@ -1009,8 +1029,10 @@ impl<S: Store> Facts<S> {
         let mut todo: Vec<WriteId> = f.iter().copied().collect();
         while let Some(a) = todo.pop() {
             let Some(ad) = self.store.get(&a) else { continue };
-            let FactClass::Addendum(_, list) = &ad.class else { continue };
-            for c in list.commits() {
+            if !matches!(ad.class, FactClass::Addendum(_)) {
+                continue;
+            }
+            for c in ad.class.listed() {
                 counts.addenda += 1;
                 for t in self.targets(c, ad.on) {
                     if self.store.get(&t).is_some_and(|x| self.is_addendum(&x)) && f.insert(t) {
@@ -1047,8 +1069,10 @@ impl<S: Store> Facts<S> {
             }
             self.store.set_valid_addendum(&a, true);
             let Some(ad) = self.store.get(&a) else { continue };
-            let FactClass::Addendum(_, list) = &ad.class else { continue };
-            for c in list.commits() {
+            if !matches!(ad.class, FactClass::Addendum(_)) {
+                continue;
+            }
+            for c in ad.class.listed() {
                 counts.addenda += 1;
                 for t in self.targets(c, ad.on) {
                     if self.store.valid_addendum(&t) {
@@ -1087,10 +1111,8 @@ impl<S: Store> Facts<S> {
         for id in &ch.parts {
             let Some(f) = self.store.get(id) else { continue };
             out.insert(*id);
-            if let FactClass::Addendum(_, list) = &f.class {
-                for c in list.commits() {
-                    out.extend(self.targets(c, f.on));
-                }
+            for c in f.class.listed() {
+                out.extend(self.targets(c, f.on));
             }
         }
         out

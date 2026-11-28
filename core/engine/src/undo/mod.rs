@@ -385,9 +385,11 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, ts: Ts) -> Result<Option<(Vec<
 }
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
-/// source. Left out: one invalid here, a signal's (it reads absent before and after), the creation
-/// record and a `purge.0` part (it only places a request, and a purge is never undone,
-/// spec/commits.md §5). Every other part is reverted, or there is no undo (`NotKept`): it is not
+/// source. Left out: one invalid here, a signal's (it reads absent before and after), a `purge.0`
+/// part (it only places a request, and a purge is never undone, spec/commits.md §5) and every part
+/// on a thing the commit mints, its creation record included: the undo writes nothing on those
+/// (spec/crdt.md §4.6), so the thing leaves the closure once the strong to it is reverted. Every
+/// other part is reverted, or there is no undo (`NotKept`): it is not
 /// received yet; or it is not in kept history by its thing's setting at the undo's `ts`
 /// (spec/commits.md §7: `bounds::setting_keeps`, whatever is held, so an undo is the same on
 /// every node whatever compaction did) or its body is gone (purged, expired); or it writes back
@@ -396,9 +398,10 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts) -> Result<Vec<Invert
     let m = tx.core.ix.commits.get(target).cloned().ok_or(Error::UnknownCommit(*target))?;
     let h = m.header.clone();
     let now = ts.wall_ms().0;
+    let minted: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == CREATED.ak()).map(|a| a.tid).collect();
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE {
+        if a.ak.signal() || minted.contains(&a.tid) || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE {
             continue;
         }
         // a part not received on a thing whose path opens nowhere here is not judged here: the
@@ -597,9 +600,10 @@ mod tests {
 
     // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
     // changes nothing, whatever it answers. A creates a thing writing `x` on it, keeping history
-    // (its creation's undo clears it), and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
-    // first set (superseded) and the second (revertible) leaves the state, the clock, the
-    // store's commits, the indexes, the session counters and the events as they were; the revert then writes.
+    // (its undo writes nothing on what it minted), and sets register `x` twice keeping history, C
+    // overwriting the first. Probing the creation, the first set (superseded) and the second
+    // (revertible) leaves the state, the clock, the store's commits, the indexes, the session
+    // counters and the events as they were; the revert then writes.
     #[test]
     fn check_revertible_changes_nothing() {
         let (mut lp, t, _, keep) = two();
@@ -630,12 +634,35 @@ mod tests {
             (e.get(&t, &x).unwrap(), e.get(&n, &x).unwrap(), e.core.hlc.last(), e.store_writes().committed, e.index_digest(), ctr, e.commit_ids().len())
         };
         let before = seen(&mut p.engine);
-        assert!(p.engine.check_revertible(&made).unwrap());
+        assert!(!p.engine.check_revertible(&made).unwrap(), "nothing but the minted thing");
         assert!(!p.engine.check_revertible(&first).unwrap(), "C overwrote it");
         assert!(p.engine.check_revertible(&second).unwrap());
         assert_eq!(seen(&mut p.engine), before);
         assert!(p.drain_events().is_empty());
         p.engine.revert(&second).unwrap().unwrap();
+    }
+
+    // spec/crdt.md §4.6: an undo of a commit that minted a thing writes nothing on it. The commit
+    // minting `n` sets `x` on `n` (no history kept there) and on `t` (kept): its revert clears
+    // `t`'s and leaves `n` as written, with no part on `n`; a redo writes `t`'s back.
+    #[test]
+    fn an_undo_writes_nothing_on_what_its_commit_minted() {
+        let (mut lp, t, _, _) = two();
+        let x = Ak::new("x:r.0").unwrap();
+        let a = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        let n = m.create(lp.peers[0].engine.held_record(a).unwrap());
+        m.set(n, &x, &Value::Int(1)).unwrap();
+        m.set(t, &x, &Value::Int(2)).unwrap();
+        let made = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let e = &mut lp.peers[0].engine;
+        let undo = e.revert(&made).unwrap().unwrap();
+        assert_eq!(e.get(&t, &x).unwrap(), None);
+        assert_eq!(e.get(&n, &x).unwrap(), Some(Value::Int(1)));
+        assert!(e.core.ix.commits.get(&undo).unwrap().header.aspects.iter().all(|a| a.tid != n));
+        e.revert(&undo).unwrap().unwrap();
+        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
     }
 
     /// What one check of the newest commit costs on a text field after `n` commits to it, kept

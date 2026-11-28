@@ -131,7 +131,7 @@ fn delta(w: &World, i: Id) -> Delta {
             let stated = carries.iter().map(|&j| (model_cid(w, j), Stated { ts: ms(w.commits[j].ts as u64), purge_author: tid(w.purge_author(j)), purge_by: purge_by(w.commits[j].purge_by) })).collect();
             ("doc.0", DeltaClass::Snapshot { carries: ids(carries), stated, own: k.own })
         }
-        Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: model_cid(w, *removal), list: ids(list) }),
+        Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { entries: BTreeMap::from([(model_cid(w, *removal), ids(list))]) }),
         _ => unreachable!("content-class kinds only"),
     };
     Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, purge_by: purge_by(k.purge_by), class }

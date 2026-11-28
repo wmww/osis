@@ -141,8 +141,9 @@ pub enum DeltaClass {
     /// states of each carried commit (spec/crdt.md §8 `Facts`), read for a copy whose commit is not
     /// held (draft §6 Copies); `own`: marked as its signer's own cover (draft §5.2 Own cover).
     Snapshot { carries: Frontier, stated: BTreeMap<CommitId, Stated>, own: bool },
-    /// An `addenda.0` entry its delta creates (draft §5.2 Addenda).
-    Addendum { removal: CommitId, list: Frontier },
+    /// The `addenda.0` entries its delta creates (draft §5.2 Addenda), each an addendum: per
+    /// removal its key names, the list its value holds.
+    Addendum { entries: BTreeMap<CommitId, Frontier> },
     /// A purge request on this part's thing (draft §6), naming deltas of its aspect (a
     /// destruction: of every aspect): an edit, judged as a delta along its path.
     Purge { names: Names },

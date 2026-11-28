@@ -124,7 +124,6 @@ osis-perm holds one walk, `paths`; `Grant` carries `may_grant: bool`.
 What the engine reads short of spec/permissions.md, each to finish against the model:
 - a snapshot's `stated` is empty in the reading, and a copy (`Content::Copied`) is held invalid: no copy verdicts (Snapshot carries, below, gives what a list naming it names);
 - the engine places a grant write among its own commit's by the grants of its own thing's stated path alone, where the walk reads those of every thing the commit writes (a record grant down to another thing written: issues/stated-path-wait-order.md);
-- an `addenda.0` delta's first entry alone is read;
 - a by-commit purge item is read as naming nothing (the engine names its own targets; only the request's right is the walk's), `signers_could` reads possible admins and writers, not `Paths::could_hold`;
 - the list (§5.1): the frontier leaves out no commit with grant-class parts that would end the lowering's authority, and the writer's check (`flows::grants::demote_in`, `usable_role_now`) reads the walk without the lowering trusted, so a removed admin cannot write its counter-removal (sides record its own lowering trusted all the same: `sides::tests`);
 - sides: "cannot stand beside" and "the counter-removal is told" are not read; held first is judged only for the update's disputes (issues/held-first-only-at-disputes.md); `Engine::disputes` clones the timeline per call;

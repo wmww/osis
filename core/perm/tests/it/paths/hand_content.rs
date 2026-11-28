@@ -527,7 +527,7 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
         commit(6, ms(2), KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
         commit(7, ms(5), KH, vec![grant(KA, &[], KX, Some(Grant::new(R::Write)), Some(&[]))]),
     ];
-    let by = |signer, id| commit(id, ms(6), signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]);
+    let by = |signer, id| commit(id, ms(6), signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { entries: BTreeMap::from([(cid(7), Frontier::new([cid(4), cid(5)]))]) })]);
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base.clone(), vec![by(KN, 8)]].concat());
     assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
     assert_eq!(p.content(&WriteId(cid(6), 0)), Some(Content::Valid(By::Held)));
@@ -547,7 +547,7 @@ fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
         commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
         commit(5, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(7, ms(5), KH, vec![grant(KA, &[], KX, None, Some(&[]))]),
-        commit(8, ms(6), KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]),
+        commit(8, ms(6), KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { entries: BTreeMap::from([(cid(7), Frontier::new([cid(4), cid(5)]))]) })]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &base);
     assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
@@ -570,7 +570,7 @@ fn plain(on: u32) -> Part {
 }
 
 fn addendum(on: u32, removal: u64, list: &[u64]) -> Part {
-    doc(on, &[KA], "addenda.0", DeltaClass::Addendum { removal: cid(removal), list: Frontier::new(list.iter().map(|&i| cid(i))) })
+    doc(on, &[KA], "addenda.0", DeltaClass::Addendum { entries: BTreeMap::from([(cid(removal), Frontier::new(list.iter().map(|&i| cid(i))))]) })
 }
 
 fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {

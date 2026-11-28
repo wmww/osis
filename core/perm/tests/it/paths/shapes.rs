@@ -215,7 +215,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Holder>, Vec<Commit>) {
                     0 => DeltaClass::Plain,
                     1 => DeltaClass::RoleClass,
                     2 => DeltaClass::Snapshot { carries: ids(&mut r), stated: BTreeMap::new(), own: false },
-                    3 => DeltaClass::Addendum { removal: cid(r.below(40) as u64), list: ids(&mut r) },
+                    3 => DeltaClass::Addendum { entries: BTreeMap::from([(cid(r.below(40) as u64), ids(&mut r))]) },
                     _ => DeltaClass::Purge { names: Names::Author(t(thing(&mut r))) },
                 };
                 let needs = [Role::Write, Role::Admin][r.below(2)];
@@ -275,7 +275,7 @@ fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
     // an addendum keyed by a grant and by itself, naming role commits and itself
     for (removal, list) in [(1, vec![2, 1]), (9, vec![9, 3]), (2, vec![3])] {
-        let ad = commit(9, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(removal), list: ids(&list) })]);
+        let ad = commit(9, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { entries: BTreeMap::from([(cid(removal), ids(&list))]) })]);
         let p = robust(&records(), &with(vec![ad]), &mut rng);
         assert_eq!(p.content(&WriteId(cid(3), 0)), Some(Content::Invalid), "{removal} {list:?}");
     }
@@ -321,8 +321,8 @@ fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
             commit(4, ms(4), H, vec![grant(A, &[], Z, None, Some(&[]))]),
         ];
         // Z's own (vouching for nothing of its signer), then one by Y that vouches
-        c.extend((0..k).map(|i| commit(100 + i, ms(5), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })])));
-        c.push(commit(99, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })]));
+        c.extend((0..k).map(|i| commit(100 + i, ms(5), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { entries: BTreeMap::from([(cid(4), ids(&[3]))]) })])));
+        c.push(commit(99, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { entries: BTreeMap::from([(cid(4), ids(&[3]))]) })]));
         let p = Paths::evaluate(&records(), BTreeSet::new(), &c);
         let mut n = osis_perm::paths::Counts::default();
         assert_eq!(p.content_counted(&WriteId(cid(3), 0), &mut n), Some(Content::Valid(osis_perm::paths::By::Vouched)));
