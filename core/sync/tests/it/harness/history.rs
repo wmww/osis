@@ -1073,7 +1073,7 @@ impl Model {
             let from = index(s).expect("a source");
             let held = refs.all().find_map(|r| r.engine.get_typed(s, &ct::HOLDS).ok().flatten()).unwrap_or_default();
             let mut to: Vec<Tid> = held.into_iter().filter_map(|x| if let Ref::Strong(y) = x { Some(y.0) } else { None }).collect();
-            // a strong in held history counts as one in a current value (spec/data-model.md §8
+            // a strong in held history counts as one in a current value (spec/data-model.md §9
             // Held history: an inbox's setting holds its targets)
             for r in refs.all() {
                 to.extend(r.engine.history_strongs_from(s).unwrap_or_default().into_iter().map(|(t, _)| t));
@@ -1086,6 +1086,9 @@ impl Model {
         }
         // a gone thing is held by no strong (spec/sync-set.md §3)
         edges.retain(|(_, y)| !h.gone.contains(&(y - na)));
+        // each thing's creation record names its mint admin by a weak (spec/data-model.md §9
+        // References in core aspects)
+        let weaks: hc::Edges = (0..things.len()).filter(|k| !h.gone.contains(k)).map(|k| (na + k, mint_admin(k))).filter(|(_, a)| *a < na || !h.gone.contains(&(a - na))).collect();
         // the grants that read nothing (spec/crypto.md §4 Key access), as the twins order them
         let mut keyless = BTreeSet::new();
         for r in refs.all() {
@@ -1096,7 +1099,7 @@ impl Model {
         let world = hc::World { kinds, grants, keyless, public, public_sync, records };
         // per account a node: its node thing admin of the account, its root holding both
         let n = world.kinds.len();
-        let mut net = entry::Net { w: world.clone(), strongs: edges.clone(), ..entry::Net::default() };
+        let mut net = entry::Net { w: world.clone(), strongs: edges.clone(), weaks, ..entry::Net::default() };
         for b in 0..na {
             let (thing, root) = (n + 2 * b, n + 2 * b + 1);
             net.w.kinds.extend([hc::Kind::Independent, hc::Kind::Dependent(thing)]);

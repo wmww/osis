@@ -477,6 +477,25 @@ fn a_sync_chain_no_reader_can_name_enters_nothing_spec_sync_set_2() {
     assert_eq!((held(&things[0]), held(&things[1])), (vec![osis_engine::sync::Holding::Stub], vec![osis_engine::sync::Holding::Unread]));
 }
 
+// spec/data-model.md §9 (References in core aspects: a creation record's admin, a weak),
+// spec/sync-set.md §2 (Stubs: a weak to a thing the unit holds sync or above on, the public's
+// role by its grant counting as every party's, or that its keys open): node 1 makes thing 0, grants
+// the public sync, then read, on it, and makes thing 1 with thing 0 as mint admin; node 2's
+// account reads thing 1. Thing 1's record weaks thing 0, so node 2 holds thing 0 as a stub, as
+// the model says (failed while the model held no record's weak: it had node 2 hold nothing of
+// thing 0).
+#[test]
+fn a_record_weaks_its_mint_admin_where_the_public_holds_a_role_spec_sync_set_2() {
+    use crate::harness::script::*;
+    for gives in [Syncs, Reads] {
+        let script = [New(1), Give(1, 0, Holder::Public, gives), NewIn(1, 0), Give(1, 1, Holder::Node(2), Reads), Strong(2, None, 1)];
+        let mut w = holds_on(0, 3, 4, &script, String::new(), false);
+        let t = w.history.things[0].0;
+        let held: Vec<_> = w.engine(2).sync_set().unwrap().ids.values().filter(|(ts, _)| ts.contains(&t)).map(|(_, h)| *h).collect();
+        assert_eq!(held, vec![osis_engine::sync::Holding::Stub], "{gives:?}");
+    }
+}
+
 // spec/sync-set.md §2 (Stubs: a chain holder only as some reader of the unit holding the
 // target's role entries logs it), the same at read: node 2 grants node 1's account write and node 0's read on thing 1, node 1
 // strongs thing 1 from thing 0, node 1 grants node 0's account sync on thing 0 (told) and thing 1
