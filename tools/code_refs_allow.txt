@@ -22,7 +22,6 @@ delete_surrounding_text  third-party: winit IME (text-input protocol)
 set_content_type  third-party: winit IME (text-input protocol)
 long_about  third-party: clap
 set_receive_window  third-party: quinn
-num_alive_tasks  third-party: tokio
 posix_fadvise  third-party: libc
 F_NOCACHE  third-party: macOS fcntl
 SO_REUSEPORT  third-party: socket option
