@@ -1546,6 +1546,9 @@ mod tests {
         let before = ids(&lp);
         lp.peers[o].engine.grant(&h, &tids[n], &edge(Role::Read)).unwrap();
         let on_h: Vec<CommitId> = ids(&lp).difference(&before).copied().collect();
+        // the grant on H tells N by its signal (spec/sync-set.md §2 First entry)
+        lp.hold_fires(false);
+        lp.pass_fires(n).unwrap();
         send(&mut lp, o, n, &on_h);
         assert!(read(&lp, &h).newest_held().is_some(), "N holds H's read secret");
         assert!(read(&lp, &a).is_reading_only(&e), "the pending box to H opens: {e:?} is N's for reading");
