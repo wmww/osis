@@ -976,7 +976,8 @@ fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
 /// vertices the node holds whatever secrets it holds of their things (Holding a stub), added to
 /// `out`. Of `y`'s independent X (a reference to a dependent counts as one to the thing its
 /// secrets derive from), unless an owner is X: a weak's, or a strong's to a dependent of an X
-/// the unit's keys do not open, where the unit's keys open X or it holds sync or above there (any
+/// the unit's keys do not open, where the unit's keys open X or it holds sync or above there (the
+/// public's sync by its grant counting as every party's; any
 /// other strong brings X whole or enters it, never a stub), or where the weak is the fire of a
 /// grant signal on `x` the node follows (First entry: X named by its sync ID, record or none); and
 /// the stub of each holder on the chains by which an owner holds its role on X: of read grants
@@ -1004,7 +1005,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     // dependent of an X they do not open names nothing the unit's readers know of X (spec/sync-ids.md
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
-    let carried = !opens.is_empty() || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a));
+    let carried = !opens.is_empty() || public_syncs(core, c, &a) || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a));
     // X's record naming an owner or a thing of the unit its mint admin: the record grant is X's
     // grant the unit's readers hold by that record, so they hold X's stub whatever became of it
     let record = !carried && own.iter().any(|o| record_admin(core, c, o, &a).is_some());

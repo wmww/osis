@@ -191,7 +191,8 @@ impl Engine {
     /// X the walk gives from `g`'s unit, outside it. Where `g`'s keys open X: each held commit
     /// with a role-class part on X, cut to the stub (`stub_parts`: the pieces boxing `g`, the
     /// holders on its chains to X or the public), with its evidence, and X's public key record
-    /// (its sync ID and step keys); else, `g` holding sync on X, X's sync-only cut naming the
+    /// (its sync ID and step keys); else, `g` holding sync on X (the public's by its grant counting
+    /// as every party's), X's sync-only cut naming the
     /// holders on `g`'s chains of sync to X.
     fn stub_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         for x in self.core.ix.closure.unit_stubs(g) {
@@ -213,7 +214,7 @@ impl Engine {
                 self.add_closure(ev, &seeds, out);
                 self.public_key_record_into(ev, &x, out);
             } else {
-                if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
+                if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) || self.core.public_syncs(&x) {
                     out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Sync));
                 }
                 self.record_grant_into(ev, g, &x, out);

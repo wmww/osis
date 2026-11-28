@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 6 of 100 seeds fail (15, 35, 45, 68, 86, 99); classes: a stub granted read tests nothing (86), a public-synced thing reached through a dependent holds nothing (68), a store left at an older step (45), must-hold bodies with no entry at quiet (35), 15 and 99 not shrunk anew; entries waiting for a read secret, not parked (small size).
+> Summary: the sync differential at full size: 4 of 100 seeds fail (15, 35, 45, 99); classes: a store left at an older step (45), must-hold bodies with no entry at quiet (35), 15 and 99 not shrunk anew; entries waiting for a read secret, not parked (small size).
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -7,18 +7,10 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 
 | Class | Seeds (full size) |
 |---|---|
-| A stub granted read tests nothing for it | 86 |
-| A thing the public syncs, strong from a dependent of a read thing: nothing held | 68 |
 | A store kept unread at an older step than its readers' head | 45 |
 | Must-hold bodies with no entry at quiet | 35 |
 | Not shrunk anew (their shrunk scripts pass on main) | 15, 99 |
 | Entries waiting for a read secret, not parked | none at full size; small size `OSIS_SYNC_START=940149075780` |
-
-## A stub granted read tests nothing (86)
-`New(1), Give(1, 0, Holder::Node(0), Syncs), Revoke(1, 0, Holder::Node(0)), Run, NewIn(1, 0), New(1), NewIn(1, 2), Give(1, 3, Holder::Node(0), Reads), Strong(1, Some(3), 0), Give(1, 0, Holder::Node(0), Reads), Strong(0, None, 3)`: node 0 ends with thing 0 as a stub (`contexts {Stub}`), no secret and no sync ID by a cut, and sends nothing for thing 0's sync ID after the first Run, though thing 0's head does not move after its read grant. Not diagnosed: check whether thing 0's sync ID is in node 0's sync set at all (`thing_sync_now` follows a stub only by a sync-only cut or a followed signal, spec/sync-set.md §2 Sync set says every held stub's), then whether its credentials carry its claim keys at the heard head.
-
-## A public-synced thing reached through a dependent (68)
-`New(0), NewIn(0, 0), New(2), New(3), Run, Give(3, 0, Holder::Node(2), Reads), Strong(2, None, 0), Give(0, 3, Holder::Public, Syncs), Strong(0, Some(1), 3)`: node 2 reads thing 0 and so its dependent thing 1; node 0 strongs thing 3, which the public syncs, from thing 1. The model keeps thing 3 unread at node 2 (spec/sync-set.md §2: a strong reaches it at sync, the public's role being every party's); node 2 holds nothing of it (`contexts {}`). Not diagnosed: whether thing 1's unit carries thing 3's stub under thing 0's sync ID, and whether node 2 takes the public's claim. Compare `differential::a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2` (the same with the strong in the independent's own unit).
 
 ## A store at an older step (45)
 Full size only (not shrunk): node 1 keeps thing 0 unread at a step 3 deep while its readers' head is 5 deep, holding sync[4] by a claim (`node 1 keeps thing 0 unread at step .. (3 deep), its readers' head is 5 deep`). No reader registers the later steps there. The steps past node 1's key are registered only by a member at a store source (spec/sync-ids.md §6 Walk), and node 1 opens S only at a head it holds a key or claim for.

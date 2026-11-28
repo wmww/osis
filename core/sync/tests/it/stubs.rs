@@ -226,6 +226,37 @@ fn a_reference_at_sync_keeps_the_thing_unread_spec_sync_set_2() {
     assert_eq!(reads(&mut w, 1, &x), None);
 }
 
+// spec/sync-set.md §2 (Stubs: the public's role by its grant there counting as every party's;
+// Node closure: kept unread), spec/permissions.md §4 (Stub: the sync-only cut): U strongs X, which
+// grants the public sync. Node 1, reading U and holding nothing else of X, keeps X unread (fails
+// with U's sync-only cut of X logged only for a role of U's own: node 1 held nothing of X).
+#[test]
+fn a_strong_where_the_public_syncs_keeps_the_thing_unread_spec_sync_set_2() {
+    let mut x = Tid::PUBLIC;
+    let (mut w, _) = redeemed(|w, u| {
+        x = make(w, "x");
+        set_role(w, x, Tid::PUBLIC, Some(Role::Sync));
+        refer(w, u, Value::Strong(x));
+    });
+    assert_eq!(holding(&mut w, 1, &x), Some(Holding::Unread), "X kept unread");
+    assert_eq!(reads(&mut w, 1, &x), None);
+}
+
+// spec/sync-set.md §2 (Stubs: a reference to a thing the unit's keys do not open where the unit
+// holds sync, the public's grant counting): U weaks X, which grants the public sync. Node 1 holds
+// X as a stub (fails with the public's sync counted for no stub: nothing of X held).
+#[test]
+fn a_weak_where_the_public_syncs_brings_a_stub_spec_sync_set_2() {
+    let mut x = Tid::PUBLIC;
+    let (mut w, _) = redeemed(|w, u| {
+        x = make(w, "x");
+        set_role(w, x, Tid::PUBLIC, Some(Role::Sync));
+        refer(w, u, Value::Weak(x));
+    });
+    assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "X held as a stub");
+    assert_eq!(reads(&mut w, 1, &x), None);
+}
+
 // spec/sync-set.md §2 (First entry; Not carried): node 0 grants node 1's account read on X and
 // tells it nothing; node 1 strongs X from its node root. Nothing it syncs carries X and it holds
 // no signal: it holds nothing of X, and X's sync ID is not in its sync set (control:
