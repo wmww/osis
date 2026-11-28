@@ -1555,6 +1555,61 @@ mod tests {
         lp.peers[n].engine.check_index();
     }
 
+    // spec/crypto.md §4 (Reading-only secrets: every pending commit is a source), spec/versioning.md §2 (a
+    // parked commit is pending): O's role commit holds a part on H in an encoding this build does
+    // not know and O's box to H at A's read epoch, reaching N before A's record. It applies as
+    // its header, both parts waiting, parked first; once N learns H's read secret the box opens
+    // for reading, as the open's sweep reads it (`check_index`). Fails when parking stores a
+    // commit without reading its boxes.
+    #[test]
+    fn a_parked_commits_box_opens_once_its_opener_is_held_spec_crypto_4() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (o, n) = (0, 1);
+        let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
+        let h = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.make_independent(&h).unwrap();
+        lp.sync_all().unwrap();
+        let ids = |lp: &LocalPeer| lp.peers[o].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>();
+        let a = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.make_independent(&a).unwrap();
+        let g = *lp.peers[o].engine.grant(&a, &h, &edge(Role::Read)).unwrap().commits.last().unwrap();
+        // g's box to H, beside a part on H a later build wrote, signed again by O
+        let gb = osis_commit::CommitBlob::decode(&lp.peers[o].engine.commit_bytes(&g).unwrap().unwrap()).unwrap();
+        let gh = &gb.header;
+        let mut cb = osis_commit::CommitBuilder::new(osis_commit::Kind::Role, gh.ts, gh.signer, osis_commit::Path::default(), gh.form);
+        let parked = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
+        cb.aspects.push(osis_commit::AspectWrite::new(h, osis_base::Ak::new("secrets.0").unwrap(), 100, 101, parked));
+        for p in &gb.parts {
+            let e = &gh.aspects[p.ai];
+            if e.tid == a && e.ak.as_str() == "secrets.0" {
+                cb.aspects.push(osis_commit::AspectWrite::new(a, e.ak.clone(), e.lo, e.hi, p.delta.clone()));
+            }
+        }
+        let e = &mut lp.peers[o].engine;
+        let recs: Vec<_> = [h, a].iter().map(|t| e.get_typed(t, &ct::CREATED).unwrap().unwrap()).collect();
+        let secrets = e.hand_secrets(&recs);
+        let f = cb.build(e.identity().signing(), &secrets, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
+        let r = lp.peers[n].engine.ingest(&f.encode(), Vec::new()).unwrap();
+        assert!(matches!(r, crate::Ingested::Applied(_)), "{r:?}");
+        assert_eq!(lp.peers[n].engine.core.ix.pending.get(&f.id()), Some(&crate::Reason::Parked), "parked first");
+        let read = |lp: &LocalPeer, t: &Tid| lp.peers[n].engine.core.epochs(t).map(|e| e.read.clone()).unwrap_or_default();
+        let e = lp.peers[o].engine.core.epochs(&a).unwrap().read.newest().unwrap();
+        assert!(read(&lp, &a).secret(&e).is_none(), "N cannot open the box to H yet");
+        lp.hold_fires(true);
+        let before = ids(&lp);
+        lp.peers[o].engine.grant(&h, &tids[n], &edge(Role::Read)).unwrap();
+        let on_h: Vec<CommitId> = ids(&lp).difference(&before).copied().collect();
+        // the grant on H tells N by its signal (spec/sync-set.md §2 First entry)
+        lp.hold_fires(false);
+        lp.pass_fires(n).unwrap();
+        send(&mut lp, o, n, &on_h);
+        assert!(read(&lp, &h).newest_held().is_some(), "N holds H's read secret");
+        assert!(read(&lp, &a).is_reading_only(&e), "the parked box to H opens: {e:?} is N's for reading");
+        lp.peers[n].engine.check_index();
+    }
+
     // spec/crypto.md §4 (Reading-only secrets: a secret learned from an invalid commit's boxes, or
     // from history boxes opened with such a secret, is kept for reading). Mint admin O of T rotates
     // read twice (each applied history box lists the epoch below it); stranger N holds T's

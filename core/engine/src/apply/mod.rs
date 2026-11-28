@@ -1113,7 +1113,7 @@ fn set_aside(tx: &mut Tx<'_>, id: &CommitId, bytes: Option<&[u8]>, e: &Error) ->
     if !tx.core.ix.pending.contains_key(id) {
         let Some(b) = bytes.map(CommitBlob::decode).transpose()? else { return Err(Error::Misuse("set aside: no copy")) };
         things = b.header.aspects.iter().map(|a| a.tid).collect();
-        pend(tx, id, PendingKind::Pending, None, &b.encode(), Reason::Fault, Some(&b.header))?;
+        store_pending(tx, id, PendingKind::Pending, None, &b.encode(), Reason::Fault, Some(&b.header))?;
     }
     // what its parts awaited wakes it no more: an open does
     tx.core.waits.unawaits(id);
@@ -1229,7 +1229,6 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
                 return ingest_class(tx, blob, origin);
             }
             pend(tx, &id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
-            keys::read_pending_boxes(tx, &blob, &id)?;
             Ingested::Pending(id, r)
         }
     };
@@ -1251,10 +1250,19 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 }
 
 /// Keeps commit `id` pending (`bytes` as stored) for `reason`, with its signature's verdict if
-/// one was reached (`signature`): no re-examination checks those bytes again.
+/// one was reached (`signature`): no re-examination checks those bytes again. Its boxes are read
+/// for reading (`keys::read_pending_boxes`), as the open's sweep reads every pending row's.
 /// `h`: its header, where it decoded (`waits::wakes_of`).
-#[allow(clippy::too_many_arguments)]
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<()> {
+    if let Some(copy) = store_pending(tx, id, kind, signed, bytes, reason, h)? {
+        keys::read_pending_boxes(tx, &copy, id)?;
+    }
+    Ok(())
+}
+
+/// `pend` without reading its boxes: what a setting aside records (`set_aside`). Its copy, where
+/// it decodes.
+fn store_pending(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_commit::Signed>, bytes: &[u8], reason: Reason, h: Option<&Header>) -> Result<Option<CommitBlob>> {
     tx.core.touch();
     let received = first_received(tx, id)?;
     let copy = match kind {
@@ -1265,7 +1273,7 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, signed: Option<osis_c
     tx.txn.put_pending(id, kind, signed.map(osis_commit::Signed::to_bytes), received.0, bytes)?;
     // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carried`)
     set_pending(tx.core, id, Some((reason, h)));
-    Ok(())
+    Ok(copy)
 }
 
 /// When commit `id` was received (spec/permissions.md §5.1 Received: its header decrypted and
@@ -1302,7 +1310,7 @@ fn tell_parked(tx: &mut Tx<'_>, id: &CommitId, things: Vec<Tid>, peer: Option<Ti
 }
 
 /// Keeps the parts of applied commit `id` that wait alone pending under its ID, parked under
-/// what each awaits (`note_awaited`), their boxes read as any pending copy's. `applied`: its blob.
+/// what each awaits (`note_awaited`). `applied`: its blob.
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
     note_awaited(tx, id, &w);
     let mut rest = applied.clone();
@@ -1318,8 +1326,7 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
         return park(tx, id, &rest.encode(), rest.header.aspects.iter().map(|a| a.tid).collect(), Some(rest.header.signer), Some(&rest.header));
     }
     // the applied commit's held verdict answers for these signatures (`signature`)
-    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))?;
-    keys::read_pending_boxes(tx, &rest, id)
+    pend(tx, id, PendingKind::Pending, None, &rest.encode(), w.reason.clone(), Some(&rest.header))
 }
 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
@@ -1496,7 +1503,6 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
                 tell_parked(tx, id, things, Some(blob.header.signer));
             }
             pend(tx, id, PendingKind::Pending, known, &blob.encode(), w.reason.clone(), Some(&blob.header))?;
-            keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, w.reason)
         }
         Exam::Ready(mut parts) => {
@@ -1524,7 +1530,6 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
                 return late_parts(tx, id, blob);
             }
             pend(tx, id, PendingKind::Pending, known, &blob.encode(), r.clone(), Some(&blob.header))?;
-            keys::read_pending_boxes(tx, &blob, id)?;
             Ingested::Pending(*id, r)
         }
     };
