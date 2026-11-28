@@ -1,7 +1,7 @@
 # Sync: status
 > Summary: Area 7: sources and being caught up per sync ID, the complete pass, when a node's own commit is held elsewhere, and what `status`, `wait_synced` and history completeness say per sync ID.
 
-**Principle:** status says only what is true now, per sync ID, of the sources connected now. Nothing is "synced" with nobody connected, and no word of a peer counts until its stream showed it or it reported applied what it was sent.
+**Principle:** status says only what is true now, per sync ID, of the sources connected now. Nothing is "synced" with nobody connected, and no word of a peer counts until this node knows the peer holds it (spec/sync-judgement.md §3 `known`).
 
 ## 1. Sources and caught up
 - The **sources** of S at a node: the peers with S open on a connection up now (spec/sync-opens.md §4). A peer without S open, granted or not, is no source.
