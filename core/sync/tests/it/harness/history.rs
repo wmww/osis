@@ -529,9 +529,11 @@ fn unpair(w: &mut World, i: usize, j: usize) -> Result<String, String> {
     }
     let node = w.nodes[j].node.engine().tid();
     let also: Vec<Tid> = w.node(i).profile.into_iter().collect();
-    let r = w.write(i, |e| e.remove_node(&a, &node, false, &also)).map(|_| String::new()).map_err(|e| e.to_string());
-    // a removal refused with its outcome unknown may have applied (`stands`)
-    if r.is_ok() || (w.online(i) && !w.engine(i).roster(&a).contains_key(&node)) {
+    let r = w.write(i, |e| e.remove_node(&a, &node, false, &also));
+    let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
+    let r = r.map(|_| String::new()).map_err(|e| e.to_string());
+    // a removal failing with its outcome unknown may have applied (`stands`)
+    if r.is_ok() || (unknown && w.online(i) && !w.engine(i).roster(&a).contains_key(&node)) {
         // node j erases what it holds: the account's writes not surely received elsewhere may go
         freeze(w, i);
         w.nodes[j].account = None;
@@ -682,8 +684,10 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
     let own = w.node(i).account == Some(holder);
     let tell = matches!(h, Holder::Node(_)) && !own;
     let inbox = if tell { w.engine(i).inbox_of(&holder).ok().flatten() } else { None };
-    let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) })).map_err(|e| e.to_string());
-    if r.is_ok() || stands(w, i, &t, &holder, Some(g.role())) {
+    let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) }));
+    let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
+    let r = r.map_err(|e| e.to_string());
+    if r.is_ok() || (unknown && stands(w, i, &t, &holder, Some(g.role()))) {
         if let Some(inbox) = inbox.filter(|_| r.is_ok()) {
             let at = w.now().0;
             w.history.signals.insert((holder, t), (inbox, false, at));
@@ -706,8 +710,10 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
 fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let new = g.map(|g| Edge { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
-    let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None })).map_err(|e| e.to_string());
-    let applied = r.is_ok() || stands(w, i, &t, &holder, g.map(Gives::role));
+    let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None }));
+    let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
+    let r = r.map_err(|e| e.to_string());
+    let applied = r.is_ok() || (unknown && stands(w, i, &t, &holder, g.map(Gives::role)));
     if r.is_ok() && g.is_none() && matches!(h, Holder::Thing(p) if w.history.minted_with[k] == MintAdmin::Thing(p)) {
         w.history.record_gone.insert(k);
     }
@@ -754,9 +760,9 @@ fn strong(w: &mut World, i: usize, from: Option<usize>, k: usize, on: bool) -> R
     r.map(|_| String::new()).map_err(|e| e.to_string())
 }
 
-/// Whether node `i` reads `holder` at `role` on `t` (`None`: no entry): a write refused with
-/// its outcome unknown may have applied, and its user reads before repeating it (as the API's
-/// `OutcomeUnknown` says).
+/// Whether node `i` reads `holder` at `role` on `t` (`None`: no entry): a write failing by a
+/// store failure (`Error::is_store`: its outcome unknown) may have applied, and its user reads
+/// before repeating it (as the API's `OutcomeUnknown` says); a refusal applied nothing.
 fn stands(w: &mut World, i: usize, t: &Tid, holder: &Tid, role: Option<Role>) -> bool {
     w.online(i) && w.engine(i).roster(t).get(holder).map(|e| e.role) == role
 }

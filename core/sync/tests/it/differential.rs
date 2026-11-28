@@ -612,3 +612,13 @@ fn a_record_edge_is_read_through_where_its_thing_is_held_spec_sync_set_2() {
     let t = w.history.things[1].0;
     assert!(reads(w.engine(2), &t).value.is_some(), "node 2 reads thing 1");
 }
+
+// spec: none (test harness: a write's outcome is unknown only when its store fails): node 0's account pairs node 3, which removes node 2 before it holds the account's roles,
+// so the removal is refused; node 3 then makes a thing. Node 2 is still of the account and reads
+// it, as the model says (failed while any refused removal stood where the remover's roster lacked
+// the node, as a fresh node's lacks every one: the oracle took node 2 for removed).
+#[test]
+fn a_refused_removal_removes_no_one() {
+    use crate::harness::script::*;
+    holds_on(0, 2, 3, &[Pair(0), Unpair(3, 2), Run, New(3)], String::new(), false);
+}
