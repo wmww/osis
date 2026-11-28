@@ -1,0 +1,6 @@
+# Two units may found each other's chain-hop stub
+> Summary: a sync chain hop in unit T counts where another unit gives the hop thing Z (`units::given_elsewhere_than`), and the local part counts Z's grants where a non-local unit gives Z (`local_log::founded_otherwise` via `given_elsewhere`); both ask only that the giving edge's source is founded avoiding Z, not that the edge rests on something other than the other unit, so the two may hold Z for each other (spec/sync-set.md §2 First entry: no entry is kept for supporting itself). Unconfirmed: needs a hand test.
+> Priority: normal
+> Tags: engine, tests
+
+`core/engine/src/sync/units.rs` `counted` (`Ctx::Read(t)` arm) and `given_elsewhere_than`; `core/engine/src/sync/local_log.rs` `founded_otherwise`. Shape to test: Z an intermediate holder whose grants the node holds only as evidence, on a 3-hop sync chain both from an own thing (local part) and from T; the real route that first gave Z goes; does Z's stub (and its `ll/` row, which then stays while a local grant carries Z) stay? If so, derive the cross-unit route only from carriage not resting on a chain hop counted through the other unit (e.g. `given_elsewhere` from whole and direct-stub carriage only). The spec wording ("a unit it syncs carrying X … on a path avoiding X") has the same gap.

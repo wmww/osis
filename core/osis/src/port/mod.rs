@@ -51,7 +51,7 @@ pub mod method {
     pub const SETTLE: u64 = 19;
     /// `[] -> wall ms`
     pub const NOW: u64 = 20;
-    /// `[] -> [connected, [[tid, state, not_taking, leaving]*]]`: for a client's thing, the things
+    /// `[] -> [connected, [[tid, state, not_taking]*]]`: for a client's thing, the things
     /// it may read and the connections with one of them open.
     pub const STATUS: u64 = 21;
     /// `[tid] -> [[thing, kind, role, Opt(until), [through*]]*]`

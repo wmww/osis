@@ -38,9 +38,8 @@ pub fn engine_written(ak: &str) -> bool {
     is_role_class(ak) || is_addenda(ak) || ak == "created.0" || card_of(ak).is_some()
 }
 
-/// Whether `ak` is a thing's content: what a delete removes, an undone creation resets and a read
-/// of the thing counts: no creation record, no rights, no retention rule (spec/commits.md §5)
-/// and no addenda.
+/// Whether `ak` is a thing's content: what a delete removes and a read of the thing counts: no
+/// creation record, no rights, no retention rule (spec/commits.md §5) and no addenda.
 pub fn is_content(ak: &str) -> bool {
     !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "retention^.0"
 }

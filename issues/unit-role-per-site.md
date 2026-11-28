@@ -1,0 +1,7 @@
+# A unit's role on a thing is assembled at each call site
+> Summary: the public's sync counting as every party's (`public_syncs`) is OR-ed in at some call sites and not others, and the holder clause of a sync-only cut (a cut under a holder the owner syncs) applies to the local part only; both belong in the one function giving a unit's owner's role on a thing.
+> Priority: normal
+> Tags: engine
+
+- Public: `|| public_syncs(..)` at `core/engine/src/sync/units.rs` `grant_carries` and the stub count, `sync_ids/certs.rs` (`f0ccc90615`), `public_reads` in `may_read`; absent where the same shape decides: whether chain holders' stubs are added (`units.rs`, the chain-holder filter) and `cut_under`'s `role_on(o, h) >= Sync` check. Fold the public's grant into `role_on`/`keyed_role_now` (the effective role is the max of the party's and the public's) and drop the per-site ORs.
+- Holder clause (`8ba74c0082`): `units::cut_under` counts a sync-only cut under a holder `o` syncs only for `Ctx::Local`; `Ctx::Read(T)` uses `core.cut_under(T, y)` alone. A strong in T's unit to X that T reaches through holder H (T syncs H, H syncs X, X known by H's claim) gives a stub, where the same strong from the node root keeps X unread. The rule (a node's role comes through the holders on the way, spec/sync-set.md §2 Own things) is general: apply it in every context and state it once in the spec's Stubs rule, not in the local part's paragraph.

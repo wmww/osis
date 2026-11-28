@@ -52,7 +52,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client's thing (§11.2) |
 | `MAX_PROOFS` | 256 proofs in one Prove or Proved (§11.2) |
 | `MAX_PROOF_COPIES` | 256 certificate copies in one Prove or Proved (§11.2) |
-| `MAX_FETCH_IDS` | 1024 commit IDs in one Want (§11.2) |
+| `MAX_FETCH_IDS` | 1024 IDs in one Fetch (blob IDs) or Want (commit IDs) (§11.2) |
 | `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 34⌋ tags in one Resume (§11.2; a tag's encoding is 34 bytes) |
 
 ### Node policy
@@ -444,7 +444,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
 
 - **Per-message caps**:
   - Delete: 1024 items.
-  - Fetch: 1024 IDs in all its groups.
+  - Fetch: `MAX_FETCH_IDS` IDs in all its groups.
 
 ## 12. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most `MAX_VALUE_DEPTH` (spec/data-model.md §5); no array or map longer than the bytes that remain.

@@ -726,7 +726,6 @@ impl RoleEpochs {
     }
 }
 
-/// Drops `commit` from `from`: `None` when it was not there, else whether `from` is now empty.
 /// Adds `from` to a reading-only secret's sources: one source per pending commit, its author as
 /// first read (whether the author's chain was known then), so reading the commit again (its
 /// arrival, a re-read, the open's sweep) after the chain came gives the same sources.
@@ -736,6 +735,7 @@ fn add_source(sources: &mut BTreeSet<Unchecked>, from: Unchecked) {
     }
 }
 
+/// Drops `commit` from `from`: `None` when it was not there, else whether `from` is now empty.
 fn drop_source(from: &mut BTreeSet<Unchecked>, commit: &CommitId) -> Option<bool> {
     let n = from.len();
     from.retain(|u| u.commit != *commit);
