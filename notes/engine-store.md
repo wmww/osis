@@ -9,26 +9,30 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 
 | prefix | holds |
 |---|---|
-| `seed`, `hlc` | the node seed; the last `ts` issued or seen |
+| `seed`, `hlc`, `node root`, `blobseq` | the node seed; the last `ts` issued or seen; the node root's tid; the last ciphertext-store transaction committed (`blobs::Cipher`) |
 | `c/`+commit | applied commit records: a head (`index::record_head`, version 1: received, origin (a repair's own commit marked, with the blobs it encrypted afresh, `Meta::repair`), dropped parts with what each keeps (`Hold::Dropped`; one dropped as covered, whether its blobs drop it too: `Dropped::strips`), stripped parts and whether each leftover keeps own values (`Hold::Leftover`), the canonical bytes of the header's linked lists), then the current blob. A held header is whole in its record (its list blobs go at the commit's expiry, spec/wire.md §5), so no open reads them |
 | `t/`+tid | creation records |
 | `v/`+aspect | gone deltas (expired, purged): the join-time removal list |
 | `w/`+aspect+commit+ai | leftovers (notes/engine-retention-purge.md) |
-| `p/`+aspect, `pn/`+aspect+commit, `z/`+commit+tid | purge requests on a whole aspect or author; requests naming a commit; a request that dropped a permanent delta (`retention::lasting`) |
-| `x/`+T+commit+ai | timers (expiry, keep bounds) |
-| `s/`+tid | things this node was asked to sync |
+| `p/`+aspect, `pn/`+aspect+commit, `z/`+commit+tid, `ro/`+aspect | purge requests on a whole aspect or author; requests naming a commit; a request that dropped a permanent delta (`retention::lasting`); re-snapshots owed after purge requests |
+| `f/`+aspect, `fn/`+aspect+commit, `cv/`+commit | the newest forgotten `ts` per aspect; a forgotten commit's name while a held snapshot carries its writes (`retention::names`); a forgotten coverer's covers (`retention::handed`) |
+| `fl/`+blob+tid, `ft/`+tid+blob | freed links, and each again by its thing (`retention::freed`) |
+| `dt/`+tid | things held destroyed |
+| `x/`+T+commit+ai, `xc/`+commit+ai+T | timers (expiry, keep bounds), and each again by its part |
 | `o/`+commit | commits voided by overlapping session ranges |
 | `g/`+tid+commit | `keys.0` parts whose held body wrote a keyset, any validity (`ix.keyset_parts`, kept while the commit is held); `independent` = things with such a part valid (`apply::keys::refresh_independent`, on noting, flips, load), so an uncover keeps it and an invalid rotation drops it |
 | `k/`+actor | opened epochs of a thing (`established`, `claims`, `snapshot`; never re-inferred; written from the index's journal at each transaction's end, `index::write_secrets`, never by hand). A dependent thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
+| `dw/`+tid+epoch, `ou/`+commit+ai+epoch, `cs/`+tid | derived read epochs sealed under while dependent here (`rotation::merge`); the epochs another's content parts were opened under (`sync_ids::opened`); the read floor up to which a cut's state was owed (`rotation::floors::owe_state`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
 | `T/`, `K/` | timed losses, kept copies (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
-| `u/`+name | API records (profile, contact card, node key, sources) |
+| `u/`+name | API records (the node key, sources) |
 | `sides` | sides taken in admin disputes (`sides.rs`): per (grant write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
 | `hr/`+aspect+replaced-at+commit, `hf/`+aspect | history rows and cursors (`retention/leaving.rs`, notes/engine-retention-dating.md Rows) |
 | `pi/`+commit+part index | a paged part's page index (`apply::held_part_at`), written when the part is applied, gone with it |
-| `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md); `bp/` per held blob of a commit also its seal (length, blob key, each section keyed or verbatim: notes/slim-design.md B) while the commit as held makes the blob again, the sync store then keeping no bytes of it; removed shredded |
+| `pc/`, `sg/`, `node/fires/`, `su/`, `se/` | a pending commit's carriers (`apply/carriers.rs`); held grant signals and sealed fires owed (`flows/inbox.rs`); sync-only cuts and claim-given sync secrets (`sync_ids/unread.rs`) |
+| `cp/`, `ra/`, `jc/`, `hw/`, `fm/`, `sw/`, `ll/`, `rs/`, `cb/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md); `bp/` per held blob of a commit also its seal (length, blob key, each section keyed or verbatim: notes/slim-design.md B) while the commit as held makes the blob again, the sync store then keeping no bytes of it; removed shredded |
 
 Other store kinds (osis-store's catalog):
 - **Aspect units**: the state (`state::Stored`); a unit exists exactly while its aspect has a state, so a key scan of a thing's units lists them (`Transaction::aspects_of`, `aspects.0`; `all_aspects` for an open and a rebuild): snapshot grammar with its pages inline; for a paged state `[1, skeleton, [[set ID, path, encoding]*]]` (paged collections reduced to their reset and `W`); or `[2, commit ID]`, the state as that commit's part in its record (notes/thing-cost.md, States stored as their body).
@@ -38,7 +42,7 @@ Other store kinds (osis-store's catalog):
 ## Index tables
 Rebuildable `node/*` tables (`engine/index.rs`; Principle). The index check's rebuild must give every row: state a fast open needs is persisted in its own rows (the role walk excepted: The role walk, below).
 - `node/metas`: per commit what this node judged of it, never what its header says: a byte per part (valid, the rotation role it needs, a grant's overreach, missing, whole, miskeyed) and, in a split commit, what is decided here of each thing's path (`View::paths`). Every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did; the rest of the `View` comes from the header (`View::of`), which an open decodes.
-- `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/delete hints`, `node/required`, `node/snapshots` (per aspect, with frontiers), `node/perm`, `node/refs to` and `node/refs from` (the reference index, notes/engine-refs.md).
+- `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/sealed`, `node/boxed`, `node/invalid-keysets`, `node/retention`, `node/originals`, `node/snapshots` (per aspect, with frontiers), `node/addenda` (what each addendum commit says), `node/perm`, and the reference index's `node/refs *` tables (notes/engine-refs.md).
 
 ## Open (`apply::load`)
 - **Fast open** with an index of these rules (tag `i/v`: package version and the build script's hash of the engine's and its osis dependencies' sources, not sync's): reads the commit record heads and decodes each header (extent by `osis_base::item_prefix`, hash checked against the ID, `Header::decode_stored` skipping what was verified on arrival: delete-key point decompression, inline-list size re-encode; linked lists resolved from the record; no part decoded, nothing re-judged), the `node/metas` rows, the parts table and the derived index tables, perm's inputs from `node/perm` and the `account.0` states, reading no blob. `keys.0` states are read by neither open (observing one only ends delete hints, which a load reads from the index or not at all). Then every open runs the sweep (`flows::reopen_all`, below), which reads each `secrets.0` state whole over the persisted epochs: a state stored as a paged part (notes/thing-cost.md, States stored as their body) reads its page blobs, held with the part. Cost: an open reads every held `secrets.0` state.

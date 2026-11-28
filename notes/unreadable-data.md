@@ -2,23 +2,23 @@
 > Summary: The full list of what a node keeping a sync ID unread learns and what it must not, the padding and wrap costs, and an index of the choices elsewhere that keep the list this short (each with where its reason lives). The requirement: spec/requirements.md, Data a node cannot read; the leaks accepted: spec/sync-hostile.md §2. Neighbours: notes/sync-reasons.md, notes/sync-access.md, notes/networking.md (transport keys).
 
 ## Learns
-- Of each thing it keeps unread: the tid, its sync IDs and sync secrets (spec/sync-ids.md §2 What a sync holder learns).
+- Of each thing it keeps unread: the tid, its sync ID and sync secrets (spec/sync-ids.md §2 What a sync holder learns).
 - Overlaps between sync IDs (shared commit blobs and certificate copies; inbox, list and record blobs and per-sync-ID copies share nothing). Nesting only as far as overlap shows it.
-- Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node and page blobs), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
+- Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node and page blobs, sealed fires), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
 - Which sync IDs one connection opens (so: holds a credential of), and client addresses.
 - Which accounts and other things dial it: a dialer proves the things it acts for (its node thing, its account, link keys) to every key it chose to dial (spec/sync-opens.md §2), so the node links them to the sync IDs the connection opens; a node key only between nodes of one account.
 - The roster bucket of each boxing commit's claim blocks (padded to a power of two with dummies, spec/sync-ids.md §3) and of a rotation commit, by its padded size; which claim keys open S toward it, and when.
 - Which entries were deposited and when (a grant or a non-writer's write).
 - Header-only lasting blobs: one more small stamped entry with no commitments close to a deletion it already sees (notes/sync-convergence.md).
-- Whether a node keeps S is visible to anyone holding S's public values (its filter goes to every connection, and it answers Head to anyone), and a depositor holding an organization's `keys.0` learns whether a node holds the organization's inbox (spec/sync-hostile.md §2).
+- Whether a node keeps S is visible to anyone holding S's public values (its filter goes to every connection, and it answers Head to anyone), and a depositor holding a thing's `keys.0` but not its roster learns whether a node holds the thing's sync ID (spec/sync-hostile.md §2).
 
 ## Does not learn
 AKs, tids other than the things its dialers proved and the things it keeps unread, thing or aspect counts, authors, role grants, rosters, another account's node identities, retention bounds. What it deleted (a delete, an expiry, a replaced entry) it forgets: its store shreds every removal, so a later compromise of that node, even one that also holds the read secret, recovers no deleted wrap (notes/sync-reasons.md, Nodes; notes/local-store.md).
 
 ## Costs
 - Padmé padding costs at most about 12% under 256 B, 6% up to 64 KB, 3% above; 1-4% on average.
-- The wrap costs about 25% on a minimal commit, under 5% on typical edits. Chunk, tree-node, page and inbox entries carry a filler wrap (57 random bytes) that hides nothing; it could be dropped for those kinds (a wire change).
-- Entries: 1,233 B per boxed role (a read holder two, a sync holder one) per holder per sync epoch in each boxing commit, padded to a power of two (spec/wire.md §5 Claim blocks).
+- The wrap costs about 25% on a minimal commit, under 5% on typical edits. Chunk, tree-node, page and sealed-fire entries carry a filler wrap (57 random bytes) that hides nothing; it could be dropped for those kinds (a wire change).
+- Claims: 1,233 B per boxed role (a read holder two, a sync holder one) per holder per sync epoch in each boxing commit, padded to a power of two (spec/wire.md §5 Claim blocks).
 
 ## Choices that keep it so
 - Delete-key commitments are blinded per blob, so a node cannot tell which blobs carry one author's or actor's deletes (notes/sync-reasons.md, Blob prefix).
