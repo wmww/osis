@@ -48,7 +48,7 @@ impl Members for BTreeMap<SyncId, Option<Position>> {
     }
 }
 
-use crate::types::{Cursor, Entry, Position, RecordId, Result};
+use crate::types::{Credential, Cursor, Entry, Position, RecordId, Result};
 use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
@@ -1265,8 +1265,9 @@ impl Store {
     }
 
     /// Delete items for S (spec/sync-ids.md §6 Delete, spec/wire.md §11.2 Delete): taken only at
-    /// a node keeping S unread, on a connection where S is open by a store credential (else every
-    /// item 8); each by the head's delete key, or by delete keys of levels covering every
+    /// a node keeping S unread, on a connection where S is open (`by`, the credential it opened by:
+    /// a member not ended) by one other than the public's claim key at its head, which anyone
+    /// computes (else every item 8); each by the head's delete key, or by delete keys of levels covering every
     /// commitment group of the blob's prefix with the head's write or sync key. A verified one
     /// removes the entry, leaving a tombstone (0); for an entry not held it changes nothing: 0 by
     /// the delete key where a tombstone of the blob exists (a repeat), else 1 (by levels always:
@@ -1274,13 +1275,13 @@ impl Store {
     /// verifying under an earlier step's keys only is 9, any other 1. 13: S not held; 14: S read.
     /// One transaction for the durable items; each reads only its blob's prefix: a blob the
     /// engine makes on demand (`rows::MADE`) has its prefix in `made` (`take_delete_made`).
-    pub fn take_delete(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool) -> Result<Vec<Code>> {
-        self.take_delete_made(s, items, by_store_credential, &BTreeMap::new())
+    pub fn take_delete(&mut self, s: &SyncId, items: &[DeleteItem], by: Option<&Credential>) -> Result<Vec<Code>> {
+        self.take_delete_made(s, items, by, &BTreeMap::new())
     }
 
     /// `take_delete`, with the prefixes of the blobs the engine makes on demand (read through
     /// `blob_bytes` by the caller).
-    pub fn take_delete_made(&mut self, s: &SyncId, items: &[DeleteItem], by_store_credential: bool, made: &BTreeMap<BlobId, Prefix>) -> Result<Vec<Code>> {
+    pub fn take_delete_made(&mut self, s: &SyncId, items: &[DeleteItem], by: Option<&Credential>, made: &BTreeMap<BlobId, Prefix>) -> Result<Vec<Code>> {
         let mut g = self.lock();
         let all = |c: Code| Ok(vec![c; items.len()]);
         match g.holding(s) {
@@ -1288,7 +1289,8 @@ impl Store {
             Some(Holding::Read | Holding::Stub) => return all(Code::DECLINED),
             Some(Holding::Unread) => {}
         }
-        if !by_store_credential {
+        let public = g.read(|t, env| Ok(path::head(t, env, s)?.map(|(_, st)| osis_crypto::public_claim_key(s, &st.step_key).verifying_key().to_bytes())))?;
+        if by.is_none_or(|c| public.is_some_and(|k| *c == Credential::ClaimKey(k))) {
             return all(Code::NOT_OPEN);
         }
         let now = g.now;

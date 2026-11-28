@@ -183,7 +183,7 @@ impl Register {
                 p.backoff = None;
                 p.stuck = None;
             }
-            Msg::Error { code: Code::RATE_LIMITED | Code::STORAGE_CAP, .. } => {
+            Msg::Error { code: Code::STORAGE_CAP, .. } => {
                 let n = p.backoff.map_or(0, |(_, n)| n.saturating_add(1));
                 let at = now.after(backoff_ms(n));
                 p.backoff = Some((at, n));

@@ -67,6 +67,7 @@ Not format constants. A value marked recommended is advice.
 | `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync-compaction.md §2) |
 | `LOST_HEARD_WAIT_MS` | `ROLE_KEEP`: how long after a node first found a role gone by an `until` alone it drops anyway (spec/permissions.md §2) |
 | `PASS_WAIT_MS` | local policy, recommended 1 hour: how long a complete pass waits for a peer whose record holds the sync ID (spec/sync-status.md §1) |
+| `max_clients` | local policy, recommended 64: client sessions a node serves at once, all clients together (§11.2 Auth) |
 
 ## 3. Creation records and agility enums
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { ed25519 1 (blob) }` (32 bytes), `kem_key = enum { x25519_mlkem768 1 (blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { x25519_mlkem768 1 (blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
@@ -129,8 +130,8 @@ Aspect fields (its thing the group's `tid`): `ak` (text, spec/data-model.md §2,
 - A header violating a rule of spec/commits.md §2, §5 or §6 is bad input:
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
-  - a role compaction snapshot of `roles.0`;
-  - a role-class, `addenda.0`, `retention^.0` or `purge.0` aspect whose purge-by is not its fixed one (spec/commits.md §5);
+  - a role compaction snapshot of `roles.0` or `signers.0`;
+  - a role-class, `addenda.0` or `purge.0` aspect whose purge-by is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
   - a content compaction snapshot's delta without fixed retention whose `by` is not writer;
   - `expires` or a purge item on a role commit;
@@ -295,12 +296,11 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
   - 1 for a genesis step into an empty path that does not verify;
   - 13 for steps from a child step of an unknown sync ID;
   - 9 for steps the node does not take (a step not verifying under the one before, a branch no deeper than the head or both off a step bearing another delete key than the head's and without an endorsement of its last step by the head's delete key, a genesis step the node's path does not hold);
-  - 12 when steps into an empty path do not fit a storage cap (a branch that does not fit: spec/sync-ids.md §6);
-  - 4 when registrations are rate-limited;
+  - 12 when steps into an empty path do not fit a storage cap, or a branch past the caps comes within the policy interval of the last one taken (spec/sync-ids.md §6 Storage caps);
   - 14 when the node reads the sync ID or does not sync it.
 - **Stamp**: `stamp` under `"osis v1 stamp"` (`"osis v1 role entry"` for a role entry, spec/sync-ids.md §6), digest BLAKE3(canonical `[sync_id, blob_id, wrap]`).
 - **Deposit item**: `sig` by the deposit key under `"osis v1 deposit"` (`"osis v1 role entry"` for a role entry), digest as for a stamp.
-- **Delete**: answered Error 8 whole where the sync ID is not open on the connection (spec/sync-ids.md §6); per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[sync_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
+- **Delete**: answered by a Status, every item alike, first of: 13 where the node does not hold the sync ID, 14 where it reads it or holds its thing as a stub, 8 where it is not open on the connection by a credential the node takes for it (spec/sync-ids.md §6), 13 where its head is past its keys (spec/sync-judgement.md §6 Stops); else per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[sync_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
   - with no pair, `sig` by the head's delete key;
   - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync-ids.md §6). A pair verifying under no group refuses the item.
   - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists, else 1; with levels, 1.

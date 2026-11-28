@@ -10,7 +10,7 @@ use osis_blob::{Class, DeleteItem, Prefix, Step};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, NodeEvent, RecordId};
 use osis_sync::store::{Source, Stand};
-use osis_sync::types::{ConnId, Entry};
+use osis_sync::types::{ConnId, Credential, Entry};
 use osis_sync::Store;
 use std::collections::BTreeMap;
 use crate::harness::caps;
@@ -43,6 +43,9 @@ fn record(st: &mut Store, b: u8) -> Source {
 }
 
 /// A fresh device keeping `Sid::new(10)` unread (`unread`).
+/// A Delete's connection: S open there by a sync proof.
+pub(crate) const OPEN: Option<&Credential> = Some(&Credential::SyncProof([0x5f; 32]));
+
 fn one_unread() -> (Dev, Sid, Store) {
     let dev = Dev::new();
     let s = Sid::new(10);
@@ -369,7 +372,7 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes.clone(), &[]).unwrap(), Code::REFUSED);
     assert_eq!(st.take_deposit(&deposit(&s, &cbytes, false), None).unwrap(), Code::RATE_LIMITED);
-    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, c)], true).unwrap(), [Code::UNKNOWN_SYNC_ID]);
+    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, c)], OPEN).unwrap(), [Code::UNKNOWN_SYNC_ID]);
     st.set_unheld(&s.id, false).unwrap();
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes, &[]).unwrap(), Code::OK, "at a held head again");
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap(), Code::OK, "re-fetched");
@@ -483,7 +486,7 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
         assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
-        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap(), [Code::OK]);
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes;
@@ -520,7 +523,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
         assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
-        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap(), [Code::OK]);
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes + st.usage(&o.id).unwrap().0.bytes;
@@ -551,7 +554,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     // o's tombstone and path, which no give-way frees, leave the durable total as o is held read
     let (ob, ox) = blob(160, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox, &[]).unwrap(), Code::OK);
-    assert_eq!(st.take_delete(&o.id, &[DeleteItem::sign(&o.delete(), &o.id, ob)], true).unwrap(), [Code::OK]);
+    assert_eq!(st.take_delete(&o.id, &[DeleteItem::sign(&o.delete(), &o.id, ob)], OPEN).unwrap(), [Code::OK]);
     let (b, x) = blob(310, Class::Durable, None, &[]);
     let o_fixed = st.usage(&o.id).unwrap().0.bytes;
     assert!(o_fixed >= 256, "o's path and tombstone");
@@ -836,16 +839,19 @@ fn peer_budget_spec_sync_ids_5() {
 }
 
 // spec/sync-ids.md §6 (delete opened): a Delete is taken at a node keeping S unread only on a
-// connection where S is open by a store credential, else refused whole (8).
+// connection where S is open by a credential other than the public's claim key at its head
+// (which anyone computes), else refused whole (8).
 #[test]
 fn delete_needs_a_store_credential_spec_sync_ids_6() {
     let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let del = DeleteItem::sign(&s.delete(), &s.id, b);
-    assert_eq!(st.take_delete(&s.id, &[del.clone(), del.clone()], false).unwrap(), [Code::NOT_OPEN, Code::NOT_OPEN]);
+    assert_eq!(st.take_delete(&s.id, &[del.clone(), del.clone()], None).unwrap(), [Code::NOT_OPEN, Code::NOT_OPEN]);
+    let public = Credential::ClaimKey(osis_crypto::public_claim_key(&s.id, &s.steps[0].step_key).verifying_key().to_bytes());
+    assert_eq!(st.take_delete(&s.id, std::slice::from_ref(&del), Some(&public)).unwrap(), [Code::NOT_OPEN], "open by the public's claim key");
     assert!(st.entry(&s.id, &b).unwrap().is_some());
-    assert_eq!(st.take_delete(&s.id, &[del], true).unwrap(), [Code::OK]);
+    assert_eq!(st.take_delete(&s.id, &[del], OPEN).unwrap(), [Code::OK]);
     assert!(st.entry(&s.id, &b).unwrap().is_none());
     assert!(st.tombstone(&s.id, &b).unwrap().unwrap().deleted);
     assert!(st.kept_bytes(&b).unwrap().is_none(), "its bytes went with the last entry naming them");
@@ -862,13 +868,13 @@ fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let del = |b| DeleteItem::sign(&s.delete(), &s.id, b);
     let before = st.usage(&s.id).unwrap().0;
-    assert_eq!(st.take_delete(&s.id, &[del(never)], true).unwrap(), [Code::REFUSED]);
+    assert_eq!(st.take_delete(&s.id, &[del(never)], OPEN).unwrap(), [Code::REFUSED]);
     assert!(st.tombstone(&s.id, &never).unwrap().is_none(), "no tombstone for a blob never held");
     assert_eq!(st.usage(&s.id).unwrap().0, before);
-    assert_eq!(st.take_delete(&s.id, &[del(b), del(b)], true).unwrap(), [Code::OK, Code::OK], "a repeat is idempotent");
+    assert_eq!(st.take_delete(&s.id, &[del(b), del(b)], OPEN).unwrap(), [Code::OK, Code::OK], "a repeat is idempotent");
     let d2 = DeleteSecret::write(&Secret32::from_bytes([21; 32]));
     let by = DeleteItem::sign_by(&s.sync_key(), &[(2, &d2)], &[5; 16], &[1; 16], &s.id, b).unwrap();
-    assert_eq!(st.take_delete(&s.id, &[by], true).unwrap(), [Code::REFUSED], "by levels: the prefix is gone");
+    assert_eq!(st.take_delete(&s.id, &[by], OPEN).unwrap(), [Code::REFUSED], "by levels: the prefix is gone");
 }
 
 // spec/sync-ids.md §6 (Delete): checking a Delete reads the blob's prefix, never its ciphertext:
@@ -880,7 +886,7 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
         let (b, x) = blob(n, Class::Durable, None, &[]);
         st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
         osis_base::costs::take();
-        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap(), [Code::OK]);
         osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store blob bytes read").map(|(.., n)| n).sum::<u64>()
     };
     let (a, b) = (read(10_000), read(100_000));
@@ -917,7 +923,7 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     let by = |b: BlobId, key: &SigningSecret, dks: &[(u8, &DeleteSecret)]| DeleteItem::sign_by(key, dks, &[5; 16], &[1; 16], &id, b).unwrap();
     let refused = |st: &mut Store, item: DeleteItem, code: Code, why: &str| {
         let b = item.blob;
-        assert_eq!(st.take_delete(&id, &[item], true).unwrap(), [code], "{why}");
+        assert_eq!(st.take_delete(&id, &[item], OPEN).unwrap(), [code], "{why}");
         assert!(st.entry(&id, &b).unwrap().is_some(), "{why}: deleted");
     };
     refused(&mut st, by(authors, &s.sync_key(), &[(2, &y)]), Code::REFUSED, "Y's own level-2 key on X's entry");
@@ -935,8 +941,8 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     assert_eq!(st.reg(&s, std::slice::from_ref(&c2)), Code::OK);
     refused(&mut st, by(authors, &old_sync, &[(2, &x)]), Code::NOT_HEAD_KEY, "the removed author's level-2 key under its old sync key");
     // under the current head the same keys delete
-    assert_eq!(st.take_delete(&s.id, &[by(authors, &s.sync_key(), &[(2, &x)])], true).unwrap(), [Code::OK]);
-    assert_eq!(st.take_delete(&s.id, &[by(writers, &s.write_key(), &[(3, &w3)])], true).unwrap(), [Code::OK]);
+    assert_eq!(st.take_delete(&s.id, &[by(authors, &s.sync_key(), &[(2, &x)])], OPEN).unwrap(), [Code::OK]);
+    assert_eq!(st.take_delete(&s.id, &[by(writers, &s.write_key(), &[(3, &w3)])], OPEN).unwrap(), [Code::OK]);
     assert!(st.entry(&s.id, &authors).unwrap().is_none() && st.entry(&s.id, &writers).unwrap().is_none());
 }
 
@@ -967,7 +973,7 @@ fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
             st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
             let (b, x) = blob(100 + n + i, Class::Durable, None, &[]);
             st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
-            st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
+            st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap();
         }
         osis_base::costs::take();
         st.settle_at(Time(500)).unwrap();
@@ -985,7 +991,7 @@ fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let e = stamped(&s, b, false);
     st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap();
-    st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
+    st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap();
     st.settle_at(Time(TOMBSTONE_LIFETIME_MS - 1)).unwrap();
     assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::TOMBSTONED);
     st.settle_at(Time(TOMBSTONE_LIFETIME_MS)).unwrap();
@@ -1048,7 +1054,7 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
         tx.commit().unwrap();
     }
     st.set_memory_charge(&b, 5_000).unwrap();
-    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap(), vec![Code::OK]);
+    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], OPEN).unwrap(), vec![Code::OK]);
     let before = st.usage(&s.id).unwrap().1.bytes;
     st.drop_entry(&s.id, &b, Vec::new()).unwrap();
     assert!(st.kept_bytes(&b).unwrap().is_some(), "the engine still holds it in memory");
@@ -1109,7 +1115,7 @@ fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
         }
         let entries = (st.memory_held() - held, st.usage(&s.id).unwrap().1.bytes - used);
         let items: Vec<_> = blobs.iter().map(|(b, _)| DeleteItem::sign(&s.delete(), &s.id, *b)).collect();
-        assert!(st.take_delete(&s.id, &items, true).unwrap().iter().all(|c| *c == Code::OK));
+        assert!(st.take_delete(&s.id, &items, OPEN).unwrap().iter().all(|c| *c == Code::OK));
         [entries, (st.memory_held() - held, st.usage(&s.id).unwrap().1.bytes - used)]
     };
     let usage_rows = 2 * (osis_store::MEM_ROW_COST + 64);
@@ -1215,7 +1221,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     assert!(only1.events.iter().all(|e| e.event.sync_id() == s1.id));
     let until = only1.events[2].pos;
     // b0 is first logged before `until`; its delete after is served; b2 (after) is not
-    st.take_delete(&s1.id, &[DeleteItem::sign(&s1.delete(), &s1.id, bs[0])], true).unwrap();
+    st.take_delete(&s1.id, &[DeleteItem::sign(&s1.delete(), &s1.id, bs[0])], OPEN).unwrap();
     let ended = st.read_log(&BTreeMap::from([(s1.id, Some(until))]), None, 100).unwrap();
     let got: Vec<_> = ended.events.iter().map(|e| e.event).collect();
     assert!(got.iter().any(|e| matches!(e, NodeEvent::Deleted { blob, .. } if *blob == bs[0])), "{got:?}");
@@ -1267,7 +1273,7 @@ fn shred_drops_everything_of_s_spec_sync_set_3() {
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b2, false), x2, &[]).unwrap();
-    st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap();
+    st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], OPEN).unwrap();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
     let conn = Source::Conn(ConnId(4));
@@ -1307,7 +1313,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &Step, step: usize) {
     let code = match step {
         0 => st.take_stamped(&s.id, &stamped(s, b(0).0, false), b(0).1, &[]).unwrap(),
         1 => st.take_deposit(&deposit(s, &b(1).1, false), Some(Source::Record(rec))).unwrap(),
-        2 => st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b(0).0)], true).unwrap()[0],
+        2 => st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b(0).0)], OPEN).unwrap()[0],
         3 => {
             let e = Entry { own: true, expires: Some(Time(5_000)), ..stamped(s, b(3).0, false) };
             st.log(&s.id, e, Some(b(3).1), None).unwrap()
@@ -1469,7 +1475,7 @@ fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
     let (mut large, _, _) = filled(200, 3);
     let del = |st: &mut Store| {
         let (b, _) = blob(500_000, Class::Durable, Some(1_000), &[]);
-        rows_read(|| assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]))
+        rows_read(|| assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], OPEN).unwrap(), [Code::OK]))
     };
     let (a, b) = (del(&mut small), del(&mut large));
     assert_eq!(a, b, "a delete with its blob's reference check: {a} rows at n, {b} at 10n");

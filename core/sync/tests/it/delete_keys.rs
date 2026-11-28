@@ -55,7 +55,7 @@ fn forged(w: &mut World, by: usize, of: &BlobId, keys: &osis_engine::sync_ids::H
 
 /// Node 1's store takes `item` under `s` by a store credential (`Store::take_delete`).
 fn take(w: &World, s: &SyncId, item: DeleteItem) -> Code {
-    w.store(1).clone().take_delete(s, &[item], true).unwrap()[0]
+    w.store(1).clone().take_delete(s, &[item], crate::store::OPEN).unwrap()[0]
 }
 
 /// Node `from` sends node 1 a Delete of `items` under `s` as a peer's frame on a connection up

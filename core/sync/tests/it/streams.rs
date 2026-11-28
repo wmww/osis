@@ -20,7 +20,7 @@ use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Strea
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
 use osis_sync::Store;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use crate::harness::caps;
 use crate::harness::sid::{Register, Sid, THING};
@@ -159,6 +159,8 @@ struct Open {
     /// Connections whose peer has a record of its own (another source than `record`).
     records: BTreeMap<ConnId, RecordId>,
     positions: BTreeMap<ConnId, Positions>,
+    /// Connections keeping no shared set yet (before a record or NoRecord).
+    unagreed: BTreeSet<ConnId>,
 }
 
 static NONE: BTreeMap<SyncId, Member> = BTreeMap::new();
@@ -167,8 +169,8 @@ impl Shared for Open {
     fn members(&self, c: ConnId) -> &BTreeMap<SyncId, Member> {
         self.members.get(&c).unwrap_or(&NONE)
     }
-    fn agreed(&self, _c: ConnId) -> bool {
-        true
+    fn agreed(&self, c: ConnId) -> bool {
+        !self.unagreed.contains(&c)
     }
     fn record(&self, c: ConnId) -> Option<RecordId> {
         self.records.get(&c).copied().or(self.record)
@@ -457,6 +459,28 @@ fn blob(n: usize, class: Class) -> (BlobId, Vec<u8>) {
 
 fn knows(side: &Side, from: Source, s: SyncId, b: BlobId) -> bool {
     side.streams.knows(from, Some(C), &s, &b)
+}
+
+// spec/sync-opens.md §4 (shared set): a side keeping no shared set on a connection yet answers
+// its shared-set requests 14 (spec/wire.md §11.2 Shared-set request ids: Pull, Fetch, Want).
+#[test]
+fn no_shared_set_yet_answers_pull_fetch_want_14_spec_sync_opens_4() {
+    let mut side = Side::new(1);
+    let s = sid(1);
+    side.hold(s, Holding::Read);
+    side.open.members.entry(C).or_default().insert(s, member());
+    side.open.unagreed.insert(C);
+    let asks = [
+        Msg::Pull(Box::new(Pull { id: TOP_BIT | 1, ..plain_pull(None, vec![(s, None)], 32_768) })),
+        Msg::Fetch { id: TOP_BIT | 2, max_reply: 32_768, ids: vec![(s, vec![BlobId([1; 32])])] },
+        Msg::Want { id: TOP_BIT | 3, max_reply: 32_768, ids: vec![(s, vec![osis_base::CommitId([1; 32])])] },
+    ];
+    for m in asks {
+        let (id, kind) = (m.id(), m.kind());
+        side.with(0, |st, c| st.message(c, C, Incoming::Request(id, m)));
+        let (_, f) = side.pipe.out.pop().unwrap();
+        assert_eq!(f.msg(), Msg::Error { id, code: Code::DECLINED }, "kind {kind}");
+    }
 }
 
 /// A server-level exchange: one Pull request into `side`, its answer.

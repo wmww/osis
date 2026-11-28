@@ -15,6 +15,7 @@ pub enum RelayVerdict {
     Push,
     /// Taken already within its window, or at or below the sync ID's floor: dropped.
     Seen,
+    /// Dropped by a rule (spec/sync-ids.md §6 Relay-only), the code naming which; nobody is told.
     Refused(Code),
 }
 

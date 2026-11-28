@@ -857,10 +857,14 @@ impl Streams {
         }
     }
 
-    /// A Fetch (spec/wire.md §11.2 Fetch): each ID's entry of its sync ID with its bytes, in
+    /// A Fetch (spec/wire.md §11.2 Fetch; 14 before a shared set): each ID's entry of its sync ID with its bytes, in
     /// request order, a prefix of them within `max_reply`; none for one not held, of a sync ID not
     /// shared here, or (an ended member) first logged past its `until`.
     pub(super) fn on_fetch(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<BlobId>)>) {
+        if !ctx.shared.agreed(conn) {
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED });
+            return;
+        }
         let mut left = (max_reply as usize).min(REPLY_BUDGET).saturating_sub(OVERHEAD);
         let mut items = Vec::new();
         for (s, b) in ids.into_iter().flat_map(|(s, bs)| bs.into_iter().map(move |b| (s, b))) {
@@ -879,11 +883,15 @@ impl Streams {
         ctx.wire.answer(conn, id, Msg::FetchReply { id, items });
     }
 
-    /// A Want (spec/wire.md §11.2 Want; spec/sync-judgement.md §3 Asked by ID): for each commit, in
+    /// A Want (spec/wire.md §11.2 Want, 14 before a shared set; spec/sync-judgement.md §3 Asked by ID): for each commit, in
     /// request order, an entry of its body under its sync ID this node holds or makes, a prefix of
     /// them within `max_reply`; none under a sync ID not shared here, not read here, or open to a
     /// peer holding it as a stub.
     pub(super) fn on_want(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<osis_base::CommitId>)>) {
+        if !ctx.shared.agreed(conn) {
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED });
+            return;
+        }
         let mut left = (max_reply as usize).min(REPLY_BUDGET).saturating_sub(OVERHEAD);
         let mut items = Vec::new();
         for (s, c) in ids.into_iter().flat_map(|(s, cs)| cs.into_iter().map(move |c| (s, c))) {

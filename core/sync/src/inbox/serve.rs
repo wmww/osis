@@ -15,8 +15,8 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
         }
         Msg::Delete { sync_id, items, .. } => {
             // open by a credential of this node's head: a member not ended (spec/sync-ids.md §6
-            // Delete)
-            let by_store = net.member(conn, &sync_id).is_some_and(|m| m.until.is_none());
+            // Delete); the store refuses the public's claim key
+            let by = net.member(conn, &sync_id).filter(|m| m.until.is_none()).map(|m| m.by);
             // a blob the engine makes on demand shows its prefix made again
             let mut made = std::collections::BTreeMap::new();
             for d in &items {
@@ -27,7 +27,7 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
                     made.insert(d.blob, p);
                 }
             }
-            let codes = h.store.take_delete_made(&sync_id, &items, by_store, &made).unwrap_or_else(|_| vec![Code::REFUSED; items.len()]);
+            let codes = h.store.take_delete_made(&sync_id, &items, by.as_ref(), &made).unwrap_or_else(|_| vec![Code::REFUSED; items.len()]);
             Msg::Status { id, codes }
         }
         // judged by this node alone (`Engine::take_stranded`: only a current holder of an actor
