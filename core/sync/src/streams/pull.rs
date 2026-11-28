@@ -600,8 +600,9 @@ impl Streams {
     /// when it `opened` on the connection, else no join.
     fn join_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, rejoin: Rejoin, opened: bool) {
         let src = self.source(ctx.shared, conn);
-        // full for S: told on each connection S joins
-        if ctx.store.waits_room(&s) {
+        // full for S: told on each connection S joins, by a node keeping S unread (a reader full
+        // by its memory cap tells nothing)
+        if ctx.store.waits_room(&s) && ctx.store.holding(&s) == Some(Holding::Unread) {
             self.tell_full(conn, s, true);
         }
         // the cursor this connection's first Pull names, while none went out: a member stopped

@@ -2408,8 +2408,9 @@ fn a_join_left_in_pages_keeps_s_busy_spec_sync_status_1() {
 // spec/sync-compaction.md §2 (Caps: at a node for what it reads, an entry refused for room is
 // fetched again once there is room), spec/sync-streams.md §4 (Full): b, reading S, opens a's
 // ephemeral entry to a commit refused for room. It keeps no entry of it, and once its memory cap
-// has the room the commit needs, S is pulled again from the start and the entry taken. Fails
-// with a refused entry logged as held, or with its room mark dropped for a reader.
+// has the room the commit needs, S is pulled again from the start and the entry taken; it tells
+// `full` on no join. Fails with a refused entry logged as held, its room mark dropped for a
+// reader, or a reader telling full.
 #[test]
 fn a_reader_fetches_an_entry_refused_for_room_once_room_comes_spec_sync_compaction_2() {
     let s = sid(1);
@@ -2423,6 +2424,12 @@ fn a_reader_fetches_an_entry_refused_for_room_once_room_comes_spec_sync_compacti
     p.run();
     assert_eq!(p.b.table.opened, [d, x]);
     assert!(p.b.store.entry(&s, &x).unwrap().is_none(), "refused for room, held");
+    // a reader full by its memory cap tells nothing, on a later join either
+    p.b.leave(p.now, s);
+    p.b.join(p.now, s);
+    p.run();
+    assert!(p.b.store.waits_room(&s) && !p.a.streams.known().full(C, &s), "a reader told full");
+    let opened = p.b.table.opened.len();
     // what opening it again would give, once there is room: not before
     p.b.table.no_room = None;
     p.b.store.set_caps(&caps(&[("memory_bytes", 4_000)]));
@@ -2430,7 +2437,7 @@ fn a_reader_fetches_an_entry_refused_for_room_once_room_comes_spec_sync_compacti
     assert!(p.b.store.entry(&s, &x).unwrap().is_none(), "fetched again with too little room");
     p.b.store.set_caps(&caps(&[("memory_bytes", 10_000)]));
     p.run();
-    assert_eq!(p.b.table.opened, [d, x, x], "opened again once");
+    assert_eq!(p.b.table.opened[opened..], [x], "opened again once");
     assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "not fetched again with room");
 }
 
