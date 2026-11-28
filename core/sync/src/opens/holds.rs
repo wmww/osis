@@ -39,6 +39,7 @@ impl Creds {
     /// What a node keeping S unread holds (spec/sync-opens.md §4 Admissible): it shows and tests
     /// the sync proof of each sync secret it shows (`UnreadCredentials::keys`), and shows its
     /// head claim keys (`claims`) and its head's deposit key; its head's sync key, held, answers.
+    /// At a head past its keys it tests its claim keys there (`UnreadCredentials::claims`).
     pub fn kept_unread(uc: &UnreadCredentials, claims: &[[u8; 32]]) -> Creds {
         let mut c = Creds { holding: Some(Holding::Unread), ..Creds::default() };
         for (k, p) in &uc.keys {
@@ -52,6 +53,9 @@ impl Creds {
         }
         for (k, p) in &uc.keys {
             c.tests.push(Tested::Proof(*p.expose(), k.verifying_key().to_bytes()));
+        }
+        if let Some(head) = uc.head {
+            c.tests.extend(uc.claims.iter().map(|key| Tested::ClaimKey { key: key.clone(), sync: head }));
         }
         c.step = uc.step.and(uc.keys.first().map(|(k, _)| k.clone()));
         c.head = uc.head;

@@ -1270,10 +1270,10 @@ impl Streams {
             // refused for room, a room mark at each source whose place passes it once settled
             Some(Holding::Unread) if stamp.is_some() => match ctx.store.take_stamped(&s, &e, bytes.to_vec(), &self.settling_at(s, conn)) {
                 Ok(code) => {
-                    // its entry for this node, if it holds one (a role entry's blocks)
-                    if code == Code::OK
-                        && let Err(x) = ctx.ground.take_unread(ctx.store, &s, &e, bytes)
-                    {
+                    // its entry for this node, if it holds one (a role entry's blocks); a stopped
+                    // S keeps none, but tests one bound to its head (spec/sync-judgement.md §6)
+                    let test = if code == Code::OK { Ok(true) } else { ctx.store.stopped_bound(&s, bytes) };
+                    if let Err(x) = test.and_then(|t| if t { ctx.ground.take_unread(ctx.store, &s, &e, bytes) } else { Ok(()) }) {
                         return self.failed(Err(x));
                     }
                     self.refused(ctx, conn, s, b, code)

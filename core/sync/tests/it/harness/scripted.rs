@@ -62,14 +62,14 @@ pub fn store(head: &StepKeys) -> Creds {
 /// `store` holding the sync secrets of `older` steps of its path too.
 pub fn store_with(head: &StepKeys, older: &[&StepKeys]) -> Creds {
     let keys = std::iter::once(head).chain(older.iter().copied()).map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys, deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()) }, &[])
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: Some(head.id), keys, deposit: Some(SigningSecret::from_seed(&Secret32::from_bytes(head.proof)).verifying_key()), head: Some(head.pk()), claims: Vec::new() }, &[])
 }
 
 /// What a node keeping S unread holds before any step is registered there, granted the sync
 /// secrets of `steps` (newest first): the product's own, with no head.
 pub fn store_no_head(steps: &[&StepKeys]) -> Creds {
     let keys = steps.iter().map(|st| (st.sync.clone(), Secret32::from_bytes(st.proof))).collect();
-    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, head: None }, &[])
+    Creds::kept_unread(&osis_sync::unread::UnreadCredentials { step: None, keys, deposit: None, head: None, claims: Vec::new() }, &[])
 }
 
 /// An honest side's view of what it holds (the `Holds` seam), set by the test.

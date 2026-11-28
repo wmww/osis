@@ -202,6 +202,14 @@ impl Engine {
         Ok(Some(Arc::new(c)))
     }
 
+    /// The claim keys a node keeping `s` unread tests at `step`, a head none of its sync secrets
+    /// derives (spec/sync-opens.md §4 Admissible, tests): of each holder it reaches S's thing
+    /// through (`claimants`), the public's among them.
+    pub fn unread_claim_keys(&mut self, s: &SyncId, step: &osis_blob::Step) -> Result<Vec<SigningSecret>> {
+        let things = self.sync_things_of(s)?;
+        Ok(self.claimants(s, &things).each().filter_map(|(_, k)| super::claim_key_at(k, s, &step.step_key)).collect())
+    }
+
     /// The holders this node reaches `s`'s things `things` through (spec/sync-opens.md §4
     /// Admissible, tests): its own things (its node thing, the things it holds a grant on, its
     /// link keys), each holder of a thing's independent it holds a read secret of (by the role

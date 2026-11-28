@@ -1,5 +1,5 @@
 # Sync: unread
-> Summary: osis-sync's `unread` module (core/sync/src/unread.rs): judgement for sync IDs this node keeps unread (keep while a held sync secret derives the head's sync key, else drop the copy and take nothing); why it needs nothing of what S carries, and the reasons behind its rules.
+> Summary: osis-sync's `unread` module (core/sync/src/unread.rs): judgement for sync IDs this node keeps unread (keep while a held sync secret derives the head's sync key, else drop the copy, keep nothing and test claims at the head); why it needs nothing of what S carries, and the reasons behind its rules.
 
 Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (what it shows), spec/sync.md §3. Model: core/test/tla/net/NetKeep.tla. Overview: notes/sync.md.
 
@@ -8,7 +8,8 @@ Spec: spec/sync-judgement.md §6, spec/sync-set.md §3, spec/sync-opens.md §4 (
 ## The rule
 `unread::judge`, over plain values (`Judged`):
 - **Keep** while a held sync secret derives the head's sync key. Credentials: that key, its proof, the head's deposit key and head claim keys.
-- **Stranded**: at a head no held secret derives, the store holds and takes nothing (`Store::set_unheld`: every entry dropped, durable and in memory, with no deletion event; path and tombstones kept; stamped entries, deposits and Deletes refused as with no head). It shows only the held secrets whose sync key no step of its path bears.
+- **Stranded**: at a head no held secret derives, the store keeps nothing (`Store::set_unheld`: every entry dropped, durable and in memory, with no deletion event; path and tombstones kept; stamped entries, deposits and Deletes refused as with no head). It shows only the held secrets whose sync key no step of its path bears, and tests its claim keys at its head (`Engine::unread_claim_keys`, `UnreadCredentials::claims`).
+- **The way back in is the one open rule**: a grant or re-seal at the head carries its claim in a block bound to the head, so a source holding it shows that claim key; the stopped store's Hit opens S whole there, and of what the source then shows it tests each entry bound to its head (`Store::stopped_bound`, then `Ground::take_unread`), keeping none. The claim's sync secret derives the head's key, so the next judgement keeps S and it is fetched anew. No resume path of its own (`a_stopped_store_granted_again_reads_spec_sync_judgement_6`).
 - **No head**: it shows every held secret.
 - Credentials show every eligible secret, not the newest alone: a box at a self-made epoch would otherwise hide the grant's key.
 - Leaving the sync set is `leave`'s one rule (notes/sync-leave.md): S stays synced, so judged here, until it stops.

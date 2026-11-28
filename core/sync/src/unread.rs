@@ -5,8 +5,10 @@
 //! state of what S carries. Its inputs are the
 //! sync IDs this node syncs kept unread, those secrets and the store's path of S. It keeps S
 //! while its head's sync key is one a held secret derives; at a head whose key none derives it
-//! drops its copy and takes nothing (`Store::set_unheld`), showing only the secrets no step of its
-//! path bears, so a reader holding one registers its path onward (a re-grant past its head).
+//! drops its copy and keeps nothing (`Store::set_unheld`), showing only the secrets no step of its
+//! path bears, so a reader holding one registers its path onward (a re-grant past its head), and
+//! testing its claim keys at its head, so a source holding a grant or re-seal there opens S and
+//! shows the entry carrying its claim, which it takes (spec/sync-judgement.md §6 Stops).
 //! Leaving is `leave`'s: S is kept here while it waits there. Model: core/test/tla/net/NetKeep.tla.
 //!
 //! Work follows change: the sync IDs this node syncs kept unread (`set::SyncsFollow`, O(moved)),
@@ -43,6 +45,8 @@ pub struct UnreadCredentials {
     pub deposit: Option<VerifyingKey>,
     /// The head's sync key (none: no step registered).
     pub head: Option<[u8; 32]>,
+    /// At a head past its keys, its claim keys there (`Engine::unread_claim_keys`), tested.
+    pub claims: Vec<SigningSecret>,
 }
 
 impl PartialEq for UnreadCredentials {
@@ -52,6 +56,8 @@ impl PartialEq for UnreadCredentials {
             && self.keys.iter().zip(&o.keys).all(|((a, p), (b, q))| p == q && a.verifying_key() == b.verifying_key())
             && self.deposit == o.deposit
             && self.head == o.head
+            && self.claims.len() == o.claims.len()
+            && self.claims.iter().zip(&o.claims).all(|(a, b)| a.verifying_key() == b.verifying_key())
     }
 }
 
@@ -59,7 +65,8 @@ impl PartialEq for UnreadCredentials {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kept {
     /// Its head is at a step whose sync key no held secret derives (spec/sync-judgement.md §6;
-    /// stranded, spec/permissions.md §4): it holds no entry of S and takes none.
+    /// stranded, spec/permissions.md §4): it keeps no entry of S, and tests those bound to its
+    /// head for its claims.
     pub stranded: bool,
     /// `None` when it shows no sync proof.
     pub credentials: Option<Arc<UnreadCredentials>>,
@@ -71,6 +78,9 @@ pub struct Judged<'a> {
     pub secrets: &'a [(osis_crypto::Epoch, Secret32)],
     /// S's verified path as Registers gave it (its head last).
     pub steps: &'a [Step],
+    /// Its claim keys at its head (`Engine::unread_claim_keys`), where no held secret derives the
+    /// head's sync key.
+    pub claims: &'a [SigningSecret],
 }
 
 /// spec/sync-judgement.md §6 (keeps, stops), over plain values.
@@ -87,7 +97,7 @@ pub fn judge(j: &Judged) -> Kept {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
         // genuine one (spec/sync-opens.md §4 Admissible)
-        return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, head: None }));
+        return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, head: None, claims: Vec::new() }));
     };
     if held.iter().any(|(k, _)| k.verifying_key() == head.keys.sync) {
         let mut keys: Vec<(SigningSecret, Secret32)> = Vec::new();
@@ -98,12 +108,14 @@ pub fn judge(j: &Judged) -> Kept {
                 keys.push(k.clone());
             }
         }
-        return keep(false, Some(UnreadCredentials { step: Some(head.id()), keys, deposit: Some(head.keys.deposit), head: Some(head.keys.sync.to_bytes()) }));
+        return keep(false, Some(UnreadCredentials { step: Some(head.id()), keys, deposit: Some(head.keys.deposit), head: Some(head.keys.sync.to_bytes()), claims: Vec::new() }));
     }
     // its head is past its keys: it shows only the secrets no step of its path bears (a re-grant
-    // past its head, which a reader holding it moves it to), so a node removed shows nothing
+    // past its head, which a reader holding it moves it to), so a node removed shows nothing, and
+    // tests its claim keys at its head (a grant or re-seal there)
     let keys: Vec<_> = held.into_iter().filter(|(k, _)| !j.steps.iter().any(|st| st.keys.sync == k.verifying_key())).collect();
-    keep(true, (!keys.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, head: Some(head.keys.sync.to_bytes()) }))
+    let claims = j.claims.to_vec();
+    keep(true, (!keys.is_empty() || !claims.is_empty()).then_some(UnreadCredentials { step: None, keys, deposit: None, head: Some(head.keys.sync.to_bytes()), claims }))
 }
 
 #[derive(Clone)]
@@ -170,7 +182,7 @@ impl Unread {
             }
             let Some((_, k)) = self.judged.try_settle(&s, || judge_s(cx, &s))? else { continue };
             acted = true;
-            // at a head past its keys its copy goes and it takes nothing (§6)
+            // at a head past its keys its copy goes and it keeps nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
             self.kept.insert(s, k);
         }
@@ -180,23 +192,23 @@ impl Unread {
 
 /// One S's judgement, reading its own keys only. At a head past its keys, its entries bound to the
 /// head's sync key are taken first (spec/sync-ids.md §3 Taking a claim: a step registered after
-/// an entry came binds its block to the head; only those blocks are read again).
+/// an entry came binds its block to the head; only those blocks are read again); stranded still,
+/// it tests its claim keys at the head.
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let path = cx.store.path(s)?;
     let steps = path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default();
-    let k = judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps });
-    if !k.stranded {
-        return Ok(k);
-    }
+    let k = judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps, claims: &[] });
+    let Some(head) = steps.last().filter(|_| k.stranded) else { return Ok(k) };
     let mut took = false;
     for b in cx.store.head_bound_entries(s)? {
         let (Some(e), Some(bytes)) = (cx.store.entry(s, &b)?, crate::store::blob_bytes(cx.engine, cx.store, &b)?) else { continue };
         let pages = crate::store::page_bytes(cx.engine, cx.store, &bytes)?;
         took |= !matches!(cx.engine.take_unread_entry(s, &b, &e.wrap, &bytes, &pages, steps)?, osis_engine::sync::Opened::NotOpen);
-        took |= cx.engine.kept_sync_secrets(s).iter().any(|(_, x)| steps.last().is_some_and(|h| osis_crypto::role_key(RoleKey::Sync, x).verifying_key() == h.keys.sync));
+        took |= cx.engine.kept_sync_secrets(s).iter().any(|(_, x)| osis_crypto::role_key(RoleKey::Sync, x).verifying_key() == head.keys.sync);
         if took {
             break;
         }
     }
-    Ok(if took { judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps }) } else { k })
+    let claims = if took { Vec::new() } else { cx.engine.unread_claim_keys(s, head)? };
+    Ok(judge(&Judged { secrets: &cx.engine.kept_sync_secrets(s), steps, claims: &claims }))
 }

@@ -622,3 +622,14 @@ fn a_refused_removal_removes_no_one() {
     use crate::harness::script::*;
     holds_on(0, 2, 3, &[Pair(0), Unpair(3, 2), Run, New(3)], String::new(), false);
 }
+
+// spec/sync-judgement.md §6 (Stops: a claim giving it its head's sync secret keeps S again):
+// node 0 grants node 2's account sync on its thing, node 2 keeps it unread, is removed (its store
+// stops at a head past its keys), then is granted read. The grant's claim bound to the head gets
+// it in through the one open rule, and it reads the thing (failed while a stopped store took
+// nothing: no claim could reach it).
+#[test]
+fn a_stopped_store_granted_again_reads_spec_sync_judgement_6() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Run, Revoke(0, 0, Holder::Node(2)), Give(0, 0, Holder::Node(2), Reads)], String::new(), false);
+}

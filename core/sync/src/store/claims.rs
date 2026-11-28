@@ -90,6 +90,12 @@ pub(crate) fn index(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId, blob: &[u8]
     Ok(())
 }
 
+/// Whether blob `blob` carries a block verifying under S bound to sync key `pk`.
+pub(crate) fn binds(s: &SyncId, blob: &[u8], pk: &[u8; 32]) -> bool {
+    let Ok(Some(prefix)) = osis_blob::clear_prefix(blob) else { return false };
+    prefix.blocks().iter().any(|x| x.sync_pk() == pk && x.verifies(s, prefix.salt()))
+}
+
 /// The claim keys of claim page `bytes` where its one block is bound to `pk` and verifies under S.
 fn page_claims(s: &SyncId, pk: &[u8; 32], bytes: &[u8]) -> Option<Vec<u8>> {
     let (_, block, salt) = osis_blob::read_page(bytes)?;

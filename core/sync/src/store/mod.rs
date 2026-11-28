@@ -914,6 +914,17 @@ impl Store {
         })
     }
 
+    /// Whether S takes nothing (`unheld`) and blob `bytes` carries a claim block bound to its
+    /// head's sync key: what a stopped S still tests for its claims, keeping none
+    /// (spec/sync-judgement.md §6 Stops).
+    pub fn stopped_bound(&self, s: &SyncId, bytes: &[u8]) -> Result<bool> {
+        let mut g = self.lock();
+        if !g.unheld.contains(s) {
+            return Ok(false);
+        }
+        g.read(|t, env| Ok(path::head(t, env, s)?.is_some_and(|(_, head)| claims::binds(s, bytes, &head.keys.sync.to_bytes()))))
+    }
+
     /// S's entries with a claim block bound to sync key `pk` (a heard head's, spec/sync-ids.md
     /// §3 Bound).
     /// The claim pages entry `b` of S names (spec/wire.md §5 Claim pages), as indexed from its
