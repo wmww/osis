@@ -877,3 +877,21 @@ fn diagnostics_through_a_socket_notes_client_port() {
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|d| matches!(d, osis::Diagnostic::Callback { .. })), "{got:?}");
 }
+
+// spec/wire.md §11.2 (node root: main only), spec/sync-set.md §1 (Node root): a main session
+// acts as its node, so it holds and lets go of things by its node's root.
+#[test]
+fn a_main_session_holds_by_its_nodes_root_spec_wire_11() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-root");
+    let root = cl.node_root().unwrap();
+    assert_eq!(root, a.node_root().unwrap(), "the node's root");
+    let t = a.commit_with(|w| w.create_held()).unwrap();
+    for hold in [true, false] {
+        let mut w = cl.write();
+        if hold { w.hold(root, t).unwrap() } else { w.unhold(root, t).unwrap() }
+        w.commit().unwrap();
+        assert_eq!(a.holds(root, t).unwrap(), hold, "held {hold}");
+    }
+}

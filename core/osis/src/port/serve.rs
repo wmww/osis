@@ -387,6 +387,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         }),
         method::MAKE_LINK => on(args, |(t, role, admin, until, single_use): (Tid, crate::Role, Tid, Option<crate::Time>, bool)| h.make_link(t, role, admin, crate::LinkOpts { until, single_use })),
         method::LOCATOR => on(args, |(t,): (Tid,)| h.locator(t)),
+        method::NODE_ROOT => on(args, |()| h.node_root()),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }

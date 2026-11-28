@@ -66,6 +66,8 @@ pub mod method {
     pub const MAKE_LINK: u64 = 18;
     /// `[tid] -> link text` (`locator`)
     pub const LOCATOR: u64 = 23;
+    /// `[] -> tid` (`node_root`)
+    pub const NODE_ROOT: u64 = 24;
 
     // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
 

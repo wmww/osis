@@ -416,10 +416,12 @@ impl ReadOnly {
     /// node alone syncs and keeps `t` so) and naming the thing it keeps its settings on
     /// (`core::SETTINGS`, read by `settings_thing`). Its own: nothing references it, no other
     /// node reads it, and its writes beside others in a `Write` are a commit of their own in the
-    /// same transaction, so a thing it holds can be made in one write with its strong.
-    /// `Unsupported` through a connection.
+    /// same transaction, so a thing it holds can be made in one write with its strong. In a
+    /// main session, its node's; `Unsupported` for a client's thing.
     pub fn node_root(&self) -> Result<Tid> {
-        self.local("node_root")?;
+        if let Some(at) = self.process_at("node_root")? {
+            return self.forward(&at, crate::port::method::NODE_ROOT, ());
+        }
         Ok(self.inner.node_root)
     }
 }
