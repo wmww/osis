@@ -186,12 +186,14 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
 /// sync secret below sync (`holds_at`), any other below read (`may_hold`). A sync secret of a thing
-/// whose grants the node holds none of is judged by no role: kept unread, it follows only its own
-/// entries and the steps registered with it (spec/sync.md §3 Kept sync IDs), its removal the step
-/// past its keys (spec/sync-judgement.md §6 Stops).
+/// the node reads no grant of (no timeline, or sync secrets alone held, `Core::holds_sync_alone`:
+/// what it holds of the roster is from when it read, and a claim's later grant is beyond it) is
+/// judged by no role: kept unread, it follows only its own entries and the steps registered with
+/// it (spec/sync.md §3 Kept sync IDs), its removal the step past its keys (spec/sync-judgement.md
+/// §6 Stops).
 fn over_held(core: &Core, a: &Tid) -> bool {
     let Some(e) = core.ix.secrets.get(a) else { return false };
-    let judged = core.timelines().get(a).is_some();
+    let judged = core.timelines().get(a).is_some() && !core.holds_sync_alone(a);
     ROLES.iter().any(|r| e.role(*r).holds_any() && !if *r == Role::Sync { !judged || holds_sync(core, a) } else { holds_at(core, a, Role::Read) })
 }
 
@@ -498,6 +500,9 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     // the things whose entries their read secrets may have opened, found before they go
     let opened = crate::retention::forget::deriving_from(tx.core, &lost.iter().copied().collect());
     for a in &lost {
+        if tx.core.holds_sync_alone(a) {
+            osis_base::costs::count("lost access: sync secrets alone dropped", 1);
+        }
         // lowered to sync: its sync secrets stay, so it is kept unread (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
         let sync = tx.core.ix.secrets.get(a).filter(|_| holds_sync(tx.core, a)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
         #[cfg(debug_assertions)]

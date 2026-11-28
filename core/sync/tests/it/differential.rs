@@ -635,15 +635,20 @@ fn a_stopped_store_granted_again_reads_spec_sync_judgement_6() {
 }
 
 // spec/sync-ids.md §4 (Owner: kept unread, the sync ID of its own reading is a hint while no step
-// bears a held key), spec/permissions.md §3 (Lost access): node 0 grants node 1's account read on
-// its thing, removes it, then grants it sync, and node 1 strongs it. Node 1 learned its removal
-// while it read; its new sync secret comes by the claim alone, which no step it recorded bears.
-// It keeps the thing unread, as the model says (failed: the `keys.0` it read named the thing no
-// sync ID until a recorded step bore a held key).
+// bears a held key), spec/permissions.md §3 (Lost access: a node keeping the thing unread drops no
+// sync secret for it): node 0 grants node 1's account read on its thing, removes it, then grants
+// it sync, and node 1 strongs it. Node 1 learned its removal while it read; its new sync secret
+// comes by the claim alone, which no step it recorded bears. It keeps the thing unread, as the
+// model says, and never drops the claim's secret (failed: the `keys.0` it read named the thing no
+// sync ID until a recorded step bore a held key; the roster it read dropped the claim's secret,
+// taken again from the claim, in a loop that stormed at full size).
 #[test]
 fn a_reader_removed_then_granted_sync_keeps_it_unread_spec_sync_ids_4() {
     use crate::harness::script::*;
+    osis_base::costs::take();
     holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
+    let alone = osis_base::costs::take().into_iter().filter(|(k, _, _)| *k == "lost access: sync secrets alone dropped").map(|(_, _, n)| n).sum::<u64>();
+    assert_eq!(alone, 0, "a node holding sync secrets alone dropped them for lost access");
 }
 
 // spec/sync-opens.md §5 (Testing: a Head unanswered tested nothing), §1 (one connection per pair):
