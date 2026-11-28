@@ -286,13 +286,13 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 
 Writes of deltas the node judges invalid are not undone. A signal delta is written back as nothing: a signal reads absent before it (spec/commits.md §7). Redo is an undo of the undo commit.
 
-**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, with the writes of invalid deltas and the gone writes (§4.7) removed.
+**Un-merge** (a lowering, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, with the writes of invalid deltas and the gone writes (§4.7) removed.
 - **Removed.** Exactly the writes of invalid deltas are removed from each delta body, their record creations included. Others' writes nested in a record they created stay: the record, with no creation held, reads as at a node that never held the invalid delta (§5.6 Live, §5.7 Live). A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2): a valid snapshot's body joins whole, so the state holds the snapshot's copy alone, with whatever payload it carries.
-- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
+- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the lowering arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
 - **Seq elements** created by an invalid delta lose their creation (anchor and char); others' position and flag writes on them and writes nested in them stay (an undelete's char with its flag write), and a record left with no write goes (§4.2). Such an element is placed by valid writes alone: with no record left, what anchors at it sits at its virtual anchor (§6.1), so the order, like every read, is a function of the valid writes held.
 
-**Un-merge of an ephemeral commit** (revoked signer, spec/sync-compaction.md §2): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
+**Un-merge of an ephemeral commit** (a removed signer, spec/sync-compaction.md §2): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
 
 ### 4.7 Expiry and purge
 A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) carries the writes of its source with a counter in its range (commit form: every write of its source in that aspect).

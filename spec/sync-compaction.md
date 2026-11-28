@@ -52,7 +52,7 @@
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts, by the trigger of §1.
   - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) once its keep-at-least bound passes (spec/commits.md §5 Keep bounds): at once where no setting keeps history for the aspect of any of its deltas.
-    - A node drops a body it authored, live or not, only under one of its own snapshots (§1 Own bodies; no demotion frontier lists an ephemeral commit, spec/permissions.md §5.1), but a replaced body under purge on replace, which any writer's cover drops (spec/commits.md §5).
+    - A node drops a body it authored, live or not, only under one of its own snapshots (§1 Own bodies; no lowering's frontier lists an ephemeral commit, spec/permissions.md §5.1), but a replaced body under purge on replace, which any writer's cover drops (spec/commits.md §5).
     - A snapshot stamped no later and covered by another goes the same way.
     - Of covered-equal snapshots the higher commit ID goes (§1).
   - **A snapshot turning invalid**: as §1; a node that may write the aspect and still holds a valid ephemeral part of it also writes a snapshot of the aspect from its state and logs it (a new commit, which a peer's delete tombstone on the old entries, spec/sync-ids.md §6, does not stop).

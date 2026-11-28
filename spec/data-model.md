@@ -95,7 +95,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - A read of one commit's body (a listed part) holding such a link reads that body whole as not fetched.
   - When a blob such a read lacked arrives, the node delivers the aspect, or that commit, to its watches again.
 - A reference inside a chunked set element or map key counts as any other (§8 What counts): it is seen once the node holds the chunks of the element, and until then not at all.
-- Every blob is at most `MAX_BLOB` bytes (format constant, spec/wire.md §2); a commit's limit is its header lists' (spec/commits.md §1). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
+- Every blob is at most `MAX_BLOB` bytes (format constant, spec/wire.md §2); a commit's limit is its header lists' (spec/commits.md §1). A lowering's frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
 
 ## 7. Hashing
 - **Keyed content hashes** (delta hashes, link content hashes) are keyed BLAKE3 under the thing's **dedup secret** (spec/crypto.md §6), so only readers can compute or confirm them.
@@ -104,7 +104,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 8. References
 - A **reference** (ref) is a strong or a weak inside a value. A **strong** makes its target part of the closure of the thing holding it (spec/sync-set.md §2); a **weak** only points. A strong and a weak to one tid are different values.
-- A reference grants nothing: anyone who may write a value may write a reference to any tid in it, and removing one revokes nothing (spec/permissions.md §1).
+- A reference grants nothing: anyone who may write a value may write a reference to any tid in it, and removing one removes no role (spec/permissions.md §1).
 - Types bind the local writer only (spec/versioning.md §5): a reference counts by the kind written, whatever type its position has or whether any schema types it.
 - **What counts**: a thing's references are those in the current value of each of its aspects as an untyped read returns it (`roles.0`: its roster, §9), at any depth (map keys, set elements and unknown tags' content included) and any value size (§6), an ephemeral aspect's while the node holds its value. History counts only as Held history says, a gone write (spec/crdt.md §4.7) never. A signal has no current value: its fires are history from the moment they are written.
 - **Held history**: on a thing whose current setting has `history_holds_targets` (spec/commits.md §5 The setting), a reference in a held valid body (spec/commits.md §5 Bodies and deaths, live or replaced, a snapshot's and a fire's included) of a durable aspect of it the setting governs (not one of fixed retention, spec/commits.md §5 Fixed retention) counts as one in a current value does (a strong makes its target part of the closure, a weak brings its stub, spec/sync-set.md §2 Stubs), while the node holds that body: until it drops (as covered, by expiry, by purge request, as invalid) or the thing is released. Such references are no known references.
