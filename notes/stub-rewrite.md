@@ -5,7 +5,6 @@
 On main: spec, engine, osis-sync and the models. Tess approved the shape and took the working answers below; she may revise any. A decision is recorded by changing the spec and deleting its question here.
 
 ## Decided (Tess), to build
-- **Stores may learn a padded holder count** (opening by entries, built: spec/sync-ids.md §3): the spec/requirements.md privacy line to change (Tess: not worried); wording owed for her sign-off, with "the grant's notice" → the grant signal.
 - **Chain holders at sync** (Sheave, built): a sync-only cut names the holders on its unit's chains, chain stubs follow every hop, an entry per boxed role (notes/stubs.md). Where no reader of the unit reads the target's roster nothing names the chain, and the oracle counts only grants a node can learn. For Tess: a reader of the unit learns those holders of the target (its own chain alone); spec/requirements.md says a node granted sync "learns ... who granted it" and a node not reading data "knows none of its role holders", which a strict reading of the second breaks for its own chain's holders.
 - **Settled without her**: pairing hands over no trust records (each node sides by its own trust set).
 - **Later (Tess)**: a pass over dependent and independent things, a weak to a dependent thing its independent's unit does not hold among them.
