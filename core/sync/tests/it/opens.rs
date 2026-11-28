@@ -1863,3 +1863,64 @@ fn a_node_with_no_path_asks_head_spec_sync_ids_6() {
     p.run();
     assert_eq!(heads(&p), 1, "never again while S stands");
 }
+
+/// `reader` at `head`, its path through `older` then `head`: it shows the path marks of the older
+/// steps' sync keys and of the empty path (`Creds::show_marks`).
+fn reader_past(head: &StepKeys, older: &[StepKeys]) -> osis_sync::opens::holds::Creds {
+    let mut c = reader(head, older);
+    c.shows.push(osis_sync::opens::cred::Shown::Mark(osis_crypto::kdf::path_mark(None)));
+    c.shows.extend(older.iter().map(|st| osis_sync::opens::cred::Shown::Mark(osis_crypto::kdf::path_mark(Some(&st.pk())))));
+    c
+}
+
+/// A claimant waiting at step 0 of S (its claim keys there, none shown) beside `n` sync IDs it
+/// shares with a reader at one step; the reader's head of S then moves past step 0. Returns the
+/// Head asks of S before and after the move, and the sync IDs the claimant tested for the move.
+fn waiting_claimant(n: u8) -> (usize, usize, u64) {
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let claim = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([3; 32]));
+    let mut g = Side::new(1);
+    let mut k = Side::new(2);
+    g.table.set(S, Some(claimant(&s0, &claim)));
+    k.table.set(S, Some(reader_past(&s0, &[])));
+    for i in 0..n {
+        let (st, id) = (StepKeys::new(2, i), SyncId([0xa0, i, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        g.table.set(id, Some(reader(&st, &[])));
+        k.table.set(id, Some(reader(&st, &[])));
+    }
+    let mut p = Pair::new(g, k, Proven::default(), Proven::default());
+    p.run();
+    let heads = |p: &Pair| p.log.iter().filter(|(by_a, m)| *by_a && matches!(m, Msg::Head { sync_id, .. } if *sync_id == S)).count();
+    let before = heads(&p);
+    let tested = p.a.opens.work().tested;
+    k_moves(&mut p, &s0, &s1);
+    (before, heads(&p), p.a.opens.work().tested - tested)
+}
+
+fn k_moves(p: &mut Pair, s0: &StepKeys, s1: &StepKeys) {
+    p.b.table.set(S, Some(reader_past(s1, std::slice::from_ref(s0))));
+    p.settle();
+    p.run();
+}
+
+// spec/sync-opens.md §5 (Testing: a test finding a path mark it tests shown asks Head again): a
+// holder testing claim keys at a step the peer's path has passed hears of the move by the peer's
+// path mark of that step's sync key, so it asks Head again though nothing it holds changed.
+#[test]
+fn a_waiting_claimant_asks_head_again_once_the_peers_path_passes_it_spec_sync_opens_5() {
+    let (before, after, _) = waiting_claimant(0);
+    assert_eq!(before, 1, "asked Head once while S stands");
+    assert_eq!(after, 2, "asked again once the peer's path passed its step");
+}
+
+// spec/sync-opens.md §5 (Testing at a filter arrival): the move is found by the arrival's new
+// entries alone: the claimant tests the one sync ID they name and asks one Head, at n and 10n
+// sync IDs shared.
+#[test]
+fn a_path_mark_asks_head_for_what_moved_alone_at_n_and_10n_spec_sync_opens_5() {
+    let small = waiting_claimant(10);
+    let large = waiting_claimant(100);
+    assert_eq!((small.1 - small.0, large.1 - large.0), (1, 1), "one Head asked for the move");
+    assert_eq!(small.2, large.2, "the sync IDs tested for the move do not grow with those shared");
+    assert!(small.2 <= 2, "tested {}", small.2);
+}

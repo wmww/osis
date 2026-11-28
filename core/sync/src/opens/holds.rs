@@ -86,6 +86,40 @@ impl Creds {
         c
     }
 
+    /// Shows the path marks of `path`, the one it answers Head with (spec/sync-opens.md §4
+    /// Admissible): of each distinct sync key on it other than its head's, and of the empty path
+    /// where it holds a step.
+    pub fn show_marks(&mut self, path: &[osis_blob::Step]) {
+        let Some(head) = path.last().map(|st| st.keys.sync.to_bytes()) else { return };
+        self.shows.push(Shown::Mark(osis_crypto::kdf::path_mark(None)));
+        let mut keys = std::collections::BTreeSet::new();
+        for st in path {
+            let k = st.keys.sync.to_bytes();
+            if k != head && keys.insert(k) {
+                self.shows.push(Shown::Mark(osis_crypto::kdf::path_mark(Some(&k))));
+            }
+        }
+    }
+
+    /// The path marks it tests (spec/sync-opens.md §4 Admissible), where it would ask Head: of the
+    /// sync key of each step it tests claim keys at, else, holding no path, of the empty path.
+    pub fn tested_marks(&self) -> Vec<[u8; 32]> {
+        if self.holding == Some(Holding::Unread) {
+            return Vec::new();
+        }
+        let mut keys: Vec<[u8; 32]> = self.tests.iter().filter_map(|t| match t {
+            Tested::ClaimKey { sync, .. } => Some(*sync),
+            Tested::Proof(..) => None,
+        }).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        match (keys.is_empty(), self.head) {
+            (false, _) => keys.iter().map(|k| osis_crypto::kdf::path_mark(Some(k))).collect(),
+            (true, None) => vec![osis_crypto::kdf::path_mark(None)],
+            (true, Some(_)) => Vec::new(),
+        }
+    }
+
     /// The digest `changed_at` compares (spec/sync-opens.md §3): what is shown and tested, and
     /// the step that answers.
     pub fn digest(&self) -> [u8; 32] {
@@ -180,6 +214,10 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
             None => Creds { holding: Some(holding), ..Creds::default() },
         },
     };
+    let mut c = c;
+    if let Some(path) = cx.store.path(s).ok()? {
+        c.show_marks(&path.steps);
+    }
     Some(Arc::new(c))
 }
 

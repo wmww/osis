@@ -88,13 +88,16 @@ pub enum Shown {
     /// Shown so a sealed fire's sender finds a peer that may hold S (spec/sync-inbox.md §3); its
     /// Hit opens nothing (spec/sync-opens.md §5 Proof).
     Deposit([u8; 32]),
+    /// A path mark (spec/sync-opens.md §5 Beacon): a holder waiting at that sync key (or with no
+    /// path) finds this node's path is past it, and asks Head; its Hit opens nothing.
+    Mark([u8; 32]),
 }
 
 impl Shown {
     /// The match value (spec/sync-opens.md §5 Beacon).
     pub fn matched(&self) -> &[u8; 32] {
         match self {
-            Shown::Proof(m, _) | Shown::ClaimKey(m) | Shown::Deposit(m) => m,
+            Shown::Proof(m, _) | Shown::ClaimKey(m) | Shown::Deposit(m) | Shown::Mark(m) => m,
         }
     }
 
@@ -103,7 +106,7 @@ impl Shown {
         Some(match self {
             Shown::Proof(_, k) => Credential::SyncProof(*k),
             Shown::ClaimKey(k) => Credential::ClaimKey(*k),
-            Shown::Deposit(_) => return None,
+            Shown::Deposit(_) | Shown::Mark(_) => return None,
         })
     }
 }

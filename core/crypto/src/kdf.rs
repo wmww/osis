@@ -103,6 +103,8 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 /// The proof credential of a sync key, from its seed (`sync_proof`).
 pub const SYNC_PROOF: &str = "sync proof";
+/// A path mark's match value (`path_mark`).
+pub const PATH_MARK: &str = "path mark";
 /// A thing's path key in a split commit, from its independent's read roles secret (spec/crypto.md §5).
 pub const PATH: &str = "path";
 /// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
@@ -111,10 +113,10 @@ pub const PATH_COMMIT: &str = "path commit";
 pub const CLAIM_PAGE: &str = "claim page";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 40] = [
+pub const PURPOSES: [&str; 41] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, CLAIM_KEY, STEP_KEY, PUBLIC_CLAIM_KEY, SYNC_GENESIS, GENESIS_STEP,
-    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, CLAIM_PAGE,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH_MARK, PATH, PATH_COMMIT, CLAIM_PAGE,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -168,6 +170,13 @@ pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
 /// value both sides compute for one credential, so a filter entry is its first bits.
 pub fn beacon(match_value: &[u8; 32], sync_id: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(kdf(BEACON, match_value, sync_id).expose(), r).as_bytes()
+}
+
+/// The match value of a path mark (spec/sync-opens.md §5 Beacon): `kdf("path mark", k, "")` for
+/// sync key `k` (a path holding a step past every step bearing it), `kdf("path mark", "", "")`
+/// for the empty path (a path holding a step). Anyone holding a step computes it.
+pub fn path_mark(sync_key: Option<&[u8; 32]>) -> [u8; 32] {
+    *kdf(PATH_MARK, sync_key.map_or(&[][..], |k| &k[..]), b"").expose()
 }
 
 /// The match value of a proof of a sync secret (spec/sync-opens.md §4, admissible):

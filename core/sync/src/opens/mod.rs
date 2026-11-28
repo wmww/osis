@@ -332,9 +332,10 @@ struct Conn {
     /// opens S again here only for a later one (spec/sync-opens.md §6); a class moved since (a
     /// reader that came to keep S unread) opens it anew.
     served: BTreeMap<(SyncId, SourceClass, SourceClass), Position>,
-    /// Per S, the `changed_at` position at which this side last asked the peer Head: asked once
-    /// per change of S, never again while S stands (spec/sync-ids.md §6 Head).
-    asked_head: BTreeMap<SyncId, u64>,
+    /// Per S, the `changed_at` position at which this side last asked the peer Head, and whether
+    /// a path mark was shown then: asked once per change of S, and once more when a mark shows
+    /// (spec/sync-opens.md §5 Testing).
+    asked_head: BTreeMap<SyncId, (u64, bool)>,
     /// The beacons of this side's tested credentials of each S, by beacon, as last tested here:
     /// what a filter arrival's new entries are looked up in (spec/sync-opens.md §5 Testing).
     /// Built at the first arrival that needs it, then kept by each test of S.
@@ -564,6 +565,8 @@ struct Adm {
     own: SourceClass,
     shows: Vec<Shown>,
     tests: Vec<Tested>,
+    /// The path marks it tests (`Creds::tested_marks`): never a Hit; one shown asks Head.
+    marks: Vec<[u8; 32]>,
     step: Option<osis_crypto::SigningSecret>,
     /// The sync key of this node's head (none: no head here).
     head: Option<[u8; 32]>,
@@ -1651,14 +1654,17 @@ impl Opens {
         }
     }
 
-    /// Asks the peer on `conn` Head of S (spec/sync-ids.md §6 Head), once per change of S there.
-    fn ask_head(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+    /// Asks the peer on `conn` Head of S (spec/sync-ids.md §6 Head), once per change of S there,
+    /// and once more there when a path mark it tests is shown (`marked`: the peer's path is past
+    /// the step it knows).
+    fn ask_head(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, marked: bool) {
         let at = self.changed.at.get(&s).map_or(0, |(p, _, _)| *p);
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        if c.asked_head.get(&s).is_some_and(|x| *x >= at) {
+        if c.asked_head.get(&s).is_some_and(|(x, m)| *x >= at && (*m || !marked)) {
             return;
         }
-        c.asked_head.insert(s, at);
+        osis_base::costs::count("opens: Head asked", 1);
+        c.asked_head.insert(s, (at, marked));
         let id = ctx.wire.request(conn, Msg::Head { id: 0, sync_id: s, after: None });
         if let Some(c) = self.conns.get_mut(&conn) {
             c.reqs.insert(id, Req::Head { s, got: Vec::new() });
@@ -2011,8 +2017,8 @@ impl Opens {
             let all: Vec<SyncId> = self.changed.at.keys().copied().collect();
             for s in all {
                 let Some(adm) = self.admissible(&s) else { continue };
-                self.work.beacons += adm.tests.len() as u64;
-                ix.set(s, adm.tests.iter().map(|t| beacon_of(&t.matched(), &s, &rr)).collect());
+                self.work.beacons += (adm.tests.len() + adm.marks.len()) as u64;
+                ix.set(s, adm.tests.iter().map(|t| beacon_of(&t.matched(), &s, &rr)).chain(adm.marks.iter().map(|m| beacon_of(m, &s, &rr))).collect());
             }
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.tested_ix = Some(ix);
@@ -2031,7 +2037,7 @@ impl Opens {
     fn admissible(&self, s: &SyncId) -> Option<Adm> {
         let creds = self.changed.at.get(s).map(|(_, _, c)| c.clone())?;
         let own = crate::types::class_of(creds.holding?);
-        Some(Adm { own, shows: creds.shows.clone(), tests: creds.tests.clone(), step: creds.step.clone(), head: creds.head })
+        Some(Adm { own, shows: creds.shows.clone(), tests: creds.tests.clone(), marks: creds.tested_marks(), step: creds.step.clone(), head: creds.head })
     }
 
     /// Tests the pending sync IDs against the peer's latest filter and sends one Offer
@@ -2084,18 +2090,28 @@ impl Opens {
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
             }
+            // a path mark shown: the peer's path is past the step this side knows
+            let mut marked = false;
+            for m in &adm.marks {
+                let b = beacon_of(m, &s, &rr);
+                self.work.beacons += 1;
+                marked |= pf.values.contains(beacon_value(&b, pf.f));
+                if let Some((_, bs)) = tested.last_mut() {
+                    bs.push(b);
+                }
+            }
             // following S with no path, or by claims the peer's filter does not show: its head
-            // is asked (spec/sync-ids.md §6 Head)
+            // is asked (spec/sync-ids.md §6 Head), again once a path mark shows the peer past it
             if items.len() == before && adm.own != SourceClass::Store && (adm.head.is_none() || adm.tests.iter().any(|t| matches!(t, Tested::ClaimKey { .. }))) {
-                heads.push(s);
+                heads.push((s, marked));
             }
             if items.len() >= MAX_OFFER_ITEMS {
                 cut = true;
                 break;
             }
         }
-        for s in heads {
-            self.ask_head(ctx, conn, s);
+        for (s, marked) in heads {
+            self.ask_head(ctx, conn, s, marked);
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
         for (s, bs) in tested {
@@ -2183,7 +2199,7 @@ impl Opens {
         refused.retain(|s| !accepted.contains(s));
         refused.dedup();
         for s in refused {
-            self.ask_head(ctx, conn, s);
+            self.ask_head(ctx, conn, s, false);
         }
         self.rise(conn);
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -2257,7 +2273,7 @@ impl Opens {
                 let Some(step) = adm.step.as_ref().filter(|_| sig.is_some_and(|g| bind.peer_signed(k, &s, g))) else { return refuse };
                 Some(bind.sign(step, &s))
             }
-            Shown::Deposit(_) => return refuse,
+            Shown::Deposit(_) | Shown::Mark(_) => return refuse,
         };
         if self.served_past(ctx, conn, &s, &adm, &by, Some(class)) {
             return refuse;
