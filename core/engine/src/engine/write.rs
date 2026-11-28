@@ -642,16 +642,13 @@ fn clear_tells_nothing(core: &Core, plan: &CommitPlan, q: &osis_commit::Path, ea
     let independent = |t: &Tid| independent_in(core, t);
     // `w` on `t`'s record chain, `t` included, stopping past `t`'s independent (`upto`) or not
     let on_chain = |t: &Tid, w: &Tid, upto: bool| {
-        let mut x = Some(*t);
-        for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
-            let Some(cur) = x else { return false };
+        for cur in record_chain(*t, |x| rec(x).map(|r| r.record_link())).filter_map(|s| s.thing()) {
             if cur == *w {
                 return true;
             }
             if upto && independent(&cur) {
                 return false;
             }
-            x = rec(&cur).and_then(|r| r.mint_admin());
         }
         false
     };
@@ -677,14 +674,12 @@ fn path_secret(core: &Core, plan: &CommitPlan, t: &Tid, rng: &mut dyn osis_crypt
 }
 
 fn held_path_secret(core: &Core, plan: &CommitPlan, t: &Tid) -> Option<osis_crypto::Secret32> {
+    // its independent, else the last thing up its chain
     let mut x = *t;
-    for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
-        if independent_in(core, &x) {
+    for cur in record_chain(*t, |y| plan.creates.get(y).or_else(|| core.created(y)).map(CreationRecord::record_link)).filter_map(|s| s.thing()) {
+        x = cur;
+        if independent_in(core, &cur) {
             break;
-        }
-        match plan.creates.get(&x).or_else(|| core.created(&x)).and_then(CreationRecord::mint_admin) {
-            Some(up) => x = up,
-            None => break,
         }
     }
     let e = core.epochs(&x)?;

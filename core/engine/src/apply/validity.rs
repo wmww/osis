@@ -550,15 +550,13 @@ struct Reach<'a> {
 fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> BTreeMap<Tid, Holder> {
     let mut mint: BTreeMap<Tid, Holder> = BTreeMap::new();
     for start in members {
-        let mut x = start;
-        for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH {
-            let Some(up) = record(&x).map(|r| r.holder()) else { break };
-            if mint.insert(x, up).is_some() {
-                break;
-            }
-            let Holder::Thing(up) = up else { break };
-            x = up;
-        }
+        // a thing noted already was walked up from: the walk ends there
+        osis_base::record_chain(start, |t| {
+            let r = record(t).filter(|_| !mint.contains_key(t))?;
+            mint.insert(*t, r.holder());
+            Some(r.record_link())
+        })
+        .end();
     }
     mint
 }

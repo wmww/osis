@@ -10,8 +10,7 @@
 use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_GRANT};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
 use crate::types::{Grant, GrantOp, Point, RoleCommit, WriteId};
-use osis_base::format::MAX_CHAIN_DEPTH;
-use osis_base::{CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
+use osis_base::{record_chain, ChainStep, CommitId, CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -370,16 +369,8 @@ impl<S: Store> Timeline<S> {
                 continue;
             }
             for m in p.path.iter().chain([&p.on]) {
-                let mut t = *m;
-                for _ in 0..=MAX_CHAIN_DEPTH {
-                    match self.records.link(&t) {
-                        Some(RecordLink::Admin(a)) => t = a,
-                        Some(RecordLink::Key) => break,
-                        None => {
-                            self.waiting.entry(t).or_default().insert(c.id);
-                            break;
-                        }
-                    }
+                if let ChainStep::Unknown(t) = record_chain(*m, |t| self.records.link(t)).end() {
+                    self.waiting.entry(t).or_default().insert(c.id);
                 }
             }
         }

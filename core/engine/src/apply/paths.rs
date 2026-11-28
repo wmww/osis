@@ -23,9 +23,7 @@ pub(crate) fn open(core: &Core, h: &Header, key: Option<&[u8; 32]>, i: usize, t:
     if let Some(k) = key {
         return h.open_path(i, k);
     }
-    let mut x = Some(*t);
-    for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
-        let Some(cur) = x else { break };
+    for cur in up_chain(core, t) {
         // the roles secrets held (spec/crypto.md §5: a reader tries every one), read from the held
         // secrets alone, never the established view: a load decides paths before the walk is
         // given what it loaded
@@ -40,9 +38,13 @@ pub(crate) fn open(core: &Core, h: &Header, key: Option<&[u8; 32]>, i: usize, t:
                 }
             }
         }
-        x = core.created(&cur).and_then(osis_base::CreationRecord::mint_admin);
     }
     None
+}
+
+/// The things up `t`'s record chain as held, `t` first (`osis_base::record_chain`).
+fn up_chain<'a>(core: &'a Core, t: &Tid) -> impl Iterator<Item = Tid> + 'a {
+    osis_base::record_chain(*t, |x| core.created(x).map(osis_base::CreationRecord::record_link)).filter_map(|s| s.thing())
 }
 
 /// What this node decided of the path split commit header `h` states for each thing: its path,
@@ -81,12 +83,9 @@ fn openers(core: &Core, id: &osis_base::CommitId) -> Openers {
     undecided.dedup();
     let mut out = Vec::new();
     for t in undecided {
-        let mut x = Some(t);
-        for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
-            let Some(cur) = x else { break };
+        for cur in up_chain(core, &t) {
             let own = core.ix.secrets.get(&cur).map(|e| e.read.epochs().filter(|(ep, _)| e.read.roles_secret(ep).is_some()).map(|(ep, _)| *ep).collect()).unwrap_or_default();
             out.push((cur, own));
-            x = core.created(&cur).and_then(osis_base::CreationRecord::mint_admin);
         }
     }
     out

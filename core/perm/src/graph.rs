@@ -5,7 +5,7 @@
 //! that it was removed), so dependent things cost the grant state nothing.
 
 use crate::types::{earliest, mark, Grant};
-use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
+use osis_base::format::PathMarks;
 use osis_base::{CreationRecord, Holder, RecordLink, Role, SignKey, Tid, Ts, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -52,6 +52,10 @@ impl Records {
     }
     pub fn link(&self, t: &Tid) -> Option<RecordLink> {
         self.link.get(t).copied()
+    }
+    /// The things up `t`'s record chain above it (`osis_base::record_chain`).
+    pub fn ancestors(&self, t: Tid) -> impl Iterator<Item = Tid> + '_ {
+        osis_base::record_chain(t, |x| self.link(x)).skip(1).filter_map(|s| s.thing())
     }
     /// The holder of `t`'s record grant from the start: its mint admin or the key its record holds.
     pub fn holder(&self, t: &Tid) -> Option<Holder> {
@@ -443,7 +447,7 @@ impl<'a> View<'a> {
                 next.insert(t, v);
             }
             let parent = self.records.mint_admin(&t);
-            let up: BTreeSet<Tid> = std::iter::successors(parent.and_then(|p| self.records.mint_admin(&p)), |a| self.records.mint_admin(a)).take(osis_base::format::MAX_CHAIN_DEPTH).collect();
+            let up: BTreeSet<Tid> = parent.into_iter().flat_map(|p| self.records.ancestors(p)).collect();
             let mut found: Vec<(Tid, bool)> = Vec::new();
             let last = matches!(need, Need::MayGrant(_)) && t == *y;
             self.each_holder(&t, |m, e| {
@@ -533,7 +537,7 @@ impl Ways {
         let mut members = 1u32;
         for w in hops.windows(2) {
             if let [p, q] = w {
-                if !records.is_record_grant(p, q) && std::iter::successors(records.mint_admin(q), |a| records.mint_admin(a)).take(MAX_CHAIN_DEPTH).any(|a| a == *p) {
+                if !records.is_record_grant(p, q) && records.ancestors(*q).any(|a| a == *p) {
                     marks |= 1 << (members - 1);
                 }
                 if listed.contains(q) {
