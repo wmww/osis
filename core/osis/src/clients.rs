@@ -63,7 +63,9 @@ impl Osis {
     /// steps, admin-only); an `until` not in the future is `Invalid`.
     /// `Unsupported` on a client with a thing of its own.
     pub fn add_client(&self, admin: Tid, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
-        self.local("add_client")?;
+        if let Some(at) = self.process_at("add_client")? {
+            return self.forward(&at, crate::port::method::ADD_CLIENT, (admin, until));
+        }
         let now = self.now()?;
         if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
@@ -104,7 +106,9 @@ impl Osis {
     /// The clients registered with `add_client`.
     /// `Unsupported` on a client with a thing of its own.
     pub fn clients(&self) -> Result<Vec<Client>> {
-        self.local("clients")?;
+        if let Some(at) = self.process_at("clients")? {
+            return self.forward(&at, crate::port::method::CLIENTS, ());
+        }
         Ok(self.at(self.inner.node_root, ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(thing, c)| Client { thing: thing.into(), until: c.until }).collect())
     }
 
@@ -119,7 +123,9 @@ impl Osis {
     /// staying: move its sync unit back here and call this again).
     /// `Unsupported` on a client with a thing of its own.
     pub fn remove_client(&self, thing: Tid) -> Result<bool> {
-        self.local("remove_client")?;
+        if let Some(at) = self.process_at("remove_client")? {
+            return self.forward(&at, crate::port::method::REMOVE_CLIENT, (thing,));
+        }
         let node = self.inner.node_root;
         let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(thing)) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
@@ -142,7 +148,9 @@ impl Osis {
     /// thing and its grants stay. `Invalid` when there is no entry.
     /// `Unsupported` on a client with a thing of its own.
     pub fn rotate_client_secret(&self, thing: Tid) -> Result<ClientSecret> {
-        self.local("rotate_client_secret")?;
+        if let Some(at) = self.process_at("rotate_client_secret")? {
+            return self.forward(&at, crate::port::method::ROTATE_CLIENT_SECRET, (thing,));
+        }
         let node = self.inner.node_root;
         let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(thing)).ok_or_else(|| Error::Invalid(format!("no client {thing}")))?;
         let secret = ClientSecret::generate();

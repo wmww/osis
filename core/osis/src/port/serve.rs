@@ -388,6 +388,27 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         method::MAKE_LINK => on(args, |(t, role, admin, until, single_use): (Tid, crate::Role, Tid, Option<crate::Time>, bool)| h.make_link(t, role, admin, crate::LinkOpts { until, single_use })),
         method::LOCATOR => on(args, |(t,): (Tid,)| h.locator(t)),
         method::NODE_ROOT => on(args, |()| h.node_root()),
+        method::BACKLINKS => on(args, |(t, q): (Tid, crate::BacklinkQuery)| h.backlinks(here(h, t)?, &q)),
+        method::HOLDS => on(args, |(holder, t): (Tid, Tid)| h.holds(here(h, holder)?, t)),
+        method::RETAINED_COPIES => on(args, |()| h.retained_copies()),
+        method::DROP_RETAINED_COPY => on(args, |(t,): (Tid,)| h.drop_retained_copy(t)),
+        method::GRANT => on(args, |(t, holder, role, o): (Tid, Tid, crate::Role, crate::GrantOpts)| h.grant(here(h, t)?, holder, role, o)),
+        method::SET_ROLE => on(args, |(t, holder, role, o): (Tid, Tid, Option<crate::Role>, crate::SetRoleOpts)| h.set_role(here(h, t)?, holder, role, o)),
+        method::LEAVE => on(args, |(holder, t, o): (Tid, Tid, crate::SetRoleOpts)| h.leave(holder, here(h, t)?, o)),
+        method::KEYS => on(args, |(t,): (Tid,)| h.keys(t)),
+        method::TAKE_KEYS => on(args, |(k,): (crate::Keys,)| h.take_keys(&k)),
+        method::PUT_CARD => on(args, |(on, of): (Tid, Tid)| h.put_card(here(h, on)?, of)),
+        method::REMOVE_CARD => on(args, |(on, of): (Tid, Tid)| h.remove_card(here(h, on)?, of)),
+        method::LINKS => on(args, |()| h.links()),
+        method::REVOKE_LINK => on(args, |(id,): (crate::LinkId,)| h.revoke_link(id)),
+        method::PUBLISH_DIAL_ON => on(args, |(things,): (Vec<Tid>,)| h.publish_dial_on(&things)),
+        method::ROTATE_PEER_ADDRESS => on(args, |()| h.rotate_peer_address()),
+        method::DISPUTES => on(args, |()| h.disputes()),
+        method::CHOOSE_SIDE => on(args, |(id, side): (crate::DisputeId, crate::Side)| h.choose_side(id, side)),
+        method::ADD_CLIENT => on(args, |(admin, until): (Tid, Option<crate::Time>)| h.add_client(admin, until)),
+        method::CLIENTS => on(args, |()| h.clients()),
+        method::REMOVE_CLIENT => on(args, |(t,): (Tid,)| h.remove_client(t)),
+        method::ROTATE_CLIENT_SECRET => on(args, |(t,): (Tid,)| h.rotate_client_secret(t)),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }
@@ -543,6 +564,8 @@ enum Watched {
     Status,
     Diagnostics,
     Commits(Address),
+    Backlinks(Tid, crate::BacklinkQuery),
+    Disputes,
     /// A row that waits: its method and arguments.
     Wait(u64, Value),
 }
@@ -559,6 +582,8 @@ fn watched(f: Value) -> Result<Watched> {
         Some(filter::STATUS) => no_args(Watched::Status),
         Some(filter::DIAGNOSTICS) => no_args(Watched::Diagnostics),
         Some(filter::COMMITS) => Form::from_wire(rest).map(|(a,)| Watched::Commits(a)),
+        Some(filter::BACKLINKS) => Form::from_wire(rest).map(|(t, q)| Watched::Backlinks(t, q)),
+        Some(filter::DISPUTES) => no_args(Watched::Disputes),
         Some(filter::WAIT) => {
             let [m, args] = fixed(rest, "filter")?;
             Ok(Watched::Wait(codec::uint(&m, "method")?, args))
@@ -663,6 +688,21 @@ fn watch(l: &mut Locked, ra: ReadAs, w: Watched, limit: usize) -> Result<(Value,
             let tell: Tell = Box::new(move |db, d| crate::commits::commit_event(db, &at, d).map(|e| (e.to_wire(), Value::List(Vec::new()))).into_iter().collect());
             (Value::List(Vec::new()), Filter::Commits(a), tell)
         }
+        Watched::Backlinks(t, q) => {
+            r.e.watch_references();
+            let first = r.backlinks(t, &q)?.to_wire();
+            let filter = crate::backlinks::filter(t, q.aspect.as_ref(), ra.actor.is_some());
+            // a page that fails to read (storage) tells nothing: the next change reads it again
+            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Due), move |db| db.read_as().read(db, |r| r.backlinks(t, &q)).ok().map(|p| p.to_wire()));
+            (first, filter, tell)
+        }
+        Watched::Disputes => {
+            let tell: Tell = Box::new(move |db, d| match d {
+                Delivery::Dispute(x) if crate::disputes::shown(db, &x) => vec![(x.to_wire(), Value::List(Vec::new()))],
+                _ => Vec::new(),
+            });
+            (Value::List(Vec::new()), Filter::Disputes, tell)
+        }
         // started by `sub` itself: no dispatcher filter
         Watched::Wait(..) => return Err(Error::Unsupported("a row that waits".into())),
     })
@@ -717,12 +757,12 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
     };
     let h = handle(db, who);
     let checked = match &w {
-        Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) => here(&h, *t).map(drop),
+        Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) | Watched::Backlinks(t, _) => here(&h, *t).map(drop),
         Watched::Commits(a) => here_all(&h, &a.things()),
         Watched::Status => Ok(()),
         // the node's own state (spec/wire.md §11.2: main only)
-        Watched::Diagnostics | Watched::Wait(..) if who != Who::Main => Err(main_only()),
-        Watched::Diagnostics | Watched::Wait(..) => Ok(()),
+        Watched::Diagnostics | Watched::Disputes | Watched::Wait(..) if who != Who::Main => Err(main_only()),
+        Watched::Diagnostics | Watched::Disputes | Watched::Wait(..) => Ok(()),
     };
     if let Err(e) = checked {
         return refuse(reply(outcome_of(&e)));

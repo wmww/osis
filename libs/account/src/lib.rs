@@ -130,7 +130,7 @@ pub struct AccountNode {
 impl Account {
     /// Makes an account on `db`, a node acting for none yet, with its inbox and its profile,
     /// which everyone may read: the node becomes its first admin node. `Invalid` on a node that
-    /// acts for an account already; `Unsupported` through a connection.
+    /// acts for an account already; `Unsupported` on a client with a thing of its own.
     pub fn make(db: &Osis) -> Result<Account> {
         if let Some(a) = Account::of(db)? {
             // one made by a node stopped before its last step is finished; one made, refused
@@ -205,7 +205,7 @@ impl Account {
     /// account's links still working. The removed node keeps their keys, so whoever holds it can
     /// read and join through each until `revoke_link`, and ending them is the caller's choice.
     /// None when `node` was not one of the account's (its entries dropped where they stand). `Permission` unless this node is an admin
-    /// node of the account; `Unsupported` through a connection.
+    /// node of the account; `Unsupported` on a client with a thing of its own.
     pub fn remove_node(&self, db: &Osis, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         let a = self.thing;
         // its entries go whenever they stand, so a removal stopped halfway ends by calling again
@@ -352,7 +352,7 @@ impl Offering {
 
     /// Accepts the new node's request to this offer: makes it an admin node of the account and
     /// returns its node thing with the reply to carry back. The offer is used up. `Invalid` for a
-    /// request to another offer; `Unsupported` through a connection.
+    /// request to another offer; `Unsupported` on a client with a thing of its own.
     pub fn accept(self, db: &Osis, req: &PairRequest) -> Result<(Tid, PairReply)> {
         let items = unpack(&req.0, REQUEST)?;
         let malformed = || Error::Invalid("malformed pairing request".into());

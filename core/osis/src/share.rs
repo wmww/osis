@@ -451,6 +451,9 @@ impl Osis {
     /// a client with a thing of its own. An `until` on the last admin whose grant has none is
     /// `LeavesNoAdmin` unless `GrantOpts::leave_adminless` says it is meant (`set_role`).
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
+        if let Some(at) = self.process_at("grant")? {
+            return self.forward(&at, crate::port::method::GRANT, (target, holder, role, opts));
+        }
         self.local_at(target, "grant")?;
         if !self.has_record(target) {
             return Err(Error::UnknownThing { tid: target });
@@ -517,6 +520,9 @@ impl Osis {
     /// `Unsupported` on a client with a thing of its own, and on a thing this node reads at another node: move its sync unit
     /// back here first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+        if let Some(at) = self.process_at("set_role")? {
+            return self.forward(&at, crate::port::method::SET_ROLE, (target, holder, role, o));
+        }
         self.local_at(target, "set_role")?;
         retain_only_on_removal(role, o)?;
         self.change_role(target, holder, role, o)
@@ -589,6 +595,9 @@ impl Osis {
     /// own, for any `holder` but that thing. `LeavesNoAdmin` when `holder` is the last admin
     /// of `target` (`SetRoleOpts::leave_adminless` means it).
     pub fn leave(&self, holder: Tid, target: Tid, o: SetRoleOpts) -> Result<()> {
+        if let Some(at) = self.process_at("leave")? {
+            return self.forward(&at, crate::port::method::LEAVE, (holder, target, o));
+        }
         self.local_at(target, "leave")?;
         let own = holder == self.author();
         // the flow below runs with the node's authority: a client ends only its own thing's role
@@ -641,7 +650,9 @@ impl Osis {
     /// with a thing of its own, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
-        self.local("retained_copies")?;
+        if let Some(at) = self.process_at("retained_copies")? {
+            return self.forward(&at, crate::port::method::RETAINED_COPIES, ());
+        }
         Ok(self.engine(|e| {
             let mut v = e.kept_copies();
             // acting as a thing: the copies it reads
@@ -654,7 +665,9 @@ impl Osis {
 
     /// Erases the retained copy of `thing`, and what only it retained: its disk space is this user's.
     pub fn drop_retained_copy(&self, thing: Tid) -> Result<()> {
-        self.local("drop_retained_copy")?;
+        if let Some(at) = self.process_at("drop_retained_copy")? {
+            return self.forward(&at, crate::port::method::DROP_RETAINED_COPY, (thing,));
+        }
         self.engine(|e| e.forget_lost(osis_engine::rotation::LostScope::Kept(&[thing])))?;
         Ok(())
     }
@@ -700,9 +713,11 @@ impl Osis {
 
     /// `t`'s public keys as held here, to show by hand (`Keys`). `UnknownKeys` when none are
     /// held: `t` has no keys yet (`Write::create_with_keys` makes it with them; a `grant` to it or `put_card` of it gives it some).
-    /// `Unsupported` through a connection.
+    /// `Unsupported` on a client with a thing of its own.
     pub fn keys(&self, t: Tid) -> Result<Keys> {
-        self.local("keys")?;
+        if let Some(at) = self.process_at("keys")? {
+            return self.forward(&at, crate::port::method::KEYS, (t,));
+        }
         let certs = self.engine(|e| e.holder_keys(&t))?;
         if certs.commits.is_empty() {
             return Err(Error::UnknownKeys { tid: t });
@@ -711,10 +726,12 @@ impl Osis {
     }
 
     /// Takes keys shown by hand (`keys`): their thing can then be granted roles here. `Invalid`
-    /// when they hold no keys of it that this node judges valid. `Unsupported` through a
-    /// connection.
+    /// when they hold no keys of it that this node judges valid. `Unsupported` on a client with
+    /// a thing of its own.
     pub fn take_keys(&self, k: &Keys) -> Result<Tid> {
-        self.local("take_keys")?;
+        if let Some(at) = self.process_at("take_keys")? {
+            return self.forward(&at, crate::port::method::TAKE_KEYS, (k.clone(),));
+        }
         let t = k.thing;
         let taken = self.engine(|e| e.take_holder_keys(&t, &k.certs, None).and_then(|_| e.current_keys(&t)).map(|k| !k.is_empty()))?;
         if !taken {
@@ -728,6 +745,9 @@ impl Osis {
     /// current. Needs write on `on` through `of` (`Write::act_as`) and `of`'s keys here, else
     /// `Permission` or `UnknownKeys`. `Unsupported` on a client with a thing of its own.
     pub fn put_card(&self, on: Tid, of: Tid) -> Result<()> {
+        if let Some(at) = self.process_at("put_card")? {
+            return self.forward(&at, crate::port::method::PUT_CARD, (on, of));
+        }
         self.local_at(on, "put_card")?;
         if !self.has_record(on) {
             return Err(Error::UnknownThing { tid: on });
@@ -741,6 +761,9 @@ impl Osis {
     /// Removes `of`'s card from `on` (`put_card`). Needs write on `on`, else `Permission`.
     /// `Unsupported` on a client with a thing of its own.
     pub fn remove_card(&self, on: Tid, of: Tid) -> Result<()> {
+        if let Some(at) = self.process_at("remove_card")? {
+            return self.forward(&at, crate::port::method::REMOVE_CARD, (on, of));
+        }
         self.local_at(on, "remove_card")?;
         Ok(self.engine(|e| e.remove_card(on, of))?)
     }
@@ -780,7 +803,9 @@ impl Osis {
     /// `LinkInfo::target`. `Unsupported` on a client with a thing of its own, which is also why a node
     /// connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
-        self.local("links")?;
+        if let Some(at) = self.process_at("links")? {
+            return self.forward(&at, crate::port::method::LINKS, ());
+        }
         self.live_links()
     }
 
@@ -820,7 +845,9 @@ impl Osis {
     /// writer received stands, as `set_role` says). `Permission` unless this node is an admin of
     /// the link's `admin` (`make_link`); `Unsupported` on a client with a thing of its own.
     pub fn revoke_link(&self, id: LinkId) -> Result<()> {
-        self.local("revoke_link")?;
+        if let Some(at) = self.process_at("revoke_link")? {
+            return self.forward(&at, crate::port::method::REVOKE_LINK, (id,));
+        }
         match self.link_key(id.0)? {
             Some(l) => {
                 self.engine(|e| e.finalize_link(&id.0, &l))?;

@@ -35,7 +35,9 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
             false => Ok(d.new.clone()),
         };
     }
-    let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
+    // only a grant at read or above retains a copy (spec/permissions.md §3 Retain): a removal of
+    // a lower one is the plain reset whatever it says
+    let retain = old.is_some_and(|o| o.role >= Role::Read) && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
     Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::Time(0)), may_grant: false, retain: false, floor: None }))
 }
 

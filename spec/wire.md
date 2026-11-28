@@ -320,7 +320,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     - A thing the actor may not read (spec/sync-judgement.md §1, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
     - A write the actor may not make is code 3, a `link` value anywhere in its write code 8.
     - A revert needs the actor's rights on every write it makes and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
-    - Methods carrying state beyond a thing the actor may read are for main sessions only, code 11 otherwise.
+    - Methods carrying state beyond a thing the actor may read are for main sessions only, code 11 otherwise. A main session runs every method as its node.
     - This is the client's node's own rule, not a validity rule: receivers judge its commits along the paths they state (spec/permissions.md §1 Path, §5), whatever the client was allowed.
   - **Write nonces**: a write's nonce is below 2^62, from 1 per (identity, session id).
     - A client resending a write it had no answer to sets bit 62.
@@ -338,8 +338,8 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | 1 | get | `[tid, ak, path] -> read result` |
     | 2 | aspects | `[tid] -> [ak*]` |
     | 3 | has content | `[tid] -> bool` |
-    | 4 | holds | `[tid] -> bool` (its creation is held) |
-    | 5 | backlinks | `[tid] -> [[thing, ak, kind]*]`, kind 0 strong, 1 weak: the known references to it (spec/data-model.md §8), only from things the actor may read |
+    | 4 | has record | `[tid] -> bool` (its creation is held) |
+    | 5 | backlinks | `[tid, query] -> [[backlink*], more]`, query `[Opt(ak), Opt(after), Opt(limit)]`, a backlink `[ak, thing, kind]`, kind 0 strong, 1 weak: a page of the references to it in current values (spec/data-model.md §8), in backlink order past `after`, at most `limit`, `more` set when more lie past it; only from things the actor may read |
     | 6 | grants | `[tid] -> [[holder, role, Opt(until), retain_copy, may_grant, from_now]*]` |
     | 7 | role on | `[tid] -> Opt(role)`, the actor's |
     | 8 | created | `[tid] -> Opt(stamp)` |
@@ -355,10 +355,30 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | 18 | make link | `[tid, role, admin, Opt(until), single_use] -> link text`, the link minted with admin `admin`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
-    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client's thing only the things it may read, `connected` the connections with one of them open |
+    | 21 | status | `[] -> [connected, [[tid, state, not_taking]*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; for a client's thing only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[holder, kind, role, Opt(until), [through*]]*]`, kind 0 thing, 1 link, 2 key, 3 the public; nothing behind a holder the actor may not read |
     | 23 | locator | `[tid] -> link text`; main only |
     | 24 | node root | `[] -> tid`, the node root (spec/sync-set.md §1); main only |
+    | 25 | holds | `[holder, tid] -> bool`: `holder`'s `holds.0` holds a strong to `tid`; false for a holder the actor may not read |
+    | 26 | retained copies | `[] -> [tid*]`: the things retained after a removal (spec/permissions.md §3 Retain); for a client's thing those it reads |
+    | 28 | drop retained copy | `[tid] -> []`; main only |
+    | 30 | grant | `[target, holder, role, opts] -> []`, opts `[Opt(until), Opt(retain_copy), may_grant, reads, leave_adminless, quiet]`, reads 0 as kept, 1 from now, 2 all; main only |
+    | 31 | set role | `[target, holder, Opt(role), opts] -> []`, opts `[Opt(retain_copy), leave_adminless]`; main only |
+    | 32 | leave | `[holder, target, opts] -> []`, opts as row 31; main only |
+    | 33 | keys | `[tid] -> keys text`; main only |
+    | 34 | take keys | `[keys text] -> tid`; main only |
+    | 35 | put card | `[on, of] -> []`; main only |
+    | 36 | remove card | `[on, of] -> []`; main only |
+    | 37 | links | `[] -> [[link, target, role, Opt(until), single_use]*]`, link the link's thing; main only |
+    | 38 | revoke link | `[link] -> []`; main only |
+    | 39 | publish dial on | `[[tid*]] -> []`; main only |
+    | 40 | rotate peer address | `[] -> []`; main only |
+    | 41 | disputes | `[] -> [[dispute*], left out]`, a dispute `[id text, target, author, holder, commit id, side, chosen]`, side 0 author, 1 holder; main only |
+    | 42 | choose side | `[id text, side] -> []`; main only |
+    | 43 | add client | `[admin, Opt(until)] -> [thing, secret]`; main only |
+    | 44 | clients | `[] -> [[thing, Opt(until)]*]`; main only |
+    | 45 | remove client | `[thing] -> bool`; main only |
+    | 46 | rotate client secret | `[thing] -> secret`; main only |
     | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing; waits; main only |
     | 29 | redeem | `[link text, joiner] -> tid`; waits; main only |
 
@@ -373,8 +393,10 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not carried (spec/sync-set.md §2 Not carried), 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 own write invalid, 14 unreadable, 15 own write failed, 16 sync stopped, 17 clock skew, 18 input capped, 19 connection, 20 fault (an unknown kind reads as 0); main only |
     | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
     | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
+    | `[7, tid, query]` | as row 5 | as row 5 |
+    | `[8]` | `[]` | a dispute as row 41, one per dispute the node finds over a thing it reads; main only |
 
-    A Notify of filters 0-3 goes only when its value reads otherwise than the last one sent (an error read always goes); every Notify is read as the actor when it is sent. A Sub of a filter marked main only, from a client session, is answered `[1, 11, text]`.
+    A Notify of filters 0-3 and 7 goes only when its value reads otherwise than the last one sent (an error read always goes); every Notify is read as the actor when it is sent. A Sub of a filter marked main only, from a client session, is answered `[1, 11, text]`.
   - **Outcome error codes**: an unknown method is `[1, 11, text]`.
 
     | code | meaning | detail |

@@ -68,6 +68,48 @@ pub mod method {
     pub const LOCATOR: u64 = 23;
     /// `[] -> tid` (`node_root`)
     pub const NODE_ROOT: u64 = 24;
+    /// `[tid, query] -> page` (`backlinks`)
+    pub const BACKLINKS: u64 = 5;
+    /// `[holder, tid] -> bool` (`holds`)
+    pub const HOLDS: u64 = 25;
+    /// `[] -> [tid*]` (`retained_copies`)
+    pub const RETAINED_COPIES: u64 = 26;
+    /// `[tid] -> []` (`drop_retained_copy`)
+    pub const DROP_RETAINED_COPY: u64 = 28;
+    /// `[target, holder, role, opts] -> []` (`grant`)
+    pub const GRANT: u64 = 30;
+    /// `[target, holder, Opt(role), opts] -> []` (`set_role`)
+    pub const SET_ROLE: u64 = 31;
+    /// `[holder, target, opts] -> []` (`leave`)
+    pub const LEAVE: u64 = 32;
+    /// `[tid] -> keys text` (`keys`)
+    pub const KEYS: u64 = 33;
+    /// `[keys text] -> tid` (`take_keys`)
+    pub const TAKE_KEYS: u64 = 34;
+    /// `[on, of] -> []` (`put_card`)
+    pub const PUT_CARD: u64 = 35;
+    /// `[on, of] -> []` (`remove_card`)
+    pub const REMOVE_CARD: u64 = 36;
+    /// `[] -> [link info*]` (`links`)
+    pub const LINKS: u64 = 37;
+    /// `[link id] -> []` (`revoke_link`)
+    pub const REVOKE_LINK: u64 = 38;
+    /// `[[tid*]] -> []` (`publish_dial_on`)
+    pub const PUBLISH_DIAL_ON: u64 = 39;
+    /// `[] -> []` (`rotate_peer_address`)
+    pub const ROTATE_PEER_ADDRESS: u64 = 40;
+    /// `[] -> [[dispute*], left out]` (`disputes`)
+    pub const DISPUTES: u64 = 41;
+    /// `[dispute id, side] -> []` (`choose_side`)
+    pub const CHOOSE_SIDE: u64 = 42;
+    /// `[admin, Opt(until)] -> [thing, secret]` (`add_client`)
+    pub const ADD_CLIENT: u64 = 43;
+    /// `[] -> [client*]` (`clients`)
+    pub const CLIENTS: u64 = 44;
+    /// `[thing] -> bool` (`remove_client`)
+    pub const REMOVE_CLIENT: u64 = 45;
+    /// `[thing] -> secret` (`rotate_client_secret`)
+    pub const ROTATE_CLIENT_SECRET: u64 = 46;
 
     // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
 
@@ -78,9 +120,9 @@ pub mod method {
 
     /// Whether a client session may call `m`: a row on things the actor may read. The
     /// others carry the node's own state (spec/wire.md §11.2), so a new row is main only unless
-    /// listed here.
+    /// listed here. A main session is the node: it calls every row.
     pub fn for_client(m: u64) -> bool {
-        m <= REDO_TARGET || matches!(m, SETTLE | NOW | STATUS | HOLDERS | LISTING | LISTED_COMMIT)
+        m <= REDO_TARGET || matches!(m, SETTLE | NOW | STATUS | HOLDERS | LISTING | LISTED_COMMIT | HOLDS | RETAINED_COPIES)
     }
 }
 
@@ -107,6 +149,11 @@ pub mod filter {
     /// Reply `[]`, each Notify a commit event `[0, commit id, Opt(commit)]`, `[1]` (read again)
     /// or `[2, code, detail*]` (ended).
     pub const COMMITS: u64 = 6;
+    /// `[7, tid, query]`: a page of its backlinks, as `BACKLINKS` answers; a Notify when it reads
+    /// otherwise.
+    pub const BACKLINKS: u64 = 7;
+    /// `[8]`: each dispute as the node finds one (`on_dispute`); the Reply `[]`. Main only.
+    pub const DISPUTES: u64 = 8;
 }
 
 /// Ops of one write through another node (notes/client-port.md §2 Decoder limits): a write's

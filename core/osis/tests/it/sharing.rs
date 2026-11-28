@@ -76,6 +76,22 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
     assert_eq!(commits(&alice), n, "no role, nothing to remove");
 }
 
+// spec/permissions.md §3 Retain: only a grant at read or above retains, so removing a sync
+// holder (a relay, `chat relay`) is a plain removal, whatever it or the thing's default says.
+// spec: spec/permissions.md §3
+#[test]
+fn a_sync_holder_is_removed_whatever_retain_says_spec_permissions_3() {
+    let (alice, bob) = alice_knows_bob();
+    let b = bob.author();
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
+    alice.set_retain_copies_default(g, true).unwrap();
+    for retain_copy in [None, Some(true)] {
+        alice.grant(g, b, Role::Sync, Default::default()).unwrap();
+        alice.set_role(g, b, None, SetRoleOpts { retain_copy, ..Default::default() }).unwrap();
+        assert!(!alice.grants(g).unwrap().contains_key(&b), "removed ({retain_copy:?})");
+    }
+}
+
 // notes/api.md Sharing and roles (`holders`): a holder through an organization is listed with the organization
 // between, at the least role along the way, after the organization itself (nearest first); an actor
 // holding by two ways is listed once per way.

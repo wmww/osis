@@ -260,7 +260,9 @@ impl crate::Osis {
     /// its entries in the dial lists (`dial.0`) of the things `publish_dial_on` named. Links made before stop reaching it directly. Never
     /// done by itself.
     pub fn rotate_peer_address(&self) -> Result<()> {
-        self.local("rotate_peer_address")?;
+        if let Some(at) = self.process_at("rotate_peer_address")? {
+            return self.forward(&at, crate::port::method::ROTATE_PEER_ADDRESS, ());
+        }
         let secret = self.locked(|l| -> Result<StaticSecret> {
             let s = crate::handle::new_node_secret(l.engine(), &mut osis_crypto::OsRng)?;
             let mut c = l.node.config().clone();
@@ -286,9 +288,11 @@ impl crate::Osis {
     /// Keeps this node's dial entry (its dialable key and where it listens) on `things`, in place
     /// of the things named before, so their readers can dial it: written now on each this node may
     /// write, and again wherever it listens anew. An entry already on a thing no longer named
-    /// stays. `Unsupported` through a connection.
+    /// stays. `Unsupported` on a client with a thing of its own.
     pub fn publish_dial_on(&self, things: &[Tid]) -> Result<()> {
-        self.local("publish_dial_on")?;
+        if let Some(at) = self.process_at("publish_dial_on")? {
+            return self.forward(&at, crate::port::method::PUBLISH_DIAL_ON, (things.to_vec(),));
+        }
         let root = self.inner.node_root;
         let set: std::collections::BTreeSet<osis_base::Weak> = things.iter().copied().map(osis_base::Weak).collect();
         self.engine(|e| {

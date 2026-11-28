@@ -732,6 +732,33 @@ impl crate::Osis {
         })
     }
 
+    /// `on_backlinks_change` at the node at `at`: the page once, then each time it reads
+    /// otherwise; a lost connection as an `Err`, then the page again once back.
+    pub(crate) fn remote_backlinks_watch(&self, at: &Address, tid: Tid, q: &crate::BacklinkQuery, mut f: impl FnMut(&crate::Osis, Result<crate::BacklinkPage>) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::BACKLINKS), tid.to_wire(), q.to_wire()]);
+        let mut last = None;
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            let now = match got {
+                Pushed::Initial(v) | Pushed::Delivery(v) => crate::BacklinkPage::from_wire(v),
+                Pushed::TooLarge(source) => Err(Error::TooLarge { limit: limit_of(&source) }),
+                Pushed::Failed(e) => Err(e),
+            };
+            crate::watch::tell_new(&mut last, now, |p| f(db, p));
+        })
+    }
+
+    /// `on_dispute` at the node at `at`: each dispute it finds while connected.
+    pub(crate) fn remote_disputes(&self, at: &Address, mut f: impl FnMut(&crate::Osis, crate::Dispute) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::DISPUTES)]);
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            if let Pushed::Delivery(v) = got
+                && let Ok(d) = crate::Dispute::from_wire(v)
+            {
+                f(db, d)
+            }
+        })
+    }
+
     /// `on_status_change` at this thin client's nodes: their statuses merged, once and on each
     /// change. A node that cannot be reached shows as not connected, its things each
     /// `NotConnected`; nothing fails.

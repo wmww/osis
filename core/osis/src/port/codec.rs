@@ -7,11 +7,14 @@ use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, Stamp};
-use crate::share::{Holder, HolderKind, Link};
+use crate::share::{GrantOpts, Holder, HolderKind, Keys, Link, LinkId, LinkInfo, Reads, SetRoleOpts};
+use crate::backlinks::{Backlink, BacklinkPage, BacklinkQuery};
+use crate::clients::{Client, ClientSecret};
+use crate::disputes::{Dispute, DisputeId, Side};
 use crate::syncing::{Status, SyncScope, SyncState, UnitSync};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::{Expiry, WriteOp};
-use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, Role, Tid, Time, Ts, Value};
+use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, RefKind, Role, Tid, Time, Ts, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::DiagnosticKind;
 use osis_proto::api::{ApiCode, Outcome};
@@ -221,6 +224,7 @@ form_tuple!(2; A a, B b);
 form_tuple!(3; A a, B b, C c);
 form_tuple!(4; A a, B b, C c, D d);
 form_tuple!(5; A a, B b, C c, D d, E e);
+form_tuple!(6; A a, B b, C c, D d, E e, F f);
 
 /// A fieldless enum as its place in a table of its cases.
 macro_rules! form_place {
@@ -266,16 +270,133 @@ form_place!(DiagnosticKind, "diagnostic", [
     DiagnosticKind::Fault,
 ]);
 
-/// A text form (a link) as its text.
-impl Form for Link {
-    fn to_wire(&self) -> Value {
-        Value::Str(self.to_string())
-    }
-    fn from_wire(v: Value) -> Result<Link> {
-        match v {
-            Value::Str(s) => s.parse(),
-            _ => Err(bad("text")),
+/// A type with a text form (`Display`, `FromStr`) as its text.
+macro_rules! form_text {
+    ($($t:ty),+) => {$(
+        impl Form for $t {
+            fn to_wire(&self) -> Value {
+                Value::Str(self.to_string())
+            }
+            fn from_wire(v: Value) -> Result<$t> {
+                match v {
+                    Value::Str(s) => s.parse(),
+                    _ => Err(bad("text")),
+                }
+            }
         }
+    )+};
+}
+form_text!(Link, Keys, DisputeId);
+
+/// A link's id: its thing.
+impl Form for LinkId {
+    fn to_wire(&self) -> Value {
+        self.0.to_wire()
+    }
+    fn from_wire(v: Value) -> Result<LinkId> {
+        Tid::from_wire(v).map(LinkId)
+    }
+}
+form_place!(RefKind, "reference kind", [RefKind::Strong, RefKind::Weak]);
+form_place!(Reads, "reads", [Reads::Kept, Reads::FromNow, Reads::All]);
+form_place!(Side, "side", [Side::Author, Side::Holder]);
+
+/// `GrantOpts`: `[Opt(until), Opt(retain_copy), may_grant, reads, leave_adminless, quiet]`.
+impl Form for GrantOpts {
+    fn to_wire(&self) -> Value {
+        (self.until, self.retain_copy, self.may_grant, self.reads, self.leave_adminless, self.quiet).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<GrantOpts> {
+        let (until, retain_copy, may_grant, reads, leave_adminless, quiet) = Form::from_wire(v)?;
+        Ok(GrantOpts { until, retain_copy, may_grant, reads, leave_adminless, quiet })
+    }
+}
+
+/// `SetRoleOpts`: `[Opt(retain_copy), leave_adminless]`.
+impl Form for SetRoleOpts {
+    fn to_wire(&self) -> Value {
+        (self.retain_copy, self.leave_adminless).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<SetRoleOpts> {
+        let (retain_copy, leave_adminless) = Form::from_wire(v)?;
+        Ok(SetRoleOpts { retain_copy, leave_adminless })
+    }
+}
+
+/// `LinkInfo`: `[id, target, role, Opt(until), single_use]`.
+impl Form for LinkInfo {
+    fn to_wire(&self) -> Value {
+        (self.id, self.target, self.role, self.until, self.single_use).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<LinkInfo> {
+        let (id, target, role, until, single_use) = Form::from_wire(v)?;
+        Ok(LinkInfo { id, target, role, until, single_use })
+    }
+}
+
+/// A removal dispute: `[id, target, author, holder, commit id, side, chosen]`.
+impl Form for Dispute {
+    fn to_wire(&self) -> Value {
+        let Dispute::Removal { id, target, author, holder, commit, side, chosen } = self;
+        Value::List(vec![id.to_wire(), target.to_wire(), author.to_wire(), holder.to_wire(), commit.to_wire(), side.to_wire(), chosen.to_wire()])
+    }
+    fn from_wire(v: Value) -> Result<Dispute> {
+        let [id, target, author, holder, commit, side, chosen] = fixed(v, "dispute")?;
+        Ok(Dispute::Removal { id: Form::from_wire(id)?, target: Form::from_wire(target)?, author: Form::from_wire(author)?, holder: Form::from_wire(holder)?, commit: Form::from_wire(commit)?, side: Form::from_wire(side)?, chosen: Form::from_wire(chosen)? })
+    }
+}
+
+/// A client (`clients`): `[thing, Opt(until)]`.
+impl Form for Client {
+    fn to_wire(&self) -> Value {
+        (self.thing, self.until).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<Client> {
+        let (thing, until) = Form::from_wire(v)?;
+        Ok(Client { thing, until })
+    }
+}
+
+/// A client's secret: its 32 bytes.
+impl Form for ClientSecret {
+    fn to_wire(&self) -> Value {
+        Value::bytes(self.expose())
+    }
+    fn from_wire(v: Value) -> Result<ClientSecret> {
+        v.as_array().map(ClientSecret::from_bytes).ok_or_else(|| bad("secret"))
+    }
+}
+
+/// A backlink: `[ak, tid, kind]`, kind 0 strong, 1 weak.
+impl Form for Backlink {
+    fn to_wire(&self) -> Value {
+        (self.ak.clone(), self.tid, self.kind).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<Backlink> {
+        let (ak, tid, kind) = Form::from_wire(v)?;
+        Ok(Backlink { ak, tid, kind })
+    }
+}
+
+/// `BacklinkQuery`: `[Opt(ak), Opt(after), Opt(limit)]`.
+impl Form for BacklinkQuery {
+    fn to_wire(&self) -> Value {
+        (self.aspect.clone(), self.after.clone(), self.limit).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<BacklinkQuery> {
+        let (aspect, after, limit) = Form::from_wire(v)?;
+        Ok(BacklinkQuery { aspect, after, limit })
+    }
+}
+
+/// `BacklinkPage`: `[[backlink*], more]`.
+impl Form for BacklinkPage {
+    fn to_wire(&self) -> Value {
+        (self.backlinks.clone(), self.more).to_wire()
+    }
+    fn from_wire(v: Value) -> Result<BacklinkPage> {
+        let (backlinks, more) = Form::from_wire(v)?;
+        Ok(BacklinkPage { backlinks, more })
     }
 }
 

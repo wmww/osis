@@ -61,6 +61,11 @@ pub enum Dispute {
     Removal { id: DisputeId, target: Tid, author: Tid, holder: Tid, commit: CommitId, side: Side, chosen: bool },
 }
 
+/// Whether `on_dispute` tells of `d`: as `disputes` lists them, over a thing this node reads.
+pub(crate) fn shown(db: &Osis, d: &Dispute) -> bool {
+    !matches!(d, Dispute::Removal { target, .. } if db.role_on(*target).ok().flatten() < Some(osis_base::Role::Read))
+}
+
 /// Open removal disputes `disputes` lists at most beside those with a recorded side (a removed
 /// admin can sign any number); the rest are counted. A resource bound: at 0 only recorded sides
 /// are listed and the rest counted, at infinity a hostile flood of k removals lists k per call.
@@ -104,9 +109,11 @@ impl Osis {
     /// The open disputes this node knows of, with the side it stands on in each. Every one is
     /// found, but a hostile flood of them could make the list as long as the flood, so only some
     /// are listed (always those a side was chosen in): the second value is how many were left out.
-    /// `Unsupported` on a thin client.
+    /// `Unsupported` on a client with a thing of its own.
     pub fn disputes(&self) -> Result<(Vec<Dispute>, usize)> {
-        self.local("disputes")?;
+        if let Some(at) = self.process_at("disputes")? {
+            return self.forward(&at, crate::port::method::DISPUTES, ());
+        }
         self.locked(|l| {
             let (ds, left) = l.engine().disputes(LIST_MAX);
             // over a thing this node reads: another's roster is not its to show (`grants`)
@@ -116,14 +123,15 @@ impl Osis {
     }
 
     /// Calls `f` with every dispute as this node finds one, with the side it took by default.
-    /// `Unsupported` on a thin client.
+    /// `Unsupported` on a client with a thing of its own.
     pub fn on_dispute(&self, mut f: impl FnMut(&Osis, Dispute) + Send + 'static) -> Result<Subscription> {
-        self.local("on_dispute")?;
+        if let Some(at) = self.process_at("on_dispute")? {
+            return self.remote_disputes(&at, f);
+        }
         Ok(self.subscribe(Filter::Disputes, false, |_| {
             Box::new(move |db, d| {
-                // as `disputes` lists them: over a thing this node reads
                 if let Delivery::Dispute(x) = d
-                    && !matches!(&x, Dispute::Removal { target, .. } if db.role_on(*target).ok().flatten() < Some(osis_base::Role::Read))
+                    && shown(db, &x)
                 {
                     f(db, x)
                 }
@@ -133,9 +141,11 @@ impl Osis {
 
     /// Takes a side in a dispute, for this node, until chosen again: `Author` or `Holder` of a
     /// removal. Switching may re-read everything the dispute touches and is slow on a long
-    /// history. `Invalid` when no such removal is held; `Unsupported` on a thin client.
+    /// history. `Invalid` when no such removal is held; `Unsupported` on a client with a thing of its own.
     pub fn choose_side(&self, id: DisputeId, side: Side) -> Result<()> {
-        self.local("choose_side")?;
+        if let Some(at) = self.process_at("choose_side")? {
+            return self.forward(&at, crate::port::method::CHOOSE_SIDE, (id, side));
+        }
         let Key::Removal { commit, op, holder } = id.0;
         self.locked(|l| Ok(l.engine().choose(commit, op, osis_base::Holder::Thing(holder), side == Side::Author)?))
     }

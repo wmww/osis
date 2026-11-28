@@ -208,14 +208,23 @@ fn store_dir_init_lock_plan_cli_2() {
     s.ok(&["whoami"]);
 }
 
-// notes/cli.md Design (daemon), notes/client-port.md §2: beside a node serving the store's
-// socket, commands run there as the node itself: chat read and watch (listings and a commit
-// listener), contact show, profile and import (a row that waits), sync (a wait timing out), diag.
+// notes/cli.md Design (daemon), notes/client-port.md §0 (a main session is the node), notes/dogfood.md
+// Through the daemon: beside a node serving the store's socket, every command the dogfood runs
+// works there as on the store itself (none refused, as `Unsupported` would be): reads, writes,
+// holds, chat read and watch (listings and a commit listener), contact show, profile and import
+// (a row that waits), sync (a wait timing out), diag, sharing (grant, set-role, chat add, kick,
+// link, relay and join, link ls), clients, pairing and nodes.
 #[test]
 fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
     let s = S::dir(&d);
     let ok = |args: &[&str]| s.ok(args).out;
+    // a command waiting for delivery, with no peer: its wait runs to the timeout
+    let waits = |args: &[&str]| {
+        let o = s.call(&[&["--timeout", "200ms"][..], args].concat(), "");
+        assert_eq!(o.code, 6, "{args:?}: {}", o.err);
+        o.out
+    };
     ok(&["init"]);
     let c = ok(&["chat", "create", "--name", "room"]).trim().to_string();
     let one = ok(&["chat", "post", &c, "one"]).trim().to_string();
@@ -224,6 +233,14 @@ fn commands_run_through_the_daemon_plan_cli() {
     o.app.internals.no_listen = true;
     let held = osis::internals::open(o).unwrap();
     held.listen_socket().unwrap();
+    assert_eq!(s.code(&["inspect", "thing", "me"]), 8, "inspect holds the store itself");
+    assert_eq!(s.node(), held.node().to_uri(), "the node itself");
+    ok(&["status"]);
+    let t = ok(&["create", "--admin", "me", "t:made.0", "true"]).trim().to_string();
+    assert_eq!(ok(&["get", &t, "t:made.0"]).trim(), "true");
+    ok(&["unhold", &t]);
+    ok(&["hold", &t]);
+    assert!(held.holds(held.node_root().unwrap(), osis::Tid::parse(&t).unwrap()).unwrap());
     let read = ok(&["chat", "read", &c]);
     assert!(read.contains(&format!("{one} ")) && read.contains(": one"), "{read}");
     let cursor = read.lines().last().unwrap().strip_prefix("cursor ").unwrap().to_string();
@@ -236,14 +253,67 @@ fn commands_run_through_the_daemon_plan_cli() {
     // its public profile may be, by anyone (the contact card's wait, below)
     ok(&["sync", "--thing", &c, "--timeout", "60s"]);
     // the profile is public, so anyone may hold it: the card's wait runs to the timeout
-    let card = s.call(&["--timeout", "1s", "contact", "show"], "");
-    assert_eq!(card.code, 6, "{}", card.err);
+    let card = waits(&["contact", "show"]).trim().to_string();
     let acc = osis_account::Account::of(&held).unwrap().unwrap().realm();
-    assert_eq!(card.line(), acc.contact_card(&held).unwrap().to_string());
+    assert_eq!(card, acc.contact_card(&held).unwrap().to_string());
     assert_eq!(ok(&["contact", "profile"]).trim(), acc.profile(&held).unwrap().unwrap().to_uri());
-    assert_eq!(ok(&["contact", "import", card.line(), "--timeout", "60s"]).trim(), acc.thing().to_uri());
+    assert_eq!(ok(&["contact", "import", &card, "--timeout", "60s"]).trim(), acc.thing().to_uri());
     ok(&["diag"]);
+    // sharing, to a holder whose keys this node knows: a client's thing it minted (after the
+    // syncs above: a holder with no node to deliver to keeps them waiting)
+    let add = ok(&["clients", "add"]);
+    let x = add.split_whitespace().next().unwrap().to_string();
+    assert!(ok(&["clients", "ls"]).contains(&x));
+    waits(&["grant", &t, &x, "read"]);
+    waits(&["set-role", &t, &x, "write"]);
+    assert!(ok(&["grants", &t]).contains(&format!("{x} write")));
+    waits(&["chat", "add", &c, &x]);
+    ok(&["chat", "kick", &c, &x]);
+    let link = waits(&["chat", "link", &c]).trim().to_string();
+    let k = ok(&["link", "ls", &c]).split_whitespace().next().unwrap().to_string();
+    waits(&["chat", "relay", &c, &x]);
+    assert!(ok(&["grants", &k]).contains(&format!("{x} sync")), "relay grants sync on the link's K");
+    assert_eq!(ok(&["chat", "join", &link]).trim(), c, "the chat its own link names");
+    // pairing: the offer printed, the new node's request read back, its reply printed
+    pair_through(&s, &d);
+    assert_eq!(ok(&["node", "ls"]).lines().count(), 2, "the paired node");
+    // a removal's role change is set-role's, above: here a thing that is no node of the account
+    ok(&["node", "rm", &x]);
     drop(held);
+}
+
+/// `pair offer` on `s`, answered by a fresh store's `osis_account::pair` in this process: the
+/// offer read from its output, the request given on its stdin.
+fn pair_through(s: &S, d: &std::path::Path) {
+    let (mut out_r, out_w) = std::io::pipe().unwrap();
+    let (in_r, mut in_w) = std::io::pipe().unwrap();
+    std::thread::scope(|sc| {
+        let run = sc.spawn(move || {
+            let (mut out_w, mut e) = (out_w, Vec::new());
+            let mut i = std::io::BufReader::new(in_r);
+            let args = ["osis", "--no-lan", "pair", "offer"];
+            (run(args, Some(s.sel.clone()), Io { stdin: &mut i, stdout: &mut out_w, stderr: &mut e, tty: false }), String::from_utf8(e).unwrap())
+        });
+        let mut offer = String::new();
+        let mut r = std::io::BufReader::new(&mut out_r);
+        std::io::BufRead::read_line(&mut r, &mut offer).unwrap();
+        if let Ok(offer) = offer.trim().parse() {
+            let joiner = Store::Dir(d.with_extension("joiner"));
+            let mut cfg = osis::Config::default();
+            cfg.app.internals.no_listen = true;
+            cfg.lan = osis::Lan::Off;
+            let join = osis_account::pair(joiner, &offer, cfg).unwrap();
+            std::io::Write::write_all(&mut in_w, format!("{}\n", join.request()).as_bytes()).unwrap();
+            drop(join);
+        }
+        drop(in_w);
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut r, &mut rest).unwrap();
+        let (code, err) = run.join().unwrap();
+        assert_eq!(code, 0, "pair offer: {offer}{err}");
+        assert!(rest.starts_with("osis://pair-reply/"), "{rest}");
+    });
+    let _ = std::fs::remove_dir_all(d.with_extension("joiner"));
 }
 
 // notes/cli.md JSON mapping: --json output carries tids under their API names.
@@ -768,3 +838,5 @@ fn enable_and_disable_an_external_signal_spec_permissions_5_2() {
     assert_eq!(s.code(&["enable", &t, "x:ping~0", "--keep", "1h"]), 2);
     assert_eq!(s.code(&["enable", &t, "x:ping@~0"]), 2);
 }
+
+

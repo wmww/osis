@@ -80,7 +80,12 @@ impl Reader<'_> {
 /// What may change `tid`'s backlinks on `on` as the handle reads them: a row naming it there,
 /// and with an acting actor what it may read.
 fn watch(db: &ReadOnly, tid: Tid, on: Option<&Ak>) -> Filter {
-    Filter::Due(Watch::Backlinks(tid, on.cloned(), db.acting.is_some()))
+    filter(tid, on, db.acting.is_some())
+}
+
+/// `watch` for a handle acting as a thing (`acting`) or not.
+pub(crate) fn filter(tid: Tid, on: Option<&Ak>, acting: bool) -> Filter {
+    Filter::Due(Watch::Backlinks(tid, on.cloned(), acting))
 }
 
 impl ReadOnly {
@@ -88,7 +93,9 @@ impl ReadOnly {
     /// depth), each with the aspect and the kind, a page at a time. Only what this node holds and the handle may read counts, never
     /// history. `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
-        self.local_at(tid, "backlinks")?;
+        if let Some(at) = self.remote(tid, "backlinks")? {
+            return self.forward(&at, crate::port::method::BACKLINKS, (tid, q.clone()));
+        }
         if self.tracking.is_some() {
             self.engine(|e| e.watch_references());
         }
@@ -102,7 +109,9 @@ impl ReadOnly {
     /// reference looked up, never the whole set; a tracked read hears only a reference to `t` in a
     /// `holds.0` appearing or going. `false` when the handle may not read `holder`.
     pub fn holds(&self, holder: Tid, t: Tid) -> Result<bool> {
-        self.local_at(holder, "holds")?;
+        if let Some(at) = self.remote(holder, "holds")? {
+            return self.forward(&at, crate::port::method::HOLDS, (holder, t));
+        }
         if self.tracking.is_some() {
             self.engine(|e| e.watch_references());
         }
@@ -128,7 +137,9 @@ impl Osis {
     /// is at a node that cannot be reached now; a live watch hears a lost connection as an `Err`,
     /// and the page again once it is back.
     pub fn on_backlinks_change(&self, tid: Tid, q: &BacklinkQuery, mut f: impl FnMut(&Osis, Result<BacklinkPage>) + Send + 'static) -> Result<Subscription> {
-        self.local_at(tid, "on_backlinks_change")?;
+        if let Some(at) = self.remote(tid, "on_backlinks_change")? {
+            return self.remote_backlinks_watch(&at, tid, q, f);
+        }
         let q = q.clone();
         let mut failed = None;
         let sub = self.subscribe(watch(self, tid, q.aspect.as_ref()), true, |r| {

@@ -895,3 +895,76 @@ fn a_main_session_holds_by_its_nodes_root_spec_wire_11() {
         assert_eq!(a.holds(root, t).unwrap(), hold, "held {hold}");
     }
 }
+
+// notes/client-port.md §0 (a main session is the node), spec/wire.md §11.2: through its socket
+// a main session makes every call that does not need its own process to be the node, each
+// answered as the node answers it in process: backlinks and holds and their watch, sharing,
+// keys, links, clients, disputes and their watch, the node's addresses.
+#[test]
+fn a_main_session_makes_the_nodes_calls_spec_wire_11() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-main");
+    let (t, u) = a.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
+    let q = osis::BacklinkQuery::default();
+    let (tx, pages) = channel();
+    let _b = cl.on_backlinks_change(t, &q, move |_, p| tx.send(p.unwrap()).unwrap()).unwrap();
+    cl.settle();
+    assert_eq!(pages.try_recv().unwrap(), a.backlinks(t, &q).unwrap(), "the page now");
+    a.commit_with(|w| w.hold(u, t)).unwrap();
+    cl.settle();
+    let page = a.backlinks(t, &q).unwrap();
+    assert!(page.backlinks.iter().any(|b| b.tid == u), "{page:?}");
+    assert_eq!(cl.backlinks(t, &q).unwrap(), page);
+    assert_eq!(pages.try_recv().unwrap(), page, "and on a change");
+    assert!(cl.holds(u, t).unwrap());
+    // a holder with keys here: a client's thing
+    let (x, secret) = cl.add_client(cl.node(), None).unwrap();
+    assert_eq!(cl.clients().unwrap(), a.clients().unwrap());
+    assert_ne!(cl.rotate_client_secret(x).unwrap(), secret);
+    let keys = cl.keys(x).unwrap();
+    assert_eq!(keys, a.keys(x).unwrap());
+    assert_eq!(cl.take_keys(&keys).unwrap(), x);
+    cl.grant(t, x, Role::Read, osis::GrantOpts::default()).unwrap();
+    assert_eq!(a.grants(t).unwrap()[&x].role, Role::Read);
+    cl.set_role(t, x, None, osis::SetRoleOpts::default()).unwrap();
+    assert!(!a.grants(t).unwrap().contains_key(&x));
+    cl.make_link(t, Role::Read, a.author(), Default::default()).unwrap();
+    let links = cl.links().unwrap();
+    assert_eq!((links.len(), &links), (1, &a.links().unwrap()));
+    cl.revoke_link(links[0].id).unwrap();
+    assert!(a.links().unwrap().is_empty());
+    assert_eq!(cl.retained_copies().unwrap(), a.retained_copies().unwrap());
+    assert_eq!(cl.disputes().unwrap(), a.disputes().unwrap());
+    let _d = cl.on_dispute(|_, _| {}).unwrap();
+    cl.publish_dial_on(&[t]).unwrap();
+    assert!(cl.remove_client(x).unwrap());
+    assert!(a.clients().unwrap().is_empty());
+    // the socket keeps no key: the session goes on with the node's new one
+    let key = a.locator(t).unwrap();
+    cl.rotate_peer_address().unwrap();
+    assert_ne!(a.locator(t).unwrap(), key);
+    assert_eq!(cl.locator(t).unwrap(), a.locator(t).unwrap());
+}
+
+// spec/wire.md §11.2 (A client's rights), notes/client-port.md §3: a client's thing's backlinks
+// list only sources it may read, whoever may read the target.
+#[test]
+fn a_clients_backlinks_list_what_it_reads_spec_wire_11() {
+    let w = world(Some(Role::Read));
+    let (seen, hidden) = w.a.commit_with(|x| Ok((x.create_held()?, x.create_held()?))).unwrap();
+    w.a.commit_with(|x| {
+        x.hold(seen, w.t)?;
+        x.hold(hidden, w.t)
+    })
+    .unwrap();
+    w.a.grant(seen, w.client, Role::Read, osis::GrantOpts::default()).unwrap();
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let q = osis::BacklinkQuery::default();
+    let all: Vec<Tid> = w.a.backlinks(w.t, &q).unwrap().backlinks.iter().map(|b| b.tid).collect();
+    assert!(all.contains(&seen) && all.contains(&hidden), "the node reads both");
+    let got: Vec<Tid> = cl.backlinks(w.t, &q).unwrap().backlinks.iter().map(|b| b.tid).collect();
+    assert_eq!(got, [seen]);
+    assert!(cl.holds(seen, w.t).unwrap());
+    assert!(!cl.holds(hidden, w.t).unwrap(), "a hidden holder holds nothing");
+}
