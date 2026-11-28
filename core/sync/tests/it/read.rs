@@ -1340,7 +1340,7 @@ fn role_entries_first() {
 // hold here, own or pulled): a role commit this node pulled (a removal by another) that K lacks
 // holds back a logging again toward K, so the body goes back there only once what this node's
 // judgement rests on is there too, and a node judging otherwise for want of it fetches it there
-// before it deletes (drop-rejoin: a node without the revocation deletes a body logged again).
+// before it deletes (drop-rejoin: a node without the removal deletes a body logged again).
 // Fails with own role commits alone waited for.
 #[test]
 fn a_logging_again_waits_for_every_role_commit_held_spec_sync_judgement_3() {

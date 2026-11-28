@@ -163,7 +163,7 @@ pub struct Sim {
 pub struct History {
     /// Thing -> (the node that minted it, its mint admin, if any).
     minted: BTreeMap<Tid, (usize, Option<Tid>)>,
-    /// (thing, node) -> the role given it last (`grant`), `None` once removed (`revoke`).
+    /// (thing, node) -> the role given it last (`grant`), `None` once removed (`remove`).
     roles: BTreeMap<(Tid, usize), Option<Role>>,
     /// (thing, node) once removed: its writes there are judged by the removal's frontier, which
     /// the history does not hold, so none is expected.
@@ -404,7 +404,7 @@ impl Sim {
     }
 
     /// Node `i` removes the grant of node `j`'s account on `thing` (spec/permissions.md §5).
-    pub fn revoke(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
+    pub fn remove(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
         let holder = self.account(j)?;
         let mut m = Mutation::new();
         m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).map_err(|e| self.fail(e.to_string()))?;

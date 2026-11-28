@@ -3,7 +3,7 @@
 //! thing minted with the key the link's seed derives, its secrets the seed's, with (r,
 //! may-grant) on K. Redeem (a
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
-//! finalization and revoking a joiner are demotions by a sharer node.
+//! finalization and removing a joiner are demotions by a sharer node.
 
 use super::{Done, put_grant};
 use crate::engine::{Engine, Tx};
@@ -323,11 +323,11 @@ impl Engine {
         Ok(next)
     }
 
-    /// Revokes one joiner of a link (spec/permissions.md §7): removes the joiner and L (the
+    /// Removes one joiner of a link (spec/permissions.md §7): removes the joiner and L (the
     /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
     /// §2); the remaining joiners need a new link. L unknown (the link ended, its seed gone) or
     /// already gone from K (a used single-use link): the joiner alone.
-    pub fn revoke_joiner(&mut self, k: &Tid, l: Option<&Tid>, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
+    pub fn remove_joiner(&mut self, k: &Tid, l: Option<&Tid>, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
         let d = crate::flows::Demotion { holder: *joiner, new: None, retain };
         let Some(l) = l.filter(|l| self.core.timelines().get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some())) else {
             return self.remove_signed(None, k, &d, &[]);

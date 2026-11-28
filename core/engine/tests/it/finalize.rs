@@ -215,7 +215,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
 
 // spec/commits.md §2, spec/permissions.md §2 (Finalize): a writer never writes a removal of
 // another's grant with no frontier unless the grant is past its `until`: that would be a void
-// finalize, a revoke by an admin that cuts off nobody.
+// finalize, a removal by an admin that cuts off nobody.
 #[test]
 fn a_frontierless_removal_of_an_unended_grant_is_refused_spec_commits_2() {
     let (mut lp, t, ps, _) = shared(Role::Read);

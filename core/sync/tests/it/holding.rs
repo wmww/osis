@@ -123,13 +123,13 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
 }
 
 // spec/sync-set.md §2, spec/permissions.md §3: a strong grants nothing; removing a
-// reference revokes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
+// reference removes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
 // T reaches him, the strong is NotCarried. Alice grants Bob read, Bob holds T, then Alice writes
 // and drops her own strong: she lets T go, Bob's roster entry and his reads stay.
 // spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no absent peer:
 // once Bob drops his strong too, T is gone at both.
 #[test]
-fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
+fn a_strong_grants_nothing_and_its_removal_removes_nothing_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
     let d1 = w.node(1).account.unwrap();

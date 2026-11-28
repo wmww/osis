@@ -16,7 +16,7 @@ CONSTANTS
     Entries, Ls, EL, Author,        \* entries, sync IDs, an entry's sync ID, its writer
     PageK,                          \* events per reply page
     Stores, Dials,                  \* {"a","b"} or {"a","b","c"}; <<dialer, listener>> pairs allowed
-    MaxRestart, MaxRecLoss, MaxDelete, MaxExpire, MaxClone, MaxDrop, MaxRevoke,
+    MaxRestart, MaxRecLoss, MaxDelete, MaxExpire, MaxClone, MaxDrop, MaxRemove,
     Retire,                         \* the copy replaces b (a restore) or runs beside it
     IncCheck,                       \* a cursor is honoured only on this store's own history
     KeepHistory,                    \* the first append after a start records the incarnation before it, so a restart honours earlier cursors
@@ -95,7 +95,7 @@ Init ==
     /\ ever = {}
     /\ written = {}
     /\ rights = [s \in Stores |-> [l \in Ls |-> TRUE]]
-    /\ cnt = [restart |-> 0, recloss |-> 0, delete |-> 0, expire |-> 0, clone |-> 0, drop |-> 0, revoke |-> 0, rid |-> 0]
+    /\ cnt = [restart |-> 0, recloss |-> 0, delete |-> 0, expire |-> 0, clone |-> 0, drop |-> 0, remove |-> 0, rid |-> 0]
     /\ unforced = FALSE
     /\ lostW = {}
     /\ badServe = FALSE
@@ -321,16 +321,16 @@ Join(x, l) ==
     /\ cu' = [cu EXCEPT ![x][l] = FALSE]
     /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig, ctd>>
 
-Revoke(x, l) ==
+Remove(x, l) ==
     LET y == Other(x, link) IN
     /\ x \in link
-    /\ cnt.revoke < MaxRevoke
+    /\ cnt.remove < MaxRemove
     /\ rights[x][l]
     /\ st[y].rec.srv[l]
     /\ rights' = [rights EXCEPT ![x][l] = FALSE]
     /\ st' = [st EXCEPT ![y].rec.srv[l] = FALSE,
                         ![y].rec.lostp = @ \cup {[l |-> l, c |-> st[y].rec.last]}]
-    /\ cnt' = [cnt EXCEPT !.revoke = @ + 1]
+    /\ cnt' = [cnt EXCEPT !.remove = @ + 1]
     /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, unforced, lostW, badServe, dig, ctd>>
 
 Regrant(x, l) ==
@@ -496,7 +496,7 @@ Honest ==
 Next ==
     \/ Honest
     \/ \E s \in Stores, e \in Entries : Delete(s, e)
-    \/ \E s \in Stores, l \in Ls : Revoke(s, l)
+    \/ \E s \in Stores, l \in Ls : Remove(s, l)
     \/ \E s \in Stores : Expire(s) \/ Restart(s) \/ LoseRecord(s)
     \/ Clone
     \/ Drop

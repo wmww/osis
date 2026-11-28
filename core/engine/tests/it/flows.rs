@@ -600,7 +600,7 @@ fn may_grant_power_spec_perm_2() {
     assert_eq!(rot.commits.len(), 1);
 }
 
-// notes/revocation.md; spec/permissions.md §5.1, §5.2: the demoter's frontier,
+// notes/removal.md; spec/permissions.md §5.1, §5.2: the demoter's frontier,
 // from its receipt record, keeps the edits it received and drops the demoted holder's edits
 // it never saw (made before) and those made after.
 // spec/permissions.md §5.1 (frontier received)

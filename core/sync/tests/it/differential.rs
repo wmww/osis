@@ -81,7 +81,7 @@ const TWICE_EVERY: u64 = 4;
 // spec: none (property: spec/requirements.md Convergence; spec/sync-set.md §1-§4: a node holds
 // exactly its node closure): histories of minting things with the account or other
 // things as admin, strongs added and removed from roots and things, grants of sync, read and write to
-// accounts and to things (chains), lowering, revoking, rotating, a grantee holding what it is
+// accounts and to things (chains), lowering, removing, rotating, a grantee holding what it is
 // granted by a strong (or not), pairing and removing a node, and on every second seed power loss,
 // partitions, lost, repeated and held-back messages, device faults and clock skew, healed and run
 // to quiet (within the storm cap): each node of an account reads a thing exactly when held-model's
@@ -221,7 +221,7 @@ fn the_publics_read_through_a_holder_is_every_nodes_spec_sync_set_2() {
 fn a_store_granted_past_genesis_is_moved_spec_sync_ids_6() {
     use crate::harness::history::{Gives, Holder};
     let (n, accounts, ..) = size();
-    let script = [Step::New(0), Step::New(0), Step::Give(0, 0, Holder::Thing(1), Gives::Syncs), Step::Revoke(0, 0, Holder::Thing(1)), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
+    let script = [Step::New(0), Step::New(0), Step::Give(0, 0, Holder::Thing(1), Gives::Syncs), Step::RemoveHolder(0, 0, Holder::Thing(1)), Step::Give(0, 0, Holder::Node(1), Gives::Syncs), Step::Run, Step::Strong(1, None, 0), Step::Write(0, 0), Step::Run];
     holds_on(0, accounts, n, &script, String::new(), false);
 }
 
@@ -246,7 +246,7 @@ fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
         Step::Run,
         Step::New(0),
         Step::Strong(0, Some(0), 1),
-        Step::Revoke(1, 1, Holder::Public),
+        Step::RemoveHolder(1, 1, Holder::Public),
     ];
     let mut w = world_of(0, 2, 3);
     w.cap = crate::harness::STORM_CAP;
@@ -263,7 +263,7 @@ fn an_entry_waits_for_a_part_dropped_after_its_opening_spec_sync_streams_4() {
 fn the_publics_removal_keeps_what_a_nodes_own_role_gives_spec_permissions_3() {
     use crate::harness::history::{Gives, Holder, reads};
     let (n, accounts, ..) = size();
-    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::Revoke(1, 0, Holder::Public)];
+    let script = [Step::New(1), Step::Give(1, 0, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::RemoveHolder(1, 0, Holder::Public)];
     let mut w = holds_on(0, accounts, n, &script, String::new(), false);
     let t = w.history.things[0].0;
     assert!(reads(w.engine(0), &t).value.is_some(), "node 0 reads thing 0 by its account's grant");
@@ -282,7 +282,7 @@ fn a_locators_redeemer_loses_the_thing_with_the_public_spec_permissions_3() {
     assert!(reads(w.engine(1), &t).value.is_some(), "control: node 1 reads thing 0 by the link");
     for quiet in [true, false] {
         let mid = if quiet { vec![Step::Run] } else { vec![] };
-        let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::Revoke(0, 0, Holder::Public)]).collect();
+        let script: Vec<Step> = start.iter().cloned().chain(mid).chain([Step::RemoveHolder(0, 0, Holder::Public)]).collect();
         let mut w = holds_on(0, accounts, n, &script, String::new(), false);
         assert!(reads(w.engine(1), &t).value.is_none(), "node 1 reads thing 0 after the public's removal (quiet run before it: {quiet})");
     }
@@ -297,7 +297,7 @@ fn the_public_granted_again_is_read_again_spec_permissions_3() {
     let (n, accounts, ..) = size();
     for quiet in [true, false] {
         let mid = if quiet { vec![Step::Run] } else { vec![] };
-        let script: Vec<Step> = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 1), Step::Strong(1, Some(1), 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::Revoke(1, 0, Holder::Public)]
+        let script: Vec<Step> = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Strong(0, None, 1), Step::Strong(1, Some(1), 0), Step::Give(1, 0, Holder::Public, Gives::Reads), Step::Run, Step::RemoveHolder(1, 0, Holder::Public)]
             .into_iter()
             .chain(mid)
             .chain([Step::Give(1, 0, Holder::Public, Gives::Reads)])
@@ -469,7 +469,7 @@ fn a_sync_only_chain_is_entered_by_the_holders_its_cut_names_spec_permissions_4(
 #[test]
 fn a_sync_chain_no_reader_can_name_enters_nothing_spec_sync_set_2() {
     use crate::harness::script::*;
-    let script = [New(1), New(1), Give(1, 1, Holder::Node(2), Syncs), Give(1, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Give(1, 0, Holder::Thing(1), Syncs), Revoke(1, 0, Holder::Node(2)), Strong(2, None, 1)];
+    let script = [New(1), New(1), Give(1, 1, Holder::Node(2), Syncs), Give(1, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Give(1, 0, Holder::Thing(1), Syncs), RemoveHolder(1, 0, Holder::Node(2)), Strong(2, None, 1)];
     let mut w = holds_on(0, 3, 4, &script, String::new(), false);
     let things: Vec<_> = w.history.things.iter().map(|t| t.0).collect();
     let set = w.engine(2).sync_set().unwrap();
@@ -520,7 +520,7 @@ fn a_read_chain_no_reader_can_name_reads_nothing_spec_sync_set_2() {
 #[test]
 fn a_removed_sync_holder_still_signalled_stops_spec_sync_judgement_6() {
     use crate::harness::script::*;
-    holds_on(0, 3, 4, &[New(3), Give(3, 0, Holder::Node(2), Syncs), Run, Strong(2, None, 0), Revoke(3, 0, Holder::Node(2))], String::new(), false);
+    holds_on(0, 3, 4, &[New(3), Give(3, 0, Holder::Node(2), Syncs), Run, Strong(2, None, 0), RemoveHolder(3, 0, Holder::Node(2))], String::new(), false);
 }
 
 // spec/data-model.md §8 (Held history: a strong in a held body of a thing whose setting holds its
@@ -547,7 +547,7 @@ fn a_strong_in_an_inboxs_held_history_holds_its_target_spec_data_model_8() {
 #[test]
 fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
     use crate::harness::script::*;
-    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Run, Revoke(2, 0, Holder::Node(0))], String::new(), false);
+    holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(0), Reads), Give(2, 0, Holder::Public, Syncs), Strong(0, None, 0), Run, RemoveHolder(2, 0, Holder::Node(0))], String::new(), false);
 }
 
 // spec/crypto.md §4 (History box: what a node holds is a function of the secrets it holds,
@@ -560,7 +560,7 @@ fn a_removed_reader_keeps_a_thing_the_public_syncs_unread_spec_sync_set_2() {
 #[test]
 fn a_learned_sync_secret_opens_the_history_held_spec_crypto_4() {
     use crate::harness::script::*;
-    let mut w = played_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Node(1), Syncs), Give(0, 0, Holder::Public, Syncs), Revoke(0, 0, Holder::Node(1))], String::new(), false);
+    let mut w = played_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Node(1), Syncs), Give(0, 0, Holder::Public, Syncs), RemoveHolder(0, 0, Holder::Node(1))], String::new(), false);
     for i in 0..w.len() {
         w.engine(i).check_index();
     }
@@ -584,7 +584,7 @@ fn a_node_keeping_a_thing_unread_reads_it_once_the_public_reads_spec_sync_opens_
 #[test]
 fn a_node_keeping_a_thing_unread_takes_no_older_public_claim_spec_sync_ids_3() {
     use crate::harness::script::*;
-    holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Public, Reads), Revoke(0, 0, Holder::Public), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
+    holds_on(0, 2, 3, &[New(0), Give(0, 0, Holder::Public, Reads), RemoveHolder(0, 0, Holder::Public), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
 }
 
 // spec/permissions.md §4 (Logging certificates: a record a role entry's evidence names goes as a
@@ -655,7 +655,7 @@ fn a_refused_removal_removes_no_one() {
 #[test]
 fn a_stopped_store_granted_again_reads_spec_sync_judgement_6() {
     use crate::harness::script::*;
-    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Run, Revoke(0, 0, Holder::Node(2)), Give(0, 0, Holder::Node(2), Reads)], String::new(), false);
+    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(2), Syncs), Strong(2, None, 0), Run, RemoveHolder(0, 0, Holder::Node(2)), Give(0, 0, Holder::Node(2), Reads)], String::new(), false);
 }
 
 // spec/sync-ids.md §4 (Owner: kept unread, the sync ID of its own reading is a hint while no step
@@ -670,7 +670,7 @@ fn a_stopped_store_granted_again_reads_spec_sync_judgement_6() {
 fn a_reader_removed_then_granted_sync_keeps_it_unread_spec_sync_ids_4() {
     use crate::harness::script::*;
     osis_base::costs::take();
-    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
+    holds_on(0, 3, 4, &[New(0), Give(0, 0, Holder::Node(1), Reads), RemoveHolder(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)], String::new(), false);
     let alone = osis_base::costs::take().into_iter().filter(|(k, _, _)| *k == "lost access: sync secrets alone dropped").map(|(_, _, n)| n).sum::<u64>();
     assert_eq!(alone, 0, "a node holding sync secrets alone dropped them for lost access");
 }

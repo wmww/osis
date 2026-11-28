@@ -399,41 +399,41 @@ fn models() -> Vec<Scenario> {
     let w = |by, v| Write { by, t: 0, op: 0, k: 0, v };
     let tick = Advance { who: None, ms: 1000 };
     // A demotes X now, with a frontier of what A received of X's writes
-    let revoke = Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false };
+    let lowering = Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false };
     vec![
         Scenario {
-            name: "pre-revoke edit unseen by the revoker",
+            name: "pre-removal edit unseen by the remover",
             spec: "spec/permissions.md §5.2",
-            source: "hand-picked: a write the revoker had not received when it demoted its writer (unseen: both invalid)",
-            steps: vec![w(1, 1), tick.clone(), revoke.clone(), tick.clone(), w(1, 2)],
+            source: "hand-picked: a write the remover had not received when it demoted its writer (unseen: both invalid)",
+            steps: vec![w(1, 1), tick.clone(), lowering.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
-            name: "pre-revoke edit seen by the revoker",
+            name: "pre-removal edit seen by the remover",
             spec: "spec/permissions.md §5.1, §5.2",
-            source: "hand-picked: a write the revoker had received when it demoted its writer (seen: the first stands)",
-            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2)],
+            source: "hand-picked: a write the remover had received when it demoted its writer (seen: the first stands)",
+            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), lowering.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
-            name: "revoked writer re-granted",
+            name: "removed writer re-granted",
             spec: "spec/permissions.md §5.2",
             source: "hand-picked: a demoted writer re-granted (re-granted: both stand)",
-            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), revoke.clone(), tick.clone(), w(1, 2), tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
+            steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), lowering.clone(), tick.clone(), w(1, 2), tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
             orders: None,
         },
         Scenario {
-            name: "snapshot before the revoke carries the unseen edit",
+            name: "snapshot before the removal carries the unseen edit",
             spec: "spec/permissions.md §5.2",
             source: "spec/permissions.md §5.2 (a snapshot is no role event: at t=4 the delta stays invalid)",
-            steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), revoke.clone()],
+            steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), lowering.clone()],
             orders: None,
         },
         Scenario {
-            name: "snapshot after the revoke carries the unseen edit",
+            name: "snapshot after the removal carries the unseen edit",
             spec: "spec/permissions.md §5.2",
             source: "spec/permissions.md §5.2 (a snapshot is no role event: at t=6 likewise)",
-            steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), revoke.clone(), tick.clone(), Compact { by: 2, t: 0, op: 0 }],
+            steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), lowering.clone(), tick.clone(), Compact { by: 2, t: 0, op: 0 }],
             orders: None,
         },
         Scenario {

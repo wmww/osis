@@ -18,7 +18,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("three_random", three_random),
     ("crash_restart", crash_restart),
     ("drift_parks", drift_parks),
-    ("revoke_while_writing", revoke_while_writing),
+    ("remove_while_writing", remove_while_writing),
 ];
 
 /// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;
@@ -99,15 +99,15 @@ pub fn crash_restart(seed: u64) -> Res<Report> {
 /// spec/permissions.md §5: an admin removes a writer while it keeps writing under a lossy
 /// network; the removed writer's later deltas are judged invalid everywhere and un-merged, and
 /// every node converges, whatever arrived first.
-pub fn revoke_while_writing(seed: u64) -> Res<Report> {
+pub fn remove_while_writing(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4e0);
     let cfg = Config { nodes: 3, clocks: clocks(&mut d, 3, 60_000, 100), net: lossy(), ..Config::default() };
-    let mut sim = Sim::new("revoke_while_writing", seed, cfg)?;
+    let mut sim = Sim::new("remove_while_writing", seed, cfg)?;
     let a = sim.create_thing(0, None)?;
     sim.grant(0, a, 1, Role::Write)?;
     sim.grant(0, a, 2, Role::Write)?;
     sim.run(100)?;
-    sim.revoke(0, a, 2)?;
+    sim.remove(0, a, 2)?;
     let gone = sim.account(2)?;
     sim.run(150)?;
     sim.run_until_quiescent(50)?;

@@ -137,7 +137,7 @@ fn random_history(r: &mut Rng, len: usize) -> (World, Vec<Commit>) {
 /// What T's sync ID carries of `held`, by the view of `held`.
 fn carried_commits(w: &World, cs: &[Commit], held: &BTreeSet<C>, t: T, fix: bool) -> BTreeSet<C> {
     let (wv, e) = (w.with_roles(cs, held), edges(cs, held));
-    let cr = Carry { unit: unit(&wv, t, &e), keys: wv.keys_of(t), certify_revokes: fix };
+    let cr = Carry { unit: unit(&wv, t, &e), keys: wv.keys_of(t), certify_removals: fix };
     held.iter().copied().filter(|&c| cr.carries(&cs[c])).collect()
 }
 
@@ -145,8 +145,8 @@ fn carried_commits(w: &World, cs: &[Commit], held: &BTreeSet<C>, t: T, fix: bool
 /// carried earlier changes nothing. Over random histories with role commits of 0 and 1 on each
 /// other, a reader holding what T carried after any prefix and what it carries after all
 /// computes T's sync unit over all: with role commits carried under the actor they name, in every
-/// one. By the plan's words a revocation is carried under neither sync ID, so the earlier grant
-/// stands at such a reader (counted; minimal: `p2_revocation_reaches_grantee_only_node`).
+/// one. By the plan's words a removal is carried under neither sync ID, so the earlier grant
+/// stands at such a reader (counted; minimal: `p2_removal_reaches_grantee_only_node`).
 #[test]
 fn p1_carried_commits_decide_the_unit() {
     let mut r = Rng::new(0);
@@ -263,18 +263,18 @@ fn p2_two_units_reach_only_through_a_bridge() {
     }
 }
 
-/// P2 FAILS by the plan's words, (b): a revocation never reaches a node that syncs only the
+/// P2 FAILS by the plan's words, (b): a removal never reaches a node that syncs only the
 /// grantee where the target is dependent or the grant is a chain. Z granted read on T, A dependent on
-/// T, Z -> A; node 0 syncs T and Z and holds Z's delete key, node 1 syncs Z only. Node 0 revokes
+/// T, Z -> A; node 0 syncs T and Z and holds Z's delete key, node 1 syncs Z only. Node 0 removes
 /// Z's read on T: by its view A left Z's sync unit and the role commit, on T, is carried under Z by
 /// nothing, so node 1 never gets it, keeps A, logs A under Z again each time node 0 deletes it,
-/// for good. Carrying a role commit under the sync ID of the actor it names (`certify_revokes`)
+/// for good. Carrying a role commit under the sync ID of the actor it names (`certify_removals`)
 /// settles it. An independent target granted directly settles either way: node 1 syncs Y itself while
-/// it holds Y, and gets the revocation there.
+/// it holds Y, and gets the removal there.
 #[test]
-fn p2_revocation_reaches_grantee_only_node() {
+fn p2_removal_reaches_grantee_only_node() {
     let read = Some(Role::Read);
-    // (kinds, setup by node 0, the revocation, node 0's subs, node 1's subs, sync ID node 0
+    // (kinds, setup by node 0, the removal, node 0's subs, node 1's subs, sync ID node 0
     // deletes under, the thing node 1 must drop)
     type Case = (Vec<Kind>, Vec<Commit>, Commit, Set, Set, T, T);
     let cases: [(&str, Case); 3] = [
@@ -285,7 +285,7 @@ fn p2_revocation_reaches_grantee_only_node() {
         // X=0, Y=1 independent, B=2 dependent on Y; X read on Y; X -> Y -> B.
         ("direct", (vec![K, K, p(1)], vec![role(1, 0, read), add(0, 1), add(1, 2)], role(1, 0, None), set(&[0, 1]), set(&[0]), 0, 1)),
     ];
-    for (name, (kinds, setup, revoke, s0, s1, del, gone)) in cases {
+    for (name, (kinds, setup, removal, s0, s1, del, gone)) in cases {
         for fix in [false, true] {
             let mut s = Sync::new(world(&kinds, &[]), vec![s0.clone(), s1.clone()], fix);
             s.delete_key[0].insert(del);
@@ -294,7 +294,7 @@ fn p2_revocation_reaches_grantee_only_node() {
             }
             assert!(s.settle(5).is_some());
             assert!(s.carried(1, del).contains(&gone), "{name}: node 1 holds it under the grantee");
-            s.write(0, revoke.clone());
+            s.write(0, removal.clone());
             let settled = s.settle(20);
             let reaches = fix || name == "direct";
             assert_eq!(settled.is_some(), reaches, "{name} fix={fix}");
@@ -308,15 +308,15 @@ fn p2_revocation_reaches_grantee_only_node() {
 
 /// P2 and (d) by sync, random: independent 0, 1, 2 and dependent 3..7, three nodes syncing what they read,
 /// strong adds and removes, exchanges and store visits in any order, delete keys anywhere. Five
-/// modes: grants and revocations racing the rest, with role commits carried under the actor they
-/// name (`certify_revokes`) or by the plan's words, each with and without a fourth node reading
+/// modes: grants and removals racing the rest, with role commits carried under the actor they
+/// name (`certify_removals`) or by the plan's words, each with and without a fourth node reading
 /// every sync ID; and fixed grants with no such node.
-/// - With `certify_revokes` every run settles (no two nodes undo each other), and with the fourth
+/// - With `certify_removals` every run settles (no two nodes undo each other), and with the fourth
 ///   node every node agrees with every sync ID it syncs.
 /// - Fixed grants: every run settles, and every split traces to a dependent thing's edit missing at a
 ///   node (the plan's limit; an edit of an independent thing reaches each holder, as each syncs it).
-/// - By the plan's words some runs never settle or end with a node keeping what a revocation
-///   took out (counted; the minimal case is `p2_revocation_reaches_grantee_only_node`).
+/// - By the plan's words some runs never settle or end with a node keeping what a removal
+///   took out (counted; the minimal case is `p2_removal_reaches_grantee_only_node`).
 #[test]
 fn p2_sync_settles_random() {
     let mut r = Rng::new(0);
@@ -387,7 +387,7 @@ fn p2_sync_settles_random() {
         }
     }
     assert!(split > 0, "the split is reached");
-    eprintln!("p2: {split} of {} runs with fixed grants split; {stuck} of {} runs by the plan's words never settle or keep a revoked thing", runs / 5, 2 * runs / 5);
+    eprintln!("p2: {split} of {} runs with fixed grants split; {stuck} of {} runs by the plan's words never settle or keep a removed thing", runs / 5, 2 * runs / 5);
 }
 
 /// P3, the plan's worked case: Alice makes X and Y (both independent), X has a strong to Y; Bob has
@@ -441,8 +441,8 @@ fn p3_nested_sharing() {
 
 /// (b) Removing the strong X -> Y, or Z -> A for a dependent A in two sync units, takes the thing out of
 /// the sync unit for every reader alike: each drops it once the removal reaches it, the delete-key
-/// holder deletes its entries, and nothing logs them again. (Revoking the grant: see
-/// `p2_revocation_reaches_grantee_only_node`.)
+/// holder deletes its entries, and nothing logs them again. (Removing the grant: see
+/// `p2_removal_reaches_grantee_only_node`.)
 #[test]
 fn p3_unlinking_takes_it_out_for_every_reader() {
     let read = Some(Role::Read);

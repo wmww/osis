@@ -272,7 +272,7 @@ Chat's use of realms is not designed: each answer is what today's core would giv
 33. The grant's `reads` (`GrantOpts::reads`: `Kept`, `FromNow` or `All`; notes/history-less-grant.md). Segments, a chain of chats, are rejected (notes/chat.md Left out).
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the purge author is a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): a valid commit's purge author is its sender.
-40. 2.7 MB of key boxes, plus the frontier: about 34 B per message the member ever sent (3.4 MB at 10^5; past the list bound the rest go in the remover's addenda, notes/revocation.md Frontier encoding). Past about 2x10^5 messages from the member, no.
+40. 2.7 MB of key boxes, plus the frontier: about 34 B per message the member ever sent (3.4 MB at 10^5; past the list bound the rest go in the remover's addenda, notes/removal.md Frontier encoding). Past about 2x10^5 messages from the member, no.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each channel re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs each channel's step (in its re-key) registered at each node keeping it unread, which any reader holding the path does (spec/sync-ids.md §6); until then the removed member reads ciphertext and can log entries.
 42. At 1000: 2.7 MB plus about 11 KB per channel, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then channels; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each sync ID is stepped.

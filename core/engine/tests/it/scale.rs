@@ -778,8 +778,8 @@ fn late_delta_deaths_are_flat_spec_crdt_4_8() {
 }
 
 /// n one-element commits by the mint admin (0) and one add by writer B (1); admin C (2), who
-/// never saw it, revokes B: (the revoke arriving at 0, flipping the add invalid; B's add written
-/// after the revoke arriving invalid). No peer writes addenda (`Engine::write_addenda`): 0's would keep B's add.
+/// never saw it, removes B: (the removal arriving at 0, flipping the add invalid; B's add written
+/// after the removal arriving invalid). No peer writes addenda (`Engine::write_addenda`): 0's would keep B's add.
 fn validity_flip(n: usize) -> [Work; 2] {
     use crate::common::TAGS;
     let (mut lp, t) = shared_thing(3, &[Role::Write, Role::Admin]);
@@ -873,15 +873,15 @@ fn snapshot_first(n: usize) -> Work {
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6 (function of the held set; exactly the writes of invalid deltas are removed); spec/requirements.md, Scale: among n and 10n held
-// commits, a revoke flipping one add invalid rebuilds the aspect from its held bodies (every
+// commits, a removal flipping one add invalid rebuilds the aspect from its held bodies (every
 // change but a valid join is a rebuild, one path: a rare event may cost O(the aspect's bodies)),
 // its other counted work linear at most; an invalid add arriving takes nothing and reads no held
 // body.
 #[test]
 fn validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2() {
     let (a, b) = (validity_flip(12), validity_flip(120));
-    all_linear("a revoke flipping an add", &a[0], &b[0]);
-    flat("a revoke flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
+    all_linear("a removal flipping an add", &a[0], &b[0]);
+    flat("a removal flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
     all_flat("an invalid add arriving", &a[1], &b[1]);
 }
 

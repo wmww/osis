@@ -165,7 +165,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     w.partition(0, 1);
-    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[RemoveHolder(0, 0, Holder::Node(1)), Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
     for i in 1..3 {
         let sources: Vec<_> = w.node(i).node.status_of(&s).map(|x| x.sources.into_keys().collect()).unwrap_or_default();
@@ -193,7 +193,7 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     assert!(!w.store(1).entries(&s).unwrap().is_empty(), "node 1 keeps S");
     w.partition(0, 1);
-    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[RemoveHolder(0, 0, Holder::Node(1)), Run], String::new());
     w.rejoin(1, 2);
     let _ = crate::harness::play(&mut w, &[Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
@@ -212,7 +212,7 @@ fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let _ = crate::harness::play(&mut w, &[Lower(0, 0, Holder::Node(1), Gives::Syncs), Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[Lower(0, 0, Holder::Node(1), Gives::Syncs), RemoveHolder(0, 0, Holder::Node(1)), Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
 
@@ -456,7 +456,7 @@ fn a_removed_sync_holder_gets_nothing_past_its_removal_spec_sync_opens_4() {
     let (mut w, t, s) = three(Gives::Reads, 2);
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     let kept = w.engine(1).kept_sync_secrets(&s).len();
-    let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    let _ = crate::harness::play(&mut w, &[RemoveHolder(0, 0, Holder::Node(1)), Run], String::new());
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Str("after".into())).unwrap();

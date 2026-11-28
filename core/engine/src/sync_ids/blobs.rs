@@ -639,7 +639,7 @@ impl Engine {
     /// (spec/sync-judgement.md §1: a sync ID carries the parts its thing's independent may read,
     /// and certificate copies of role-class parts on any thing): content (`is_content`) on a thing
     /// under an independent thing that `g`'s independent may not read now, left by a
-    /// revocation since the per-sync-ID copy was logged (spec/permissions.md §3). With any,
+    /// removal since the per-sync-ID copy was logged (spec/permissions.md §3). With any,
     /// `open_entry` takes none of the copy (`Opened::NotOpen`): those parts come from a body under
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.

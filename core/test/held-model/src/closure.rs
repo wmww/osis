@@ -156,7 +156,7 @@ pub enum Op {
     Add(T),
     /// Removes these adds (on the same source).
     Remove(BTreeSet<C>),
-    /// Sets the role record entry of the actor named here, on the commit's thing (`None`: revoked).
+    /// Sets the role record entry of the actor named here, on the commit's thing (`None`: removed).
     Role(T, Option<Role>),
 }
 
@@ -224,18 +224,18 @@ pub fn unit_seen(w: &World, t: T, reads: &Set, e: &Edges) -> Set {
 pub struct Carry {
     pub unit: Set,
     pub keys: Set,
-    pub certify_revokes: bool,
+    pub certify_removals: bool,
 }
 
 impl Carry {
     /// Whether commit `c` goes under the sync ID: a commit on a thing of the sync unit; a role commit
     /// on a thing whose keys the sync ID holds (a certificate of its reach); with
-    /// `certify_revokes`, also a role commit naming an actor whose keys it holds (itself included),
-    /// so a revocation travels where the grant took the thing.
+    /// `certify_removals`, also a role commit naming an actor whose keys it holds (itself included),
+    /// so a removal travels where the grant took the thing.
     pub fn carries(&self, c: &Commit) -> bool {
         match c.op {
             Op::Role(g, _) => {
-                self.unit.contains(&c.from) || self.keys.contains(&c.from) || self.certify_revokes && self.keys.contains(&g)
+                self.unit.contains(&c.from) || self.keys.contains(&c.from) || self.certify_removals && self.keys.contains(&g)
             }
             _ => self.unit.contains(&c.from),
         }
@@ -257,7 +257,7 @@ pub struct Sync {
     pub store: BTreeMap<T, BTreeSet<C>>,
     /// Per node: the sync IDs whose delete key it holds.
     pub delete_key: Vec<Set>,
-    pub certify_revokes: bool,
+    pub certify_removals: bool,
     /// What exchanges and store visits changed: commits a node holds and entries a store holds,
     /// counted as the difference between before and after each (fetching an entry and dropping
     /// it again in one visit changes nothing).
@@ -265,9 +265,9 @@ pub struct Sync {
 }
 
 impl Sync {
-    pub fn new(world: World, subs: Vec<Set>, certify_revokes: bool) -> Sync {
+    pub fn new(world: World, subs: Vec<Set>, certify_removals: bool) -> Sync {
         let n = subs.len();
-        Sync { world, commits: vec![], subs, has: vec![BTreeSet::new(); n], store: BTreeMap::new(), delete_key: vec![Set::new(); n], certify_revokes, churn: 0 }
+        Sync { world, commits: vec![], subs, has: vec![BTreeSet::new(); n], store: BTreeMap::new(), delete_key: vec![Set::new(); n], certify_removals, churn: 0 }
     }
     pub fn view(&self, n: usize) -> (World, Edges) {
         (self.world.with_roles(&self.commits, &self.has[n]), edges(&self.commits, &self.has[n]))
@@ -282,7 +282,7 @@ impl Sync {
     }
     pub fn carry(&self, n: usize, s: T) -> Carry {
         let (w, e) = self.view(n);
-        Carry { unit: unit(&w, s, &e), keys: w.keys_of(s), certify_revokes: self.certify_revokes }
+        Carry { unit: unit(&w, s, &e), keys: w.keys_of(s), certify_removals: self.certify_removals }
     }
     /// What `n` holds of what `s` carries.
     pub fn under(&self, n: usize, s: T) -> BTreeSet<C> {
@@ -380,7 +380,7 @@ impl Sync {
                 let lacks = mine
                     .iter()
                     .flat_map(|&s| {
-                        let cr = Carry { unit: unit(&w, s, &e), keys: w.keys_of(s), certify_revokes: self.certify_revokes };
+                        let cr = Carry { unit: unit(&w, s, &e), keys: w.keys_of(s), certify_removals: self.certify_removals };
                         all.iter().copied().filter(move |&c| cr.carries(&self.commits[c]))
                     })
                     .filter(|c| !self.has[n].contains(c))

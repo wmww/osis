@@ -1612,7 +1612,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         return Err(Error::BadInput("a frontier on a commit that audits nothing"));
     }
     // a removal of another's grant with no frontier is a finalize (spec/permissions.md §2): of
-    // a grant not past its `until` it would apply nothing, so a revoke written so would cut off
+    // a grant not past its `until` it would apply nothing, so a removal written so would cut off
     // nobody. Any other explicit write that audits carries one: without, every write of the
     // holder's it puts in question drops, received or not
     if h.frontier.is_none() {

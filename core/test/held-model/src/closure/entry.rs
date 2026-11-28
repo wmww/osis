@@ -703,7 +703,7 @@ pub enum Step {
     Weak(T, T),
     Unref(T, T),
     Grant(T, T, Role),
-    Revoke(T, T),
+    Remove(T, T),
     Signal(Signal),
     Expire(Signal),
 }
@@ -787,7 +787,7 @@ pub fn step(net: &Net, r: &mut Rng) -> Step {
             },
             4 => Step::Grant(r.pick(&ind), r.pick(&ind), r.pick(&[Role::Sync, Role::Read, Role::Write])),
             5 => match net.w.grants.keys().nth(r.below(net.w.grants.len() as u64) as usize) {
-                Some(&(h, x)) if x != 0 => Step::Revoke(h, x),
+                Some(&(h, x)) if x != 0 => Step::Remove(h, x),
                 _ => continue,
             },
             6 | 7 => {
@@ -838,7 +838,7 @@ impl Net {
                     }
                 }
             }
-            Step::Revoke(h, x) => {
+            Step::Remove(h, x) => {
                 self.w.grants.remove(&(h, x));
                 self.w.keyless.remove(&(h, x));
             }

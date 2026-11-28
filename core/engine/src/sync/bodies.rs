@@ -1228,7 +1228,7 @@ impl Engine {
         };
         let id = opened.commit.id();
         // spec/permissions.md §3 (Lost access): a copy carrying content of a thing the independent of S's thing
-        // may not read now (left by a revocation since it was logged) gives nothing: none of it is
+        // may not read now (left by a removal since it was logged) gives nothing: none of it is
         // taken (its parts come from a body under their own thing's sync ID)
         if opened.copy && !self.copy_stale(&t, &opened.commit).is_empty() {
             return Ok(Opened::NotOpen);

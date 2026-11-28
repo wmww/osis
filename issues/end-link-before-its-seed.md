@@ -1,5 +1,5 @@
 # end_link says done for a link whose seed has not reached this node
-> Summary: `Osis::end_link` returns Ok for an ended link (its seed thing went with its end), judged by K's record alone; a node of the sharer that holds K's record (seen through K's grant on the target) before the seed thing (another commit, under D) takes a still-working link for ended and returns Ok without revoking it.
+> Summary: `Osis::end_link` returns Ok for an ended link (its seed thing went with its end), judged by K's record alone; a node of the sharer that holds K's record (seen through K's grant on the target) before the seed thing (another commit, under D) takes a still-working link for ended and returns Ok without removing it.
 > Priority: low
 > Tags: osis, security
 

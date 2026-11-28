@@ -4521,7 +4521,7 @@ fn expired_late_part_reads_alike_spec_crdt_4_7() {
 
 // A snapshot carries another's writes nested in an expiring put's entry in the
 // entry's key-erased record (spec/crdt.md §4.7), their own delta keyed. When the snapshot turns invalid (its
-// author revoked) its copies go though their own delta is held, so the
+// author removed) its copies go though their own delta is held, so the
 // state is the keyed record alone, as when the snapshot was invalid on arrival.
 #[test]
 fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {

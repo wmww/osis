@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Validity through perm at the engine level, with hand-fed role commits: the Bob
-//! revocation scenario and the Carol variant (notes/revocation.md), re-grant,
+//! removal scenario and the Carol variant (notes/removal.md), re-grant,
 //! overlapping counters.
 
 use crate::common;
@@ -17,7 +17,7 @@ const DAY: u64 = 86_400_000;
 
 
 
-fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
+fn remove(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
     let scope = of(holder, t);
     let f = frontier_now(lp, admin, &scope);
     set_grant(&mut lp.peers[admin].engine, t, holder, None, Some(f.clone()));
@@ -44,18 +44,18 @@ fn setup_built() -> (LocalPeer, Tid, Tid, Tid) {
     (lp, d, b, c)
 }
 
-// notes/revocation.md; spec/permissions.md §5.2: Bob's edit X made offline before
-// the revoke and Y after it are both invalid wherever the revoke is held; his edit Alice had
+// notes/removal.md; spec/permissions.md §5.2: Bob's edit X made offline before
+// the removal and Y after it are both invalid wherever the removal is held; his edit Alice had
 // received stays (the frontier covers it); Bob's own node un-merges both.
 #[test]
-fn bob_revocation_spec_perm_5_2() {
+fn bob_removal_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "mon");
     sync(&mut lp, 1, 0);
     lp.advance(DAY);
     add_tag(&mut lp, 1, d, "x"); // Wed, offline
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, b); // Thu, without having seen X
+    remove(&mut lp, 0, d, b); // Thu, without having seen X
     lp.advance(DAY);
     add_tag(&mut lp, 1, d, "y"); // Fri
     assert!(tags(&mut lp, 1, d).contains("y"));
@@ -80,8 +80,8 @@ fn bob_revocation_spec_perm_5_2() {
     }
 }
 
-// notes/revocation.md, The reference scenario (Carol variant): Carol, a writer offline with Bob, applied X
-// before the revoke; once she holds the revoke she vouches for X (spec/permissions.md §5.2,
+// notes/removal.md, The reference scenario (Carol variant): Carol, a writer offline with Bob, applied X
+// before the removal; once she holds the removal she vouches for X (spec/permissions.md §5.2,
 // Addenda), so X stays everywhere, her own edit too.
 #[test]
 fn carol_variant_spec_perm_5_2() {
@@ -93,11 +93,11 @@ fn carol_variant_spec_perm_5_2() {
     sync(&mut lp, 1, 2);
     assert!(tags(&mut lp, 2, d).contains("x"));
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     sync(&mut lp, 0, 2);
     assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["carol".to_string(), "x".to_string()]));
     lp.sync_all().unwrap();
-    // Bob, revoked, holds d no more
+    // Bob, removed, holds d no more
     assert!(!lp.peers[1].engine.closure_holds(&d));
     for i in [0, 2] {
         assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["carol".to_string(), "x".to_string()]), "node {i}");
@@ -118,7 +118,7 @@ fn carol_variant_spec_perm_5_2() {
     assert_eq!(tags(&mut lp2, 0, d), BTreeSet::from(["carol".to_string(), "x".to_string()]));
 }
 
-// spec/permissions.md §5.1: a register value a revoked writer overwrote comes back on
+// spec/permissions.md §5.1: a register value a removed writer overwrote comes back on
 // un-merge (re-join of the held bodies, spec/crdt.md §4.6).
 #[test]
 fn unmerge_restores_register_spec_crdt_4_6() {
@@ -134,7 +134,7 @@ fn unmerge_restores_register_spec_crdt_4_6() {
     sync(&mut lp, 1, 2);
     assert_eq!(lp.peers[2].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob")));
     lp.advance(1000);
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     sync(&mut lp, 0, 2);
     assert_eq!(lp.peers[2].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("alice")));
 }
@@ -322,7 +322,7 @@ fn of(b: Tid, d: Tid) -> DemotionScope {
 // (one dot, one write).
 // spec/permissions.md §5.2 (dot reuse)
 #[test]
-fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
+fn removed_writer_forging_into_covered_counters_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     let obs = reader(&mut lp, 0, d, 0x5e1);
     let reg = ak("t:reg.0");
@@ -416,7 +416,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
 // its body, dropped it or compacted it): a backdated frontier lists Bob's commits Alice received by
 // its cutoff, not those received after. Bob writes "1" before the cut and "2" after, then
 // snapshots both; Alice receives the snapshot after the cut too. Only "1" is listed (a frontier
-// now lists both writes), so after the backdated revoke the snapshot and "2" are invalid and
+// now lists both writes), so after the backdated removal the snapshot and "2" are invalid and
 // "1", covered by the snapshot, stays.
 #[test]
 fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
@@ -493,7 +493,7 @@ fn role_content_rules_spec_commits_2() {
     m.frontier(osis_perm::Frontier::default());
     assert_eq!(lp.peers[0].commit(m).unwrap_err().class(), osis_base::ErrorClass::BadInput);
     // validity survives a restart (perm inputs reload from the store)
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
     lp.peers[1].restart(470).unwrap();
@@ -788,13 +788,13 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2 (compaction snapshot; vouches for every write it carries):
-// Alice compacts Bob's edits, then revokes him with a frontier that covers "mon", not "x". The
+// Alice compacts Bob's edits, then removes him with a frontier that covers "mon", not "x". The
 // snapshot vouches for "x": Alice (holding Bob's commit, invalid now) and Dave (holding only
-// the snapshot) keep both, whether the revoke arrives after the snapshot or before it, across a
+// the snapshot) keep both, whether the removal arrives after the snapshot or before it, across a
 // restart and a re-grant.
 #[test]
 fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
-    for revoke_first in [false, true] {
+    for removal_first in [false, true] {
         let (mut lp, d, b, _) = setup();
         push_reader(&mut lp, d, 4700);
         lp.sync_all().unwrap();
@@ -813,14 +813,14 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, 0, d), both, "Alice: the snapshot vouches for x");
         // Dave: everything of Alice's but Bob's own commits
         let pks: Vec<_> = packages_for(&mut lp, 0, 3).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.signer != b)).collect();
-        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if revoke_first { p.id == snap } else { p.id == rv });
+        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if removal_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
         }
         lp.peers[3].reexamine().unwrap();
         assert!(lp.peers[3].engine.header(&snap).is_some(), "the snapshot applied");
         assert!(lp.peers[3].engine.header(&mon).is_none(), "Bob's own commit is not held");
-        assert_eq!(tags(&mut lp, 3, d), both, "revoke first: {revoke_first}");
+        assert_eq!(tags(&mut lp, 3, d), both, "removal first: {removal_first}");
         lp.peers[3].restart(5).unwrap();
         assert_eq!(tags(&mut lp, 3, d), both, "after a restart");
         lp.advance(DAY);
@@ -989,12 +989,12 @@ fn a1() -> Value {
 }
 
 /// Bob (`b`, peer 1) puts entry "k" in `d`'s `x:m.0`; once everyone holds it, a day later Alice
-/// revokes him, and a day passes.
-fn bob_writes_k_then_revoked(lp: &mut LocalPeer, d: Tid, b: Tid) {
+/// removes him, and a day passes.
+fn bob_writes_k_then_removed(lp: &mut LocalPeer, d: Tid, b: Tid) {
     put_at(lp, 1, d, &["k"], a1());
     lp.sync_all().unwrap();
     lp.advance(DAY);
-    revoke(lp, 0, d, b);
+    remove(lp, 0, d, b);
     lp.advance(DAY);
 }
 
@@ -1005,7 +1005,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-// spec/permissions.md §5.2 (a valid s vouches for every write it carries), Tess's decision, notes/revocation.md, Snapshots vouch: Bob, removed, creates entries
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries), Tess's decision, notes/removal.md, Snapshots vouch: Bob, removed, creates entries
 // "early" and "late" offline; Carol, not yet aware, writes inside "late" and compacts. Her
 // snapshot vouches for Bob's entries: Dave, holding only Alice's and Carol's commits, and Alice,
 // who also holds Bob's commit (invalid), both keep them with Carol's write. spec/crdt.md §4.6
@@ -1023,7 +1023,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     // Dave reads d
     push_reader(&mut lp, d, 6100);
     lp.sync_all().unwrap();
-    bob_writes_k_then_revoked(&mut lp, d, b);
+    bob_writes_k_then_removed(&mut lp, d, b);
     // one commit, two entries: "late" is its second creation (its dot is no stamp of the commit)
     let mut m = Mutation::new();
     for k in ["early", "late"] {
@@ -1073,7 +1073,7 @@ fn differing_key_copy_shows_only_its_key_spec_crdt_4_6() {
     let fresh = reader(&mut lp, 0, d, 6500);
     lp.peers.push(fresh);
     lp.sync_all().unwrap();
-    bob_writes_k_then_revoked(&mut lp, d, b);
+    bob_writes_k_then_removed(&mut lp, d, b);
     put_at(&mut lp, 1, d, &["late"], a1());
     let late = *lp.peers[1].engine.commit_ids().iter().max_by_key(|id| lp.peers[1].engine.header(id).unwrap().ts).unwrap();
     let h = lp.peers[1].engine.header(&late).unwrap();
@@ -1338,7 +1338,7 @@ fn holder_churn_resets_are_flat_spec_perm_2() {
 // spec/crdt.md §4.6, spec/permissions.md §5.2, spec/requirements.md Decentralization: paged
 // states (a map, a set, a map in a struct field, a text, a list) where B's writes land on random
 // pages, some overwriting and deleting A's, and A writes under B's creations (a value in B's
-// entry, chars after B's); C, who never saw B's writes, revokes B. A's un-merge (a rebuild per
+// entry, chars after B's); C, who never saw B's writes, removes B. A's un-merge (a rebuild per
 // flipped aspect) equals a fresh node given everything with B's writes last, before and after
 // a restart, reads by
 // range included; nothing B wrote reads. A property, not a default test (about 7 s: a paged text's join per
@@ -1400,7 +1400,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
             op(&mut lp, 0, &TEXT, vec![], ins(at + 1, "a"));
         }
         op(&mut lp, 0, &BIG, vec![PathSeg::Key(key(r(N), "a"))], Op::Set(s("A")));
-        // C revokes B unseen
+        // C removes B unseen
         let scope = of(b, d);
         let f = frontier_now(&mut lp, 2, &scope);
         let rv = set_grant(&mut lp.peers[2].engine, d, b, None, Some(f.clone()));
@@ -1410,7 +1410,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         let costs = osis_base::costs::take();
         let n = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
         // the five aspects B wrote; A writes no addendum (spec/permissions.md §5.2 Addenda): it
-        // received B's writes in the millisecond it received the revocation, outside its window
+        // received B's writes in the millisecond it received the removal, outside its window
         assert_eq!(n("rejudge: rebuild"), 5, "one rebuild per flipped aspect");        // the fresh node, a reader holding d (a node not holding it keeps none of its content):
         // B's writes last
         let mut fresh = lp.fresh_reader(0, d, 8001);
@@ -1479,7 +1479,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     reader(&mut lp, 9100);
     reader(&mut lp, 9101);
     lp.sync_all().unwrap();
-    bob_writes_k_then_revoked(&mut lp, d, b);
+    bob_writes_k_then_removed(&mut lp, d, b);
     let mut m = Mutation::new();
     m.op(d, &ak("x:m.0"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("late"))], op: osis_crdt::Op::Set(a1()) }).unwrap();
     m.op(d, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("B"), s("B")] } }).unwrap();
@@ -2135,11 +2135,11 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a valid s vouches for every write it carries): revocation is exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch", notes/revocation.md, spec/requirements.md Permissions: Bob's "mon" reaches Alice;
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries): removal is exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch", notes/removal.md, spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,
 // "y" goes, alike at Alice, at Carol, at a new node holding everything but Bob's own commits,
-// and at nodes holding Bob's commits too, in every order of the snapshot, the revoke and "x"
+// and at nodes holding Bob's commits too, in every order of the snapshot, the removal and "x"
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
@@ -2158,9 +2158,9 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let y = id_of(&mut lp, 1);
     sync(&mut lp, 1, 2);
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts).unwrap();
-    // Carol received "y" before the revoke and vouches for it (spec/permissions.md §5.2, Addenda)
+    // Carol received "y" before the removal and vouches for it (spec/permissions.md §5.2, Addenda)
     let want = BTreeSet::from(["mon".to_string(), "x".to_string(), "y".to_string()]);
     // Alice and Carol exchange everything; "y", come to Alice before Carol's addendum, went while
     // invalid (spec/permissions.md §6) and is fetched again once vouched for
@@ -2224,7 +2224,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
         let s2 = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
         lp.advance(DAY);
         let latest = |lp: &mut LocalPeer| *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
-        revoke(&mut lp, 0, d, c);
+        remove(&mut lp, 0, d, c);
         let mut late = vec![latest(&mut lp)];
         if bob_held {
             lp.advance(1_000);
@@ -2298,7 +2298,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     lp.advance(1_000);
     let honest = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, c);
+    remove(&mut lp, 0, d, c);
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
     let pks: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| p.id != bob).collect();
     let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
@@ -2336,15 +2336,15 @@ fn tag_writes(lp: &mut LocalPeer, d: Tid) -> BTreeSet<osis_base::CommitId> {
     e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.tid == d && a.ak == tags_ak))).collect()
 }
 
-/// Bob's (1) removal of "ash" from D's tags, then Alice's (0) revoke of each of `revoked` (not
+/// Bob's (1) removal of "ash" from D's tags, then Alice's (0) role removal of each of `removed` (not
 /// having seen it): the removal's package for `obs`, and what else `obs` is sent past `known`.
-fn removal_then_revokes(lp: &mut LocalPeer, obs: &mut osis_engine::local_peer::Peer, d: Tid, revoked: &[Tid], known: &BTreeSet<osis_base::CommitId>) -> (osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>) {
+fn removal_then_role_removals(lp: &mut LocalPeer, obs: &mut osis_engine::local_peer::Peer, d: Tid, removed: &[Tid], known: &BTreeSet<osis_base::CommitId>) -> (osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>) {
     lp.advance(1_000);
     let rm = put_op(lp, 1, d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) });
     let rm_pk = package_for_peer(lp, 1, obs, rm);
     lp.advance(1_000);
-    for h in revoked {
-        revoke(lp, 0, d, *h);
+    for h in removed {
+        remove(lp, 0, d, *h);
     }
     let rv = packages_for_peer(lp, 0, obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
     (rm_pk, rv)
@@ -2370,9 +2370,9 @@ fn drop_covered(lp: &mut LocalPeer, i: usize, snap: &osis_base::CommitId, xs: &B
     }
 }
 
-/// Peer `i` takes Bob's removal `rm` and the revokes `rv`: the removal first (applied while
+/// Peer `i` takes Bob's removal `rm` and the role removals `rv`: the removal first (applied while
 /// valid, D's tags then `left`) or after `rv` and `between`; then reexamines.
-fn take_removal_and_revokes(lp: &mut LocalPeer, i: usize, d: Tid, removal_first: bool, (rm, rv): &(osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>), left: &[&str], between: impl FnOnce(&mut LocalPeer)) {
+fn take_removal_and_role_removals(lp: &mut LocalPeer, i: usize, d: Tid, removal_first: bool, (rm, rv): &(osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>), left: &[&str], between: impl FnOnce(&mut LocalPeer)) {
     if removal_first {
         lp.deliver(i, rm).unwrap();
         assert_eq!(tags(lp, i, d), left.iter().map(|x| x.to_string()).collect(), "the removal applied while valid");
@@ -2388,11 +2388,11 @@ fn take_removal_and_revokes(lp: &mut LocalPeer, i: usize, d: Tid, removal_first:
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: Alice's element, its delta dropped as covered by
-// her snapshot S, is removed by Bob, whose revoke then voids the removal. A node that applied
-// the removal while valid and one that got the revoke first both read the element: the rebuild
+// her snapshot S, is removed by Bob, whose role removal then voids his removal. A node that applied
+// the removal while valid and one that got the role removal first both read the element: the rebuild
 // takes it again from S's copy, the dropped delta giving nothing (sim work_sets).
 #[test]
-fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
+fn covered_drop_restored_after_remover_removed_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
     let mut obs = reader(&mut lp, 0, d, 0x5f8b);
     add_tag(&mut lp, 0, d, "ash");
@@ -2402,12 +2402,12 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     let snap = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.sync_all().unwrap();
     let before = packages_for_peer(&mut lp, 0, &mut obs);
-    let late = removal_then_revokes(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).collect());
+    let late = removal_then_role_removals(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).collect());
     let mut got = Vec::new();
     for removal_first in [true, false] {
         let i = push_holding(&mut lp, &mut obs, &before);
         drop_covered(&mut lp, i, &snap, &added, d);
-        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &[], |_| {});
+        take_removal_and_role_removals(&mut lp, i, d, removal_first, &late, &[], |_| {});
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string()]), "removal applied, then voided");
@@ -2416,13 +2416,13 @@ fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: as above, but the snapshot covering Alice's
-// dropped delta is Carol's, and Alice revokes Carol (frontier not listing it) and Bob together.
-// A node that dropped the delta under Carol's cover has it missing again once the revokes
+// dropped delta is Carol's, and Alice removes Carol (frontier not listing it) and Bob together.
+// A node that dropped the delta under Carol's cover has it missing again once the role removals
 // arrive: without it, the element is gone whether Bob's removal applied valid before or arrived
-// voided; with the delta fetched again, it reads what a node that got the revokes first (and
+// voided; with the delta fetched again, it reads what a node that got the role removals first (and
 // held the delta throughout) reads.
 #[test]
-fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
+fn covered_drop_coverer_and_remover_removed_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
     let mut obs = reader(&mut lp, 0, d, 0x5fc1);
     add_tag(&mut lp, 0, d, "ash");
@@ -2434,7 +2434,7 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
     let snap = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     let snap_pk = package_for_peer(&mut lp, 2, &mut obs, snap);
     // without having seen the removal or Carol's snapshot
-    let late = removal_then_revokes(&mut lp, &mut obs, d, &[c, b], &before.iter().map(|p| p.id).collect());
+    let late = removal_then_role_removals(&mut lp, &mut obs, d, &[c, b], &before.iter().map(|p| p.id).collect());
     let mut got = Vec::new();
     // dropped under Carol's cover: the removal applied valid, or arrived voided; held throughout
     for (drop, removal_first) in [(true, true), (true, false), (false, false)] {
@@ -2443,7 +2443,7 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
             lp.deliver(i, &snap_pk).unwrap();
             drop_covered(&mut lp, i, &snap, &added, d);
         }
-        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &[], |lp| {
+        take_removal_and_role_removals(&mut lp, i, d, removal_first, &late, &[], |lp| {
             if !drop {
                 lp.deliver(i, &snap_pk).unwrap();
             }
@@ -2464,16 +2464,16 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, i, d), t, "drop: {drop}, removal first: {removal_first}; restarted");
         got.push((t, lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
-    assert_eq!(got[2].0, BTreeSet::from(["ash".to_string()]), "revokes first");
-    assert_eq!(got[0], got[2], "cover drop and removal, then the revokes, the delta fetched again");
-    assert_eq!(got[1], got[2], "cover drop, the revokes, then the removal, the delta fetched again");
+    assert_eq!(got[2].0, BTreeSet::from(["ash".to_string()]), "role removals first");
+    assert_eq!(got[0], got[2], "cover drop and removal, then the role removals, the delta fetched again");
+    assert_eq!(got[1], got[2], "cover drop, the role removals, then the removal, the delta fetched again");
 }
 
-// spec/permissions.md §5.2, spec/commits.md §5: as `covered_drop_restored_after_remover_revoked`,
+// spec/permissions.md §5.2, spec/commits.md §5: as `covered_drop_restored_after_remover_removed`,
 // with the cover chained: Alice's delta dropped under her snapshot S1, S1 dropped under her S2.
 // S2's copy is the delta's write in the rebuild after Bob's removal turns invalid.
 #[test]
-fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
+fn chained_cover_drop_restored_after_remover_removed_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
     // a covering study, not a witness one: nobody vouches
     for p in &mut lp.peers {
@@ -2493,14 +2493,14 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     let all = packages_for_peer(&mut lp, 0, &mut obs);
     let s2_pk = all.iter().find(|p| p.id == s2).unwrap().clone();
     let before: Vec<_> = all.into_iter().filter(|p| p.id != s2).collect();
-    let late = removal_then_revokes(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).chain([s2]).collect());
+    let late = removal_then_role_removals(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).chain([s2]).collect());
     let mut got = Vec::new();
     for removal_first in [true, false] {
         let i = push_holding(&mut lp, &mut obs, &before);
         drop_covered(&mut lp, i, &s1, &added, d);
         lp.deliver(i, &s2_pk).unwrap();
         drop_covered(&mut lp, i, &s2, &BTreeSet::from([s1]), d);
-        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &["elm"], |_| {});
+        take_removal_and_role_removals(&mut lp, i, d, removal_first, &late, &["elm"], |_| {});
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string(), "elm".to_string()]), "removal applied, then voided");
@@ -2547,10 +2547,10 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     lp.advance(1_000);
     let s2 = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.advance(1_000);
-    revoke(&mut lp, 1, d, c);
+    remove(&mut lp, 1, d, c);
     let by_bob = latest_of(&mut lp, 1);
     lp.advance(1_000);
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     let by_alice = latest_of(&mut lp, 0);
     let mut all: BTreeMap<osis_base::CommitId, _> = BTreeMap::new();
     let mut order = Vec::new();
@@ -2632,7 +2632,7 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     add_tag(&mut lp, 2, d, "cy");
     let s2 = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, c);
+    remove(&mut lp, 0, d, c);
     let rv = latest_of(&mut lp, 0);
     sync(&mut lp, 0, 2);
     let pks: Vec<_> = packages_for_peer(&mut lp, 2, &mut obs).into_iter().filter(|p| !bob.contains(&p.id)).collect();
@@ -2877,7 +2877,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let sid = osis_commit::CommitBlob::decode(&forged).unwrap().id();
         assert!(f.commits.contains(&sid), "snap first {snap_first}");
         assert!(!f.commits.contains(&ghost), "snap first {snap_first}: a claim is no receipt");
-        revoke(&mut lp, 0, d, b);
+        remove(&mut lp, 0, d, b);
         let rv = latest_of(&mut lp, 0);
         lp.advance(DAY);
         let before: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().collect();
@@ -3179,7 +3179,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     let scope = of(b, d);
     let now = lp.peers[3].engine.now();
     assert!(lp.peers[3].engine.frontier(&scope, now).unwrap().commits.is_disjoint(&bob), "no held header of Bob's");
-    revoke(&mut lp, 3, d, b);
+    remove(&mut lp, 3, d, b);
     lp.advance(1000);
     sync(&mut lp, 3, 0);
     sync(&mut lp, 3, 2);
@@ -3205,7 +3205,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it),
-// notes/revocation.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
+// notes/removal.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
 // just before Alice removes Bob. The snapshot keeps only "two"; Alice lists both, so Bob's
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
 // keep-at-least window both are still listed.
@@ -3572,9 +3572,9 @@ fn kick_reads_bodies_down_to_its_winner() {
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6, §6.1: every read is a function of the valid
-// writes held. Bob, revoked unseen, inserts "X" into Alice's text "ab", into the text inside her
+// writes held. Bob, removed unseen, inserts "X" into Alice's text "ab", into the text inside her
 // list<text>, and as the only element of a list nobody else writes. Carol gets his commit after
-// the revoke's `ts`, before she holds the revoke, and inserts "y" after each X, "z" after the
+// the removal's `ts`, before she holds the removal, and inserts "y" after each X, "z" after the
 // first y. A node holding Bob's commit reads as a node that never got it (y and z at X's place,
 // at the end; the list absent), whether it arrived invalid or flipped (Carol's node).
 #[test]
@@ -3598,15 +3598,15 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     m.op(d, &LIST, PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![s("X")] } }).unwrap();
     let bob = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(DAY);
-    revoke(&mut lp, 0, d, b);
+    remove(&mut lp, 0, d, b);
     lp.advance(DAY);
-    // received after the revoke's `ts`: no addendum of Carol's vouches for it (spec/permissions.md §5.2)
+    // received after the removal's `ts`: no addendum of Carol's vouches for it (spec/permissions.md §5.2)
     sync(&mut lp, 1, 2);
     op(&mut lp, 2, &TEXT, vec![], 2, "y");
     op(&mut lp, 2, &TEXT, vec![], 3, "z");
     op(&mut lp, 2, &LISTTEXT, vec![PathSeg::Index(0)], 2, "y");
     let read = |lp: &mut LocalPeer, i: usize| ["t:text.0", "t:listtext.0", "t:list.0"].map(|a| lp.peers[i].engine.get(&d, &ak(a)).unwrap());
-    assert_eq!(read(&mut lp, 2), [Some(s("aXyzb")), Some(Value::List(vec![s("aXyb")])), Some(Value::List(vec![s("X")]))], "before the revoke");
+    assert_eq!(read(&mut lp, 2), [Some(s("aXyzb")), Some(Value::List(vec![s("aXyb")])), Some(Value::List(vec![s("X")]))], "before the removal");
     sync(&mut lp, 2, 0);
     sync(&mut lp, 1, 0);
     sync(&mut lp, 0, 2);

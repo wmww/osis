@@ -834,7 +834,7 @@ impl Osis {
     /// Whether `k` is the thing of a link to `target` this node may end, working or ended: its record
     /// names the target, and this node is an admin of it (by its mint admin, spec/permissions.md
     /// §7). Invariant (security): only an admin of K removes L or a joiner from it
-    /// (`finalize_link`, `revoke_joiner`; any other node's removal is judged invalid wherever it
+    /// (`finalize_link`, `remove_joiner`; any other node's removal is judged invalid wherever it
     /// lands): a reader of K's mint admin lists the link (`links`) and ends nothing.
     fn own_link(&self, k: Tid, target: Tid) -> bool {
         self.engine(|e| e.core.created(&k).and_then(|r| r.link_target()) == Some(target) && e.role_on(&k) == Some(Role::Admin))
@@ -864,7 +864,7 @@ impl Osis {
     /// need a new link to add anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         let l = self.link_key(k)?;
-        self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, l.as_ref(), &joiner, o.retain_copy)))?;
+        self.engine(|e| marked(e, o.leave_adminless, |e| e.remove_joiner(&k, l.as_ref(), &joiner, o.retain_copy)))?;
         Ok(())
     }
 }

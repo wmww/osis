@@ -2564,7 +2564,7 @@ impl Opens {
     /// record): `acks` follows, and `peers` is stamped for each S whose `changed_at` lies between
     /// the two positions (every S past the lower one, and each S it holds as a member, when what
     /// it names changed, an account's new key included: who may hold S is judged by it, a
-    /// revoked key not awaited). O(sync IDs stamped): what the record's next filter iterates.
+    /// removed key not awaited). O(sync IDs stamped): what the record's next filter iterates.
     fn acks_moved(&mut self, rid: RecordId, was: Option<(u64, Named)>) {
         let now = self.records.get(&rid).filter(|r| r.kept).map(|r| (r.acked_pos, r.named.clone()));
         if now == was {

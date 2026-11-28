@@ -200,7 +200,7 @@ fn told(w: &mut World) {
 // spec/sync-judgement.md §4 (a node logs the body again once): node 2's write purgeable by its author is at node
 // 1; node 0 lowers node 2 to read, which
 // moves S's head but not its sync key (a read epoch). With its level-2 key (its own purge
-// author's, never revoked) and the sync key it still holds, node 2 deletes the write at node 1
+// author's, never removed) and the sync key it still holds, node 2 deletes the write at node 1
 // with no purge: node 1 takes it. The holders log the body again once; node 2 deletes those too
 // and they stay deleted (a second delete stands until the head moves or a part falls), while every
 // reader still reads the write. A known weakness, pinned as today's behaviour

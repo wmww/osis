@@ -212,7 +212,7 @@ codec_struct! {
     pub struct HistoryKey { 0 role: Role, 1 epoch: Epoch }
 }
 codec_struct! {
-    /// Revoke frontier: the commit IDs the demoter received (spec/permissions.md §5.1).
+    /// Removal frontier: the commit IDs the demoter received (spec/permissions.md §5.1).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Frontier { 0 commits: BTreeSet<CommitId> }
 }

@@ -21,7 +21,7 @@ fn org(r: usize) -> (World, Vec<CommitId>, Vec<CommitId>) {
     });
     let mut w = w;
     for j in 0..r {
-        for (step, out) in [(Give(0, 0, Holder::Node(2 + j), Gives::Writes), &mut grants), (Revoke(0, 0, Holder::Node(2 + j)), &mut removals)] {
+        for (step, out) in [(Give(0, 0, Holder::Node(2 + j), Gives::Writes), &mut grants), (RemoveHolder(0, 0, Holder::Node(2 + j)), &mut removals)] {
             let before: BTreeSet<CommitId> = w.engine(0).commit_ids().into_iter().collect();
             let label = format!("{step:?}");
             let _ = play(&mut w, &[step], String::new());

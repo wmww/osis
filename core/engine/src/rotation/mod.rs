@@ -43,7 +43,7 @@ pub enum Walk {
     Encrypt,
     /// For logging role commits and certificates under sync IDs (spec/sync-judgement.md §1): through the
     /// holder actors this node may rotate only, so a node that may not rotate an actor still
-    /// logs the keysets and revokes that tell that actor's rotators (node-sync's pass).
+    /// logs the keysets and removals that tell that actor's rotators (node-sync's pass).
     Log,
 }
 
@@ -93,7 +93,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Resu
 /// departed party opens `e`. The box clause follows every box at an epoch whose secret this node
 /// holds (`Walk::Encrypt`: what a departed party opens does not depend on who may rotate), or for
 /// logging only those of actors it may rotate, stale boxes binding only those rotators
-/// (`Walk::Log`): a node that may not rotate logs its certificates (and revokes) under
+/// (`Walk::Log`): a node that may not rotate logs its certificates (and removals) under
 /// the actor's sync IDs meanwhile, the holder actors' new `keys.0` among them, which is how the
 /// rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's sync IDs, so it learns the actor's next keyset and re-seals

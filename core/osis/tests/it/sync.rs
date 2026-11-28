@@ -331,10 +331,10 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
 }
 
 // spec/permissions.md §7 (Finalized; the seed thing goes): an ended link is listed no more and
-// revoking it again changes nothing; its joiner keeps its role until set_role removes it,
+// removing it again changes nothing; its joiner keeps its role until set_role removes it,
 // through the link's thing.
 #[test]
-fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
+fn a_removed_links_joiner_stays_until_removed_spec_permissions_7() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let a = on(&net, 46, &c);

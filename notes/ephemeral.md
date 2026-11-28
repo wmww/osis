@@ -29,7 +29,7 @@ Ephemeral data has the same semantics as durable data, just held in memory, with
 
 **Holders.** A node holds the ephemeral state of the things it writes or receives: every node syncing a sync ID whose closure holds the thing (spec/sync-judgement.md §1; a thing no strong reaches syncs no more), and the nodes keeping its sync IDs unread, while they run. State is lost only when nobody keeps it; when a holder lets go is in Restarts and lost access.
 
-**Rights and validity.** Ephemeral writes need what the durable write would need; readers cannot write ephemeral data. Synced ephemeral commits are judged like compaction snapshots (spec/permissions.md §5.2: a part is valid iff its author could write the aspect at its `ts`, through the ordinary timeline), and un-merged like any commit on revocation. Parts on core aspects are invalid. A part on a thing whose record is not held waits for it.
+**Rights and validity.** Ephemeral writes need what the durable write would need; readers cannot write ephemeral data. Synced ephemeral commits are judged like compaction snapshots (spec/permissions.md §5.2: a part is valid iff its author could write the aspect at its `ts`, through the ordinary timeline), and un-merged like any commit on removal. Parts on core aspects are invalid. A part on a thing whose record is not held waits for it.
 
 **Reads and merge.** An aspect reads the join of its durable and its ephemeral state (spec/crdt.md §4.1); normally one side is empty (both: schemas that disagree; the join is defined). Own writes and every applied ephemeral commit join into the ephemeral state; `signal` aspects always read absent.
 

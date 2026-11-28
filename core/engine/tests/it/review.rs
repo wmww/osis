@@ -23,7 +23,7 @@ fn strip_parts(pk: &Package, keep: impl Fn(&str) -> bool, h: &osis_commit::Heade
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2: another writer's nested write into a map entry an
-// invalid delta created goes with it, whether it arrived before or after the revoke.
+// invalid delta created goes with it, whether it arrived before or after the removal.
 #[test]
 fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     let mut lp = net_off(3, 0);
@@ -33,7 +33,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     set_grant(&mut lp.peers[0].engine, t, c, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
-    // b creates key "ash" (never seen by node 0 before the revoke); c writes into it
+    // b creates key "ash" (never seen by node 0 before the removal); c writes into it
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("ash"))], op: Op::Set(item("b", 1)) }).unwrap();
     let bid = lp.peers[1].commit(m).unwrap().unwrap();
@@ -46,11 +46,11 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     set_grant(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
-    // node 0: c's write first, then the revoke is held, then b's commit
+    // node 0: c's write first, then the removal is held, then b's commit
     sync(&mut lp, 2, 0);
     let bpk = lp.peers[1].engine.package(&bid).unwrap().unwrap();
     lp.deliver(0, &bpk).unwrap();
-    // node 2: had b's and c's writes joined, then receives the revoke
+    // node 2: had b's and c's writes joined, then receives the removal
     sync(&mut lp, 0, 2);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 1, 0);

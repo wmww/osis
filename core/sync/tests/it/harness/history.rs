@@ -1,6 +1,6 @@
 //! The reference-graph differential (notes/test-properties.md): random
 //! histories of minting, strongs added and removed, grants to accounts and to things (so chains
-//! occur), lowering, revoking, rotating, pairing, removing a node and faults over a few nodes of
+//! occur), lowering, removing, rotating, pairing, removing a node and faults over a few nodes of
 //! fewer accounts; at quiet each node holds what held-model's first entry (`closure::entry`) says
 //! its node closure is, built from the history alone: it reads a thing exactly when the model
 //! reads it, then as the reference (a twin of a node of its account handed every commit
@@ -423,7 +423,7 @@ fn strong_in(m: &mut Mutation, from: Tid, to: Tid, on: bool) -> osis_engine::Res
 /// The node a history write is made by.
 fn writer(s: &Step) -> Option<usize> {
     match s {
-        Step::New(i) | Step::NewIn(i, _) | Step::Write(i, _) | Step::Grant(i, ..) | Step::Give(i, ..) | Step::Lower(i, ..) | Step::Remove(i, ..) | Step::Revoke(i, ..) | Step::Rotate(i, _) | Step::Strong(i, ..) | Step::Unstrong(i, ..) | Step::Pair(i) | Step::Unpair(i, _) | Step::Redeem(i, _) | Step::Card(i, _) | Step::Inbox(i, _) => Some(*i),
+        Step::New(i) | Step::NewIn(i, _) | Step::Write(i, _) | Step::Grant(i, ..) | Step::Give(i, ..) | Step::Lower(i, ..) | Step::Remove(i, ..) | Step::RemoveHolder(i, ..) | Step::Rotate(i, _) | Step::Strong(i, ..) | Step::Unstrong(i, ..) | Step::Pair(i) | Step::Unpair(i, _) | Step::Redeem(i, _) | Step::Card(i, _) | Step::Inbox(i, _) => Some(*i),
         _ => None,
     }
 }
@@ -470,7 +470,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Give(_, k, h, g) => give(w, i, *k, *h, *g),
         Step::Lower(_, k, h, g) => demote(w, i, *k, *h, Some(*g)),
         Step::Remove(_, k, j) => demote(w, i, *k, Holder::Node(*j), None),
-        Step::Revoke(_, k, h) => demote(w, i, *k, *h, None),
+        Step::RemoveHolder(_, k, h) => demote(w, i, *k, *h, None),
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, *k) else { return "skipped: no such thing".into() };
             match w.write(i, |e| e.make_independent(&t)) {
@@ -495,7 +495,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
         Step::Inbox(_, k) => inbox(w, i, *k),
         _ => return String::new(),
     };
-    if r.is_ok() && matches!(s, Step::Unstrong(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..)) {
+    if r.is_ok() && matches!(s, Step::Unstrong(..) | Step::Lower(..) | Step::Remove(..) | Step::RemoveHolder(..)) {
         freeze(w, i);
     }
     match r {
@@ -1644,7 +1644,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                     Step::Lower(ad[pick(ad.len())], k, h, g)
                 } else {
                     things[k].given.remove(&h);
-                    Step::Revoke(ad[pick(ad.len())], k, h)
+                    Step::RemoveHolder(ad[pick(ad.len())], k, h)
                 }
             }
             71..=73 if things[k].independent => {

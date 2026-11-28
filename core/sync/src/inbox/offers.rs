@@ -26,7 +26,7 @@
 //!
 //! Who the peer is (the recipient proven there) is judged now, never as its proofs once counted
 //! (`Engine::proven` of what its connection names, spec/sync-opens.md §2): each connection's
-//! proven things are one `Effects` key, so a removal or a revoked key stops the offers that
+//! proven things are one `Effects` key, so a removal or a removed key stops the offers that
 //! rested on it at once, and a thing proven again readies its offers there.
 //!
 //! Work follows change: each connection keeps the offers ready for it; an offer added is placed

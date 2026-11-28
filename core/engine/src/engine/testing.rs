@@ -315,7 +315,7 @@ impl Engine {
     }
 
     /// Removes `holders` from `target` in one commit under one rotation (spec/commits.md §2), as
-    /// a link revocation does (tests: an explicit removal of several holders).
+    /// a link removal does (tests: an explicit removal of several holders).
     #[doc(hidden)]
     pub fn remove_holders(&mut self, target: &Tid, first: &Tid, others: &[Tid]) -> Result<crate::flows::Done> {
         self.remove_signed(None, target, &crate::flows::Demotion { holder: *first, new: None, retain: None }, others)

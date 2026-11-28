@@ -1,5 +1,5 @@
 # Addenda
-> Summary: Why writers answer a removal with an addendum listing the removed node's content commits they had received (spec/permissions.md §5.2), the rules and their reasons, what lying about receipt allows, how they are judged and indexed, and what was measured. Revocation: notes/revocation.md.
+> Summary: Why writers answer a removal with an addendum listing the removed node's content commits they had received (spec/permissions.md §5.2), the rules and their reasons, what lying about receipt allows, how they are judged and indexed, and what was measured. Removal: notes/removal.md.
 
 Principle: **a writer is a witness for what it had received**: after a removal, each writer of a thing may vouch for the removed node's plain-content commits that reached it, so a write the remover missed survives if any writer had it.
 

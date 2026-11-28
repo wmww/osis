@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: sync, tests
 
-- Only the role-history end is built (`Engine::link_ended`), and only before the join: a joined link ended before any source took its join (finalized, or its single use taken by another redeemer) whose sources all refuse L's claim, so the revocation never arrives, is followed until this end exists (its row, L and the sharer dialed at the redial pace).
+- Only the role-history end is built (`Engine::link_ended`), and only before the join: a joined link ended before any source took its join (finalized, or its single use taken by another redeemer) whose sources all refuse L's claim, so the removal never arrives, is followed until this end exists (its row, L and the sharer dialed at the redial pace).

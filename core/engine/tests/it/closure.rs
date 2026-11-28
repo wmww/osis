@@ -262,7 +262,7 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
 // spec/sync-set.md §2 Sync units, Not carried: T's sync unit is T and what it
 // reaches by strongs through things T's keys open, chains of grants giving the lowest role and the
 // best chain counting; NotCarried names exactly the strongs in the node closure to a thing it does
-// not hold. A random walk of edits (strongs added and removed, grants made, lowered and revoked
+// not hold. A random walk of edits (strongs added and removed, grants made, lowered and removed
 // between things) over 3 independent things and 4 dependent ones on one node; after each, every
 // sync unit and the NotCarried list equal held-model `closure`'s on the world rebuilt from the
 // edits.
