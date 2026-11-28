@@ -25,10 +25,10 @@ Checked, in each inline backtick span (fenced blocks are sketches, not citations
       its source): core/test/<crate> has that fn and each module named.
 A repo file is tracked, or untracked and not ignored (a new file counts before its `git add`).
 Not read: notes/complaints/ (consumed), the Investigations section of notes/time-limits.md (a record
-of what ran then), spec/ (its names are wire and grammar terms). Names not in our code on purpose
-(third-party, placeholder, planned, rejected, removed; `Type::item` too) are listed in
-tools/code_refs_allow.txt with a reason; a listed name that is in the code, or that nothing cites,
-fails.
+of what ran then), the Gone list of issues/deprecated-terms.md (names the code no longer has),
+spec/ (its names are wire and grammar terms). Names not in our code on purpose (third-party,
+placeholder, planned, rejected, removed; `Type::item` too) are listed in tools/code_refs_allow.txt
+with a reason; a listed name that is in the code, or that nothing cites, fails.
 Usage: python3 tools/code_refs.py   (exit 1 on any stale name; policy.py runs it)"""
 import bisect, itertools, os, re, subprocess, sys
 
@@ -106,10 +106,15 @@ def cited(text):
                 yield line, name, "name"
 
 
+# sections not read: a record of what ran then, and the registry's list of removed names (each
+# names an identifier the code no longer has; tools/policy.py dead_words skips the registry too)
+SKIPPED = {"notes/time-limits.md": "\n## Investigations", "issues/deprecated-terms.md": "\n## Gone"}
+
+
 def skipped(rel, text):
     """`text` with the parts not checked blanked (line numbers kept)."""
-    if rel == "notes/time-limits.md" and "\n## Investigations" in text:
-        a = text.index("\n## Investigations") + 1
+    if (head := SKIPPED.get(rel)) and head in text:
+        a = text.index(head) + 1
         e = text.find("\n## ", a)
         e = len(text) if e < 0 else e
         text = text[:a] + "\n" * text.count("\n", a, e) + text[e:]

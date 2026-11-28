@@ -149,6 +149,16 @@ with tempfile.TemporaryDirectory() as d:
     if got != want:
         bad += 1
         print(f"FAIL model citations: got {got}")
-n = len(CASES) + 3 + 4 + len(DOCS) + 1
+# the registry's Gone list names removed identifiers: not read; its other sections are
+REG = "# R\n## Still in the repo\n`gone_a`\n## Gone\n- `gone_b`, `GoneType::item`\n## Writing rules\n`gone_c`\n"
+got = "\n".join(code_refs.stale({"issues/deprecated-terms.md": REG}, WORDS, ENDS, {}, MEMBERS))
+for name, want in (("gone_a", True), ("gone_b", False), ("GoneType", False), ("gone_c", True)):
+    if (f"`{name}`" in got) != want:
+        bad += 1
+        print(f"FAIL registry: `{name}` expected {'stale' if want else 'skipped'}:\n{got}")
+if "deprecated-terms.md:7:" not in got:
+    bad += 1
+    print(f"FAIL registry: line numbers not kept:\n{got}")
+n = len(CASES) + 3 + 4 + len(DOCS) + 1 + 5
 print(f"code_refs_test: {n - bad}/{n} passed")
 sys.exit(1 if bad else 0)
