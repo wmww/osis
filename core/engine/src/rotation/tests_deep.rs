@@ -50,7 +50,8 @@ fn world(seed: u64) -> World {
     let edges_first = rng.next(2) == 0;
     let actor_edges = |lp: &mut LocalPeer| {
         for k in (1..=depth).rev() {
-            lp.peers[adm[k - 1]].engine.grant(&xs[k - 1], &xs[k], &edge(Role::Read)).unwrap();
+            // X(k) refers to X(k-1): its readers find the chain by references
+            lp.grant_through(adm[k - 1], xs[k - 1], xs[k], &edge(Role::Read));
             lp.sync_all().unwrap();
         }
     };

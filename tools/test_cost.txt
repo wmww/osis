@@ -34,7 +34,7 @@ osis-sim/osis_sim 0.0013
 osis-store/it 17
 osis-store/osis_store 2.6
 osis-sync/it 1800
-osis-sync/osis_sync 0.71
+osis-sync/osis_sync 1.2
 osis-transport/it 5.7
 osis-transport/osis_transport 0.035
 osis-vectors/vectors 12

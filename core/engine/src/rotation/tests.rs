@@ -573,6 +573,8 @@ fn arrival_order(seed: u64) {
         let first_g = all.iter().position(|id| lp.peers[0].engine.header(id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == g))).unwrap();
         let deliver = |lp: &mut LocalPeer, order: &[usize]| {
             for (i, list) in [3, 4].into_iter().zip(&lists) {
+                // the grants' signals, which travel apart from the commits
+                lp.pass_fires(i).unwrap();
                 for _ in 0..=all.len() {
                     let mut applied = false;
                     for pk in order.iter().filter_map(|j| list.get(&all[*j])) {
