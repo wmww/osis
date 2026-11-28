@@ -963,8 +963,12 @@ pub struct Core {
     /// thing, not the derivation's reads copied into every commit's.
     pub(crate) thing_syncs: memo::Cutoff<Tid, crate::sync::ThingSync>,
     pub(crate) secret_actors: memo::Cutoff<Tid, Option<Tid>>,
+    /// Each row goes with its thing (`unfollow_thing_rows`: an actor, or a thing its keys open).
     pub(crate) keys_opens: memo::Cutoff<(Tid, Tid), bool>,
     pub(crate) read_floors: memo::Cutoff<Tid, Option<crate::rotation::floors::ReadFloor>>,
+    /// (thing, actor) of every `keys_opens` row: the rows a thing's leaving takes, found in
+    /// O(those) (`unfollow_thing_rows`).
+    pub(crate) opens_on: BTreeSet<(Tid, Tid)>,
     /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -1897,6 +1901,8 @@ impl Core {
             secret_actors: _,
             keys_opens: _,
             read_floors: _,
+            // which `keys_opens` rows there are, true of them whatever a rollback undoes
+            opens_on: _,
             held_fates: _,
             sync_ids: _,
             sync_rows: _,
@@ -2163,6 +2169,7 @@ impl Core {
             secret_actors: memo::Cutoff::new("sync: secret actor"),
             keys_opens: memo::Cutoff::new("sync: keys open"),
             read_floors: memo::Cutoff::new("sync: read floor"),
+            opens_on: BTreeSet::new(),
             held_fates: memo::Cutoff::new("sync: held fate"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),

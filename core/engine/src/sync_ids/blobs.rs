@@ -587,7 +587,7 @@ impl Engine {
     /// `Core::keys_open` of (`actor`, `t`), a read of its row (`Core::keys_opens`): what each body
     /// on `t` reads of whether `actor` reads it.
     pub(crate) fn opens_row(&mut self, actor: &Tid, t: &Tid) -> bool {
-        let r: std::result::Result<_, std::convert::Infallible> = osis_base::memo::Cutoff::get_in(self, |e| &e.core.keys_opens, &(*actor, *t), |e, (a, t)| Ok(e.core.keys_open(a, t)));
+        let r: std::result::Result<_, std::convert::Infallible> = osis_base::memo::Cutoff::get_in(self, |e| &e.core.keys_opens, &(*actor, *t), |e, (a, t)| Ok(e.core.keys_open_row(a, t)));
         r.unwrap_or_else(|e| match e {})
     }
 
@@ -623,7 +623,7 @@ impl Engine {
         type Never = std::convert::Infallible;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.thing_syncs, |e, t| e.thing_sync_now(t))?;
         let a = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.secret_actors, |e, t| Ok::<_, Never>(e.core.secret_actor(t)));
-        let b = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.keys_opens, |e, (a, t)| Ok::<_, Never>(e.core.keys_open(a, t)));
+        let b = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.keys_opens, |e, (a, t)| Ok::<_, Never>(e.core.keys_open_row(a, t)));
         let f = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_floors, |e, a| Ok::<_, Never>(crate::rotation::floors::read_floor(&e.core, a)));
         Ok(moved | a.unwrap_or_else(|e| match e {}) | b.unwrap_or_else(|e| match e {}) | f.unwrap_or_else(|e| match e {}))
     }
@@ -1036,6 +1036,32 @@ enum GivingWrap {
     Lacking,
 }
 
+impl crate::engine::Core {
+    /// `keys_open` of (`actor`, `t`) for its `keys_opens` row, the row noted under `t` (`opens_on`).
+    fn keys_open_row(&mut self, actor: &Tid, t: &Tid) -> bool {
+        self.opens_on.insert((*t, *actor));
+        self.keys_open(actor, t)
+    }
+
+    /// The per-thing rows (`Core::thing_syncs`, `secret_actors`, `keys_opens`, `read_floors`)
+    /// owned by `t` go: it left the held set (`sync::held::forget_actor`). A later read derives
+    /// them anew. O(those rows).
+    pub(crate) fn unfollow_thing_rows(&mut self, t: &Tid) {
+        self.thing_syncs.unfollow(t);
+        self.secret_actors.unfollow(t);
+        self.read_floors.unfollow(t);
+        let low = Tid::from_bytes([0; osis_base::format::TID_LEN]);
+        for (_, x) in self.keys_opens.unfollow_from(&(*t, low), |k| k.0 == *t) {
+            self.opens_on.remove(&(x, *t));
+        }
+        let on: Vec<(Tid, Tid)> = self.opens_on.range((*t, low)..).take_while(|k| k.0 == *t).copied().collect();
+        for (x, a) in on {
+            self.keys_opens.unfollow(&(a, x));
+            self.opens_on.remove(&(x, a));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1062,6 +1088,41 @@ mod tests {
         assert_eq!(*e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
         assert_eq!(e.section_chain(&t), vec![o, me]);
         assert_eq!(e.section_chain(&o), vec![me]);
+    }
+
+    // notes/node-closure.md (derived rows go with what they derive from): a node reads the
+    // per-thing rows of its thing D, as a body on D does (how D syncs, its secret actor, whether
+    // keys open it, D as an actor: its read floor and what its keys open), then releases D. Every
+    // row D owns goes with it. Fails while those rows are never dropped.
+    #[test]
+    fn a_things_rows_go_with_it() {
+        use crate::Mutation;
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        let n = e.tid();
+        let mut m = Mutation::new();
+        let d = e.new_thing(&mut m, n);
+        m.set(d, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+        e.commit(m).unwrap().unwrap();
+        e.hold(osis_base::Strong(d)).unwrap();
+        e.make_independent(&d).unwrap();
+        e.thing_sync(&d).unwrap();
+        assert_eq!(e.secret_actor_row(&d), Some(d), "D is its secret actor");
+        e.opens_row(&n, &d);
+        e.opens_row(&d, &n);
+        e.read_floor_row(&d);
+        let held = |e: &Engine| {
+            let c = &e.core;
+            [c.thing_syncs.follows(&d), c.secret_actors.follows(&d), c.keys_opens.follows(&(n, d)), c.keys_opens.follows(&(d, n)), c.read_floors.follows(&d)]
+        };
+        assert_eq!(held(e), [true; 5], "D's rows are followed");
+        e.unhold(osis_base::Strong(d)).unwrap();
+        let left = e.left_closure().into_keys().collect();
+        e.released(&left).unwrap();
+        e.settle_needs().unwrap();
+        assert!(e.core.created(&d).is_none(), "D released: {}", e.why_kept(&d));
+        assert_eq!(held(e), [false; 5], "D's rows went with it");
+        assert!(e.core.opens_on.iter().all(|(t, a)| *t != d && *a != d), "nothing indexes D's rows");
     }
 
     // spec/crypto.md §4: a secret learned only from a pending or invalid commit is never

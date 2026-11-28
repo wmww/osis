@@ -292,6 +292,11 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug + Send + 'static, V: Clone + P
         self.rows.borrow().map.len()
     }
 
+    /// Whether `k` is followed (has a row or will at the next refresh).
+    pub fn follows(&self, k: &K) -> bool {
+        self.fx().wants(k)
+    }
+
     /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
     /// anew.
     pub fn unfollow(&self, k: &K) {
@@ -302,12 +307,13 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug + Send + 'static, V: Clone + P
     }
 
     /// Stops following every key with a row from `from` on while `within` holds (`unfollow`):
-    /// O(those).
-    pub fn unfollow_from(&self, from: &K, within: impl Fn(&K) -> bool) {
+    /// those keys. O(those).
+    pub fn unfollow_from(&self, from: &K, within: impl Fn(&K) -> bool) -> Vec<K> {
         let keys: Vec<K> = self.rows.borrow().map.range(from..).map(|(k, _)| k).take_while(|k| within(k)).cloned().collect();
         for k in &keys {
             self.unfollow(k);
         }
+        keys
     }
 
     /// Stops following every key `drop` names (`unfollow`).
