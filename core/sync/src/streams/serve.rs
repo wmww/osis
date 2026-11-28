@@ -9,7 +9,7 @@ use crate::opens::Reported;
 use crate::store::Members;
 use crate::types::{ConnId, Cursor, Entry, Holding, Position, Result, SourceClass};
 use osis_base::{BlobId, SyncId};
-use osis_proto::limits::REPLY_BUDGET;
+use osis_proto::limits::{REPLY_BUDGET, REPORT_WINDOW};
 use osis_proto::msg::stream_event_len;
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stream};
 use osis_store::NodeEvent;
@@ -51,10 +51,13 @@ pub(super) struct Serve {
     sent: u64,
     /// The highest number an Applied named (covering every message before it).
     reported: u64,
+    /// The highest number an Applied with `stored` named: the peer stored its cursor.
+    stored: u64,
     /// The cursors of messages asking a report not yet covered, each sealed afresh so an Applied
     /// names one message, with its number, the entries its `Added` events carried (counted held
     /// by the peer once an Applied covers it, `Streams::count_applied`) and, for a Stream, the
-    /// Pulls this side had answered when it went (`pulls`): the newest `REPORTS_KEPT`.
+    /// Pulls this side had answered when it went (`pulls`). At most `REPORT_WINDOW`: no message
+    /// asking a report goes past it, so each one an Applied may name is here.
     asked: VecDeque<Asked>,
     /// Pulls answered on the connection: the Streams sent since the last one follow its reply.
     pulls: u64,
@@ -88,7 +91,7 @@ pub(super) struct Serve {
     /// Blobs whose bytes went inline in a message asking a report, with the last such message's
     /// number, until an Applied covers it or it leaves `asked`: the peer holds them or is taking
     /// them, so they go inline no more under any sync ID (`peer_holds_blob`); once applied, its
-    /// stream shows them. At most the blobs of `REPORTS_KEPT` messages.
+    /// stream shows them. At most the blobs of the messages in `asked`.
     inlined: BTreeMap<BlobId, u64>,
 }
 
@@ -103,15 +106,6 @@ impl Serve {
         self.sent += 1;
         let added = events.iter().filter_map(|(s, e)| if let Event::Added { blob_id, .. } = e { Some((*s, *blob_id)) } else { None }).collect();
         self.asked.push_back(Asked { cursor, n: self.sent, added, stream: None });
-        // a message no Applied can name alone: its blobs may go inline again (`inlined` stays
-        // within the newest `REPORTS_KEPT` messages, whether or not the peer reports), and what it
-        // sent is counted held nowhere
-        if self.asked.len() > REPORTS_KEPT
-            && let Some(a) = self.asked.pop_front()
-        {
-            self.inlined.retain(|_, x| *x > a.n);
-            self.keep_told();
-        }
         for (s, e) in events {
             self.unapplied.insert(*s, self.sent);
             if let Event::Added { blob_id, blob: Some(_), .. } = e {
@@ -128,10 +122,17 @@ impl Serve {
         }
     }
 
-    /// Whether a message served asking a report is not reported applied yet: the next message
-    /// with a cursor asks one too, so the last is answered whatever it carries.
+    /// Whether a message served asking a report is not reported applied with its cursor stored
+    /// yet: the next message with a cursor asks one too, so the last is answered whatever it
+    /// carries, and the position the peer stores is reported.
     fn owed(&self) -> bool {
-        self.sent > self.reported
+        self.sent > self.stored
+    }
+
+    /// Whether `REPORT_WINDOW` messages asking a report are not reported applied: none more goes
+    /// (spec/sync-streams.md §4 Reports).
+    fn window_full(&self) -> bool {
+        self.asked.len() >= REPORT_WINDOW
     }
 
     /// An Applied named `cursor`: the message it was sent with, and every one before it, is
@@ -216,13 +217,6 @@ pub(super) enum At {
     Log(Position),
     Memory(u64),
 }
-
-/// Messages asking a report whose cursors a server keeps to tell which one an Applied names. At
-/// 0 no Applied is recognized (never caught up); at infinity a peer that never reports grows them
-/// per message served. A requester answers in order and holds at most `PENDING_CAP` messages,
-/// so an honest one's Applied names one of the newest; an older one dropped only delays caught up
-/// to the next Applied.
-const REPORTS_KEPT: usize = 2 * super::PENDING_CAP;
 
 /// A cursor sealed afresh at the position `c` names, so the message carrying it is the only one
 /// with these bytes (an Applied names one message).
@@ -313,6 +307,15 @@ impl Streams {
             ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED });
             return;
         }
+        // the Pull ends the reports of the Streams it passed over; a requester holds at most
+        // `REPORT_WINDOW` messages in hand, so one pulling past the window is refused
+        let serve = self.serve.entry(conn).or_default();
+        serve.pulled_at(p.cursor.as_ref().map(|c| c.as_bytes()));
+        if serve.window_full() {
+            serve.follow = None;
+            ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED });
+            return;
+        }
         match self.reply(ctx, conn, id, p) {
             Ok(r) => ctx.wire.answer(conn, id, Msg::PullReply(Box::new(r))),
             Err(_) => ctx.wire.answer(conn, id, Msg::Error { id, code: Code::DECLINED }),
@@ -320,7 +323,6 @@ impl Streams {
     }
 
     fn reply(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, p: Pull) -> Result<PullReply> {
-        self.serve.entry(conn).or_default().pulled_at(p.cursor.as_ref().map(|c| c.as_bytes()));
         let members: BTreeMap<SyncId, Option<Position>> = ctx.shared.members(conn).iter().map(|(s, m)| (*s, m.until)).collect();
         self.work.members += members.len() as u64;
         let (_, horizon) = ctx.store.log_bounds()?;
@@ -638,6 +640,10 @@ impl Streams {
     /// not fit. An ended member that reached its `until` is told by a Stream with no events.
     pub(super) fn push(&mut self, ctx: &mut Ctx, conn: ConnId) -> Result<bool> {
         let Some(f) = self.serve.get(&conn).and_then(|s| s.follow.clone()) else { return Ok(false) };
+        // every Stream with a cursor asks a report: none past the window, until an Applied
+        if self.serve.get(&conn).is_some_and(Serve::window_full) {
+            return Ok(false);
+        }
         let (end, _) = ctx.store.log_bounds()?;
         let mark = ctx.store.memory_mark();
         // a log naming no position holds ephemeral entries back (no Stream carries events without
@@ -770,26 +776,33 @@ impl Streams {
         }
     }
 
-    /// An Applied: the requester stored this cursor (spec/sync-opens.md §6 reported positions),
-    /// and holds what the messages it covers sent it but what it told it does not
-    /// (`count_applied`); `anchor` is a position of its own log at or past its events of them.
-    pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor, anchor: Option<Cursor>) {
+    /// An Applied: the requester applied the message `cursor` names and every one before it, and
+    /// holds what they sent it but what it told it does not (`count_applied`); `anchor` is a
+    /// position of its own log at or past its events of them. `stored`: it stored that cursor too
+    /// (spec/sync-opens.md §6 reported positions), which a page of a listing from the start is not.
+    pub(super) fn on_applied(&mut self, ctx: &mut Ctx, conn: ConnId, cursor: Cursor, stored: bool, anchor: Option<Cursor>) {
         let Ok(Some(pos)) = ctx.store.position(&cursor) else { return };
         let serve = self.serve.entry(conn).or_default();
         let sent = serve.reported_by(&cursor);
-        if serve.applied.is_none_or(|p| p < pos) {
-            serve.applied = Some(pos);
-            ctx.reported.push(Reported::Stream(conn, pos, cursor));
+        if stored {
+            if serve.applied.is_none_or(|p| p < pos) {
+                serve.applied = Some(pos);
+                ctx.reported.push(Reported::Stream(conn, pos, cursor));
+            }
+            // what the peer counts this node holding at or below where it applied (its ephemeral
+            // listing read past) is served it no more on this connection
+            let eph = serve.eph.clone();
+            serve.counted.retain(|(s, _), m| match m {
+                At::Log(mark) => *mark > pos,
+                At::Memory(mark) => eph.get(s).is_none_or(|n| *mark > *n + 1),
+            });
         }
-        // what the peer counts this node holding at or below where it applied (its ephemeral
-        // listing read past) is served it no more on this connection
-        let eph = serve.eph.clone();
-        serve.counted.retain(|(s, _), m| match m {
-            At::Log(mark) => *mark > pos,
-            At::Memory(mark) => eph.get(s).is_none_or(|n| *mark > *n + 1),
-        });
         self.count_applied(ctx, conn, sent, anchor);
+        if !stored {
+            return;
+        }
         let serve = self.serve.entry(conn).or_default();
+        serve.stored = serve.reported;
         // a merge is covered by message order, never by position: an Applied of a message sent
         // before the merging reply may name the very position the merge stood at
         let r = serve.reported;

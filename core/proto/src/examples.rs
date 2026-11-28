@@ -169,7 +169,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("stream", Msg::Stream(Box::new(Stream { events: vec![(l, added.clone())], cursor: Some(cursor(0x30)), report: true, seq: 3 }))),
         ("stream with no events", Msg::Stream(Box::new(Stream { events: vec![], cursor: Some(cursor(0x30)), report: true, seq: 0 }))),
         ("stream with no cursor", Msg::Stream(Box::new(Stream { events: vec![(l, Event::Full(true)), (l, Event::Refused(id(0xb1), Code::NOT_HEAD_KEY)), (l, added)], cursor: None, report: false, seq: 0 }))),
-        ("applied", Msg::Applied { cursor: cursor(0x30), anchor: Some(cursor(0x32)) }),
+        ("applied", Msg::Applied { cursor: cursor(0x30), stored: true, anchor: Some(cursor(0x32)) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
     ]

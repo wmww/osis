@@ -49,6 +49,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `OUT_BOUND` 256 MiB (sync `session`: held out for every connection together, written and not taken plus the reply allowances being answered; spec/sync-transport.md §5 local policy; at least the costliest reply) | R (requests wait in order past it, reading stops, holders close at half `STALL_TIMEOUT_MS`) | nothing answered / memory grows with the connections |
 | `IN_BOUND` 256 MiB (sync `session`: received and not yet run for every connection together, partial frames included; spec/sync-transport.md §5 local policy) | R (the connection holding the most closes) | every connection closes at its first bytes / memory grows with the connections |
 | `WINDOW` 16 MiB (spec) | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
+| `REPORT_WINDOW` 64 (spec: messages asking a report a server sends a connection unreported, and messages a requester holds in hand; the same bound both sides keep, so the server holds every message an Applied may name) | R/P (pushes wait and a Pull past it is refused, Error 14; a requester's push past it is dropped and read again; pages in flight while bodies arrive: memory per connection is the window of `REPLY_BUDGET` messages) | nothing flows / a peer that never reports grows the server's cursors and counts per message served, a slow body holds unbounded announcements |
 | `SMALL_REPLY` 16 KiB (holds a Status of 1024 codes; the smallest `max_reply`, the allowance of every request whose reply is bounded small) | P (requests per round trip are `WINDOW` over it; a larger reply is `TooLarge` or pages under `REPLY_BUDGET`) | every reply `TooLarge` / two requests per round trip |
 
 ### Protocol (`proto/relay.rs`, `prove.rs`)
@@ -142,7 +143,6 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | value | class | 0 / ∞ |
 |---|---|---|
 | `INLINE_LIMIT` 16 KiB (bytes a requester lets a server inline while a member has one source) | P | every body a Fetch round trip / whole blobs inline, again from each source once a second joins |
-| `PENDING_CAP` 64 (messages in hand per connection awaiting bodies) | R (a push past it is dropped and read again) | every push read again / announcements held without bound |
 | `FETCHES_OUT` 2 (Fetches out per connection) | P | nothing fetched / the window alone bounds them |
 | streams `RESYNC_MS` 30 s (a refused Pull or join tried again) | M | a refusing peer loops at link speed / one refusal stops the stream for good |
 | `ASKED_MS` = `STALL_TIMEOUT_MS` (a blob asked at one source before another is asked too) | M (spec: the Stall rule's wait) | every source asked at once / one silent source holds the body |

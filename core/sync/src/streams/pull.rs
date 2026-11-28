@@ -5,7 +5,7 @@
 
 use super::known::{self, Op};
 use super::serve::{At, Sent};
-use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Streams};
+use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, Rank, Streams};
 use crate::opens::{Leaving, Rejoin};
 use crate::store::rows::tag::{ANCHOR, AT_STREAM, CLOSED, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
@@ -15,7 +15,7 @@ use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, Mono, SyncId};
 use osis_engine::sync::Holding;
 use osis_blob::{Class, Prefix, StepId};
-use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
+use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET, REPORT_WINDOW};
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stamp, Stream, Wrap};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -286,7 +286,9 @@ pub(super) struct Pulling {
     tell: Vec<(SyncId, Event)>,
     /// The members this side told `full` true on this connection and not false since.
     told_full: BTreeSet<SyncId>,
-    applied_owed: Option<Cursor>,
+    /// The Applied owed: the cursor of the last message applied asking a report, and whether
+    /// that cursor (and every join position the message moved) is stored.
+    applied_owed: Option<(Cursor, bool)>,
     /// The places (`Streams::pull_seq`) of the Pull out and of the one the last reply answered:
     /// a stream caught up since a pass began read its end from a Pull sent after it
     /// (spec/sync-status.md §1).
@@ -306,9 +308,12 @@ pub(super) struct Pulling {
     /// The entries held here that `Added` events carried in the messages the next Applied
     /// reports: each held as sent with where this node stood when it applied it
     /// (`Serve::counted`), else none. At the Applied each one no longer held is told first; one
-    /// not held when applied was told then.
+    /// not held when applied was told then. Within the messages one step applied: an Applied
+    /// goes after each, and nothing applies while one is owed.
     reporting: BTreeMap<(SyncId, BlobId), Option<At>>,
-    /// Entries of `reporting` told the source refused (or not held) since the last Applied went.
+    /// Entries told the source refused (or not held) since the last Applied went: the next one
+    /// counts none of them, as the source does (`Serve::told`). Within what the messages in hand
+    /// and those one step applied carry.
     told_now: BTreeSet<(SyncId, BlobId)>,
 }
 
@@ -726,17 +731,28 @@ impl Streams {
         }
     }
 
-    /// Whatever is due on a connection: messages applied, fetches and a Pull sent, refusals told.
+    /// Whatever is due on a connection: messages applied, fetches and a Pull sent, refusals told,
+    /// an Applied after each step of applying (none applies while one is owed).
     pub(super) fn run(&mut self, ctx: &mut Ctx, conn: ConnId) {
         if !self.pull.contains_key(&conn) {
             return;
         }
-        self.drain(ctx, conn);
-        self.fetch(ctx, conn);
+        loop {
+            self.drain(ctx, conn);
+            self.fetch(ctx, conn);
+            if !self.report(ctx, conn) {
+                break;
+            }
+        }
+        self.send_pull(ctx, conn);
+    }
+
+    /// Refusals told and the Applied owed sent: whether an Applied went.
+    fn report(&mut self, ctx: &mut Ctx, conn: ConnId) -> bool {
         // the Applied reports every message before it: each entry their `Added` events carried
         // that this node no longer holds is told first (SN_echotold), as 14 unless a refusal of
         // it was told since the last Applied
-        let Some(p) = self.pull.get(&conn) else { return };
+        let Some(p) = self.pull.get(&conn) else { return false };
         let untold: Vec<(SyncId, BlobId)> = match p.applied_owed {
             Some(_) => p.reporting.keys().filter(|x| !p.told_now.contains(x) && ctx.store.entry(&x.0, &x.1).ok().flatten().is_none()).copied().collect(),
             None => Vec::new(),
@@ -744,39 +760,43 @@ impl Streams {
         for (s, b) in untold {
             self.tell(conn, s, Event::Refused(b, Code::DECLINED));
         }
-        let Some(p) = self.pull.get_mut(&conn) else { return };
+        let Some(p) = self.pull.get_mut(&conn) else { return false };
         if !p.tell.is_empty() {
             let st = Stream { events: p.tell.clone(), cursor: None, report: false, seq: 0 };
             if ctx.wire.push(conn, Msg::Stream(Box::new(st))) {
                 p.tell.clear();
             }
         }
-        if p.tell.is_empty()
-            && let Some(c) = p.applied_owed.clone()
-            && let Ok(cursor) = osis_proto::Cursor::new(c)
-        {
-            // what the source counts this node holding from it: each held here and not told,
-            // standing on the anchor; those held as sent are filtered from what this node serves
-            // it once the Applied goes (no reply of this node's passes it unreported)
-            let counted: Vec<((SyncId, BlobId), Option<At>)> = p.reporting.iter().filter(|(x, _)| !p.told_now.contains(x) && ctx.store.entry(&x.0, &x.1).ok().flatten().is_some()).map(|(x, m)| (*x, *m)).collect();
-            let anchor = match counted.is_empty() {
-                true => None,
-                false => match ctx.store.log_bounds().and_then(|(end, _)| ctx.store.cursor_at(end)) {
-                    Ok(c) => c.and_then(|c| osis_proto::Cursor::new(c).ok()),
-                    // no Applied without the anchor its counts stand on: the step fails
-                    Err(e) => return self.failed(Err(e)),
-                },
-            };
-            let held: Vec<((SyncId, BlobId), At)> = counted.into_iter().filter_map(|(x, m)| Some((x, m?))).collect();
-            let Some(p) = self.pull.get_mut(&conn) else { return };
-            if ctx.wire.push(conn, Msg::Applied { cursor, anchor }) {
-                p.applied_owed = None;
-                p.reporting.clear();
-                p.told_now.clear();
-                self.serve.entry(conn).or_default().counted.extend(held);
-            }
+        if !p.tell.is_empty() {
+            return false;
         }
-        self.send_pull(ctx, conn);
+        let Some((c, stored)) = p.applied_owed.clone() else { return false };
+        let Ok(cursor) = osis_proto::Cursor::new(c) else { return false };
+        // what the source counts this node holding from it: each held here and not told,
+        // standing on the anchor; those held as sent are filtered from what this node serves
+        // it once the Applied goes (no reply of this node's passes it unreported)
+        let counted: Vec<((SyncId, BlobId), Option<At>)> = p.reporting.iter().filter(|(x, _)| !p.told_now.contains(x) && ctx.store.entry(&x.0, &x.1).ok().flatten().is_some()).map(|(x, m)| (*x, *m)).collect();
+        let anchor = match counted.is_empty() {
+            true => None,
+            false => match ctx.store.log_bounds().and_then(|(end, _)| ctx.store.cursor_at(end)) {
+                Ok(c) => c.and_then(|c| osis_proto::Cursor::new(c).ok()),
+                // no Applied without the anchor its counts stand on: the step fails
+                Err(e) => {
+                    self.failed(Err(e));
+                    return false;
+                }
+            },
+        };
+        let held: Vec<((SyncId, BlobId), At)> = counted.into_iter().filter_map(|(x, m)| Some((x, m?))).collect();
+        let Some(p) = self.pull.get_mut(&conn) else { return false };
+        if !ctx.wire.push(conn, Msg::Applied { cursor, stored, anchor }) {
+            return false;
+        }
+        p.applied_owed = None;
+        p.reporting.clear();
+        p.told_now.clear();
+        self.serve.entry(conn).or_default().counted.extend(held);
+        true
     }
 
     /// Sends the next Pull when one is due: the first, a page on, a join, a gap or a dropped
@@ -792,7 +812,7 @@ impl Streams {
         // owe it stays bounded
         // an Applied goes before the next Pull: the server reads a reported position as covering
         // only what came before the Pull (a join merging there is not yet stored)
-        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || p.applied_owed.is_some() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.mono) {
+        if p.out.is_some() || p.pending.len() >= REPORT_WINDOW || !p.tell.is_empty() || p.applied_owed.is_some() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.mono) {
             return;
         }
         p.retry_at = None;
@@ -994,7 +1014,7 @@ impl Streams {
             }
             return;
         };
-        if p.gap || st.seq != p.seq || p.pending.len() >= PENDING_CAP {
+        if p.gap || st.seq != p.seq || p.pending.len() >= REPORT_WINDOW {
             // the next Pull reads it again and ends its report (`Serve::pulled_at`)
             p.gap = true;
             p.eph_next = true;
@@ -1561,6 +1581,10 @@ impl Streams {
     /// settled once its entry is taken under its own sync ID (bytes held under another are taken
     /// with them first, `fetch`), no longer wanted (not a member here), or this source lacks it.
     fn drain(&mut self, ctx: &mut Ctx, conn: ConnId) {
+        // what one step applies goes in one Applied before more applies (`run`)
+        if self.pull.get(&conn).is_some_and(|p| p.applied_owed.is_some()) {
+            return;
+        }
         loop {
             let Some(p) = self.pull.get(&conn) else { return };
             let Some(front) = p.pending.front() else { break };
@@ -1804,17 +1828,12 @@ impl Streams {
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         p.reporting.extend(reporting);
-        // what was told of an entry not reported matters to no Applied
-        let reporting = &p.reporting;
-        p.told_now.retain(|x| reporting.contains_key(x));
-        // an Applied says the cursor and each join's position are stored: none while a listing
-        // from the start is under way
+        // an Applied after each message asking one, `stored` where its cursor and each join's
+        // position are: not while a listing from the start is under way
         if batch.report
-            && cursor
-            && p.join_listing.is_empty()
             && let Some(c) = batch.cursor
         {
-            p.applied_owed = Some(c);
+            p.applied_owed = Some((c, cursor && p.join_listing.is_empty()));
         }
     }
 }

@@ -52,7 +52,10 @@ CONSTANTS
                                     \* "unanchored" (control: no anchor), "unchecked" (control: every Applied
                                     \* replaces the held anchor at once), "carried" (control: a waiting anchor's
                                     \* counts taken at once, the anchor kept across connections and promoted by
-                                    \* a later connection's check of the held one)
+                                    \* a later connection's check of the held one), "window" (control: a
+                                    \* listing from the start reports only its last page, and the server counts
+                                    \* that page's sends alone, its window passed, while the requester counts
+                                    \* every page's)
 
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
@@ -64,10 +67,10 @@ NoDig == [on |-> FALSE, set |-> {}]
 Mem0 == [st |-> "out", c |-> NoCur]
 Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in Ls |-> FALSE],
          lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE,
-         pres |-> {}, plist |-> [l \in Ls |-> "none"], anc |-> NoCur, anew |-> NoCur, ancOk |-> FALSE, apend |-> {}]
+         pres |-> {}, plist |-> [l \in Ls |-> "none"], anc |-> NoCur, anew |-> NoCur, ancOk |-> FALSE, apend |-> {}, rep |-> {}]
 \* anc: the anchor, a position of the peer's log covering every send of this node it counts the peer
 \* holding; anew: a newer one waiting for a reply on the connection to check anc, apend the counts
-\* it carries; ancOk: one has.
+\* it carries; ancOk: one has. rep (control "window"): what a listing's pages took, unreported.
 Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
                      pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0, hz |-> 0]
 NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {},
@@ -235,7 +238,11 @@ Apply(x) ==
         took == sent \cap s2.held
         EvPos(e) == (CHOOSE ev \in s2.log : ev.e = e).pos
         anc == IF Anchored /\ took # {} THEN [lid |-> s2.lid, inc |-> s2.inc, pos |-> s2.end] ELSE NoCur
+        \* control "window": a page of a listing from the start with more to come reports nothing
+        midList == Echo = "window" /\ rp.listing /\ rp.more
+        tookAt == {[e |-> e, pos |-> EvPos(e)] : e \in took}
         ack == CASE Echo \in {"applied", "durable", "unanchored", "unchecked", "carried"} -> [took |-> took, gone |-> sent \ took, anc |-> anc]
+                 [] Echo = "window" -> [took |-> IF midList THEN {} ELSE took, gone |-> sent \ took, anc |-> IF midList THEN NoCur ELSE anc]
                  [] Echo = "untold" -> [took |-> sent, gone |-> {}, anc |-> anc]
                  [] OTHER -> [took |-> {}, gone |-> {}, anc |-> NoCur]
         \* the Applied reaches y after y's reply in flight from x (sent before it), else at once
@@ -250,8 +257,10 @@ Apply(x) ==
         yNow == ack.anc # NoCur /\ (yr.ancOk \/ yr.anc = NoCur \/ Echo = "unchecked")
         \* its counts wait with it (the control "carried": counted at once)
         yWait == ack.anc # NoCur /\ ~yNow /\ Echo # "carried"
-        ctd2 == IF Echo = "stream" THEN ctd[x]
-                ELSE {c \in ctd[x] : c.e \notin took} \cup {[e |-> e, pos |-> EvPos(e)] : e \in took}
+        \* what x counts y counting it holding: each page's takes, a listing's once its last page reports
+        mine == IF Echo = "window" THEN r.rep \cup tookAt ELSE tookAt
+        ctd2 == IF Echo = "stream" \/ midList THEN ctd[x]
+                ELSE {c \in ctd[x] : c.e \notin {m.e : m \in mine}} \cup mine
     IN
     /\ x \in link
     /\ inflight[x].on
@@ -270,6 +279,7 @@ Apply(x) ==
                 !.rec.knew = @ \cup {i.e : i \in rp.items},
                 !.rec.pres = IF TrackPres THEN Acked(pres2 \cup pend, rp.acks) ELSE @,
                 !.rec.apend = {},
+                !.rec.rep = IF midList THEN r.rep \cup tookAt ELSE {},
                 !.rec.plist = IF TrackPres THEN plist2 ELSE @,
                 !.rec.anc = anc2, !.rec.anew = NoCur, !.rec.ancOk = Anchored],
               ![y].rec.last = rp.cur,
@@ -451,7 +461,7 @@ Connect(x, y) ==
     /\ dialer' = x
     /\ IF same
        THEN /\ st' = [z \in Stores |-> IF z \notin {x, y} THEN st[z]
-                        ELSE [st[z] EXCEPT !.rec.lostp = {}, !.rec.ancOk = FALSE,
+                        ELSE [st[z] EXCEPT !.rec.lostp = {}, !.rec.ancOk = FALSE, !.rec.rep = {},
                                            !.rec.anew = IF Echo = "carried" THEN @ ELSE NoCur,
                                            !.rec.apend = IF Echo = "carried" THEN @ ELSE {}]]
             /\ UNCHANGED cnt

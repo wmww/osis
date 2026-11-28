@@ -43,6 +43,8 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | SN_echoanchor, SN_echocheck | no anchor: a restored b counted holding what it took after the backup (a's cursor still names a position there); the held anchor replaced by the restored store's first Applied, before a reply checked it | fail `PresenceSound` | |
 | S_echowait | `Echo` "applied", two takes from a (`AuA`): b restored from a backup at any instant, one drop; `PresenceSound`, `PresenceComplete` (by hand: 27 s at 12 workers) | pass | 605,065 |
 | SN_echowait | `Echo` "carried": a waiting anchor's counts taken at once, the anchor kept across connections: b takes e1 (a0) and on the next connection e2 (a1 waits), b is restored from between, the next connection checks a0 and promotes a1, and a counts b holding e2 | fail `PresenceSound` | |
+| S_reportwin | `Echo` "applied": b lists a's e1, e2 in two pages (`PageK` 1), both pull; every applied page reports, a listing's too (one reply in flight: the server's `REPORT_WINDOW` never binds here, the model keeping every message an Applied names) | pass | 1,684 |
+| SN_reportwin | `Echo` "window": a listing reports at its last page alone and a counts that page's sends only, its window passed, while b counts both pages': b streams e1 back never, and a never counts b holding it | fail `PresenceComplete` | 1,544 |
 | S_pres | presence: deletes, expiry with trimmed replies, b restored from a backup (by name; `DeletionsArrive` off: a deletion the restored copy still logs lies below a cursor read past its expiry at b, the stated limit) | pass (89 s at 12 workers) | 4,597,182 |
 | T_cred | two nodes, one credential | pass | 2,944 |
 | T_gain | a credential gained while connected | pass | 11,414 |

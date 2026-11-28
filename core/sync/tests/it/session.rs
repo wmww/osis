@@ -380,7 +380,7 @@ fn routing_by_kind() {
     assert_eq!(req(Msg::Auth { id: 1, secret: None, session_id: [0; 16] }), Some(To::Port));
     assert_eq!(Incoming::Push(Msg::Unsub { id: 1, sub_id: 2 }).to(), None);
     assert_eq!(Incoming::Push(Msg::Digest { digest: [0; 32] }).to(), Some(To::Opens));
-    assert_eq!(Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(vec![1]).expect("cursor"), anchor: None }).to(), Some(To::Streams));
+    assert_eq!(Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(vec![1]).expect("cursor"), stored: true, anchor: None }).to(), Some(To::Streams));
     assert_eq!(Incoming::Proved.to(), Some(To::Opens));
 }
 

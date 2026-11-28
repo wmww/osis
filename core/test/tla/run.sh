@@ -217,6 +217,8 @@ instances=(
   "netstream net MCStream SN_echoanchor.cfg fail:PresenceSound" # negative control: no anchor, b restored from before it took the entry is counted holding it (PresenceSound)
   "netstream net MCStream SN_echocheck.cfg fail:PresenceSound" # negative control: the held anchor replaced before a reply checked it (PresenceSound)
   "netstream net MCStream SN_echowait.cfg fail:PresenceSound" # negative control: a waiting anchor carried across connections, its counts taken at once (PresenceSound)
+  "netstream net MCStream S_reportwin.cfg pass"      # every applied page reports, a listing's too
+  "netstream net MCStream SN_reportwin.cfg fail:PresenceComplete" # negative control: a listing reports at its end and the server counts its newest page alone (PresenceComplete)
   "netshared net MCShared T_cred.cfg pass"
   "netshared net MCShared T_gain.cfg pass"
   "netshared net MCShared T_remove.cfg pass"

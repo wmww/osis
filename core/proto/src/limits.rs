@@ -12,6 +12,10 @@ const MIB: usize = 1024 * KIB;
 pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * KIB;
 /// The smallest `max_reply`, and the reply allowance of every kind without its own (spec/wire.md §2).
 pub const SMALL_REPLY: usize = 16 * KIB;
+/// Messages asking a report a server sends a requester on a connection and not yet reported
+/// applied, and messages a requester holds in hand there (spec/wire.md §2, spec/sync-streams.md §4
+/// Reports, Flow control).
+pub const REPORT_WINDOW: usize = 64;
 /// Bytes a requester keeps in flight per connection (spec/wire.md §2, spec/sync-streams.md §1).
 pub const WINDOW: usize = 16 * MIB;
 /// Live subscriptions per connection (spec/wire.md §2).

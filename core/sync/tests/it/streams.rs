@@ -121,6 +121,8 @@ struct Pipe {
     next: Id,
     /// Pushes refused (the push rule: no room).
     full: bool,
+    /// The `max_reply` this side's Pulls ask, where a test sets one (pages of a few events).
+    max_reply: Option<u64>,
     log: Log,
 }
 
@@ -130,6 +132,9 @@ impl Wire for Pipe {
         self.next += 1;
         let id = TOP_BIT | self.next;
         m.set_id(id);
+        if let (Msg::Pull(p), Some(n)) = (&mut m, self.max_reply) {
+            p.max_reply = n;
+        }
         self.out.push((c, Frame::Req(id, m.encode())));
         Some(id)
     }
@@ -771,7 +776,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     a.log(s, 100);
     a.open.members.entry(C).or_default().insert(s, member());
     let c = pull_at(&mut a, 1, plain_pull(None, vec![], REPLY_BUDGET)).cursor.unwrap().into_bytes();
-    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.clone()).unwrap(), anchor: None })));
+    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.clone()).unwrap(), stored: true, anchor: None })));
     assert!(a.reported_at(s).is_some(), "the stream's position");
     a.open.members.get_mut(&C).unwrap().insert(t, member());
     let r = pull_at(&mut a, 1, plain_pull(Some(c.clone()), vec![(t, None)], SMALL_REPLY));
@@ -796,7 +801,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     assert_eq!(seen, 300, "every event of the join, each once");
     assert_eq!(a.reported_at(t), None, "its own position until an Applied covers the merge");
     // merged: the member follows the stream once an Applied covers the merging reply
-    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap(), anchor: None })));
+    a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap(), stored: true, anchor: None })));
     assert!(a.reported.contains(&Reported::Merged(C, t)));
     assert_eq!(a.reported_at(t), a.reported_at(s));
 }
@@ -810,7 +815,7 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
 // asks one.
 #[test]
 fn a_merge_is_covered_by_its_own_message_not_an_earlier_one_spec_sync_opens_6() {
-    let applied = |a: &mut Side, c: &[u8]| a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.to_vec()).unwrap(), anchor: None })));
+    let applied = |a: &mut Side, c: &[u8]| a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(c.to_vec()).unwrap(), stored: true, anchor: None })));
     let mut a = Side::new(1);
     let (s, t, u) = (sid(1), sid(2), sid(3));
     for x in [s, t, u] {
@@ -2387,10 +2392,10 @@ fn an_ephemeral_write_not_listed_keeps_s_busy_spec_sync_status_1() {
 }
 
 // spec/sync-status.md §1 (every message carrying an event of S served to the source is reported
-// applied), spec/sync-streams.md §4 (Reports: a message with a cursor asks a report while one
-// served is not reported applied): a reply the requester sends no Applied for (T's listing from
-// the start under way) is covered by the Applied of the next, which asks one though it carries
-// no event: S does not stay busy on an idle connection.
+// applied), spec/sync-streams.md §4 (Reports: an Applied's `stored`; a message with a cursor asks
+// a report while one served is not reported applied with `stored`): b reports a's first reply
+// with `stored` false (T's join from the start under way, so its cursor is not stored); the next
+// reply asks a report though it carries no event, and its Applied reports the position b stored.
 #[test]
 fn a_later_report_covers_what_was_served_spec_sync_status_1() {
     let (s, t) = (sid(1), sid(2));
@@ -2399,8 +2404,10 @@ fn a_later_report_covers_what_was_served_spec_sync_status_1() {
     p.run();
     let replies = p.sent_by_a(42);
     assert!(matches!(replies.first(), Some(Msg::PullReply(r)) if r.report && !r.events.is_empty()));
-    assert!(matches!(replies.last(), Some(Msg::PullReply(r)) if r.report && r.events.is_empty()), "the join's reply asks a report: S's is owed");
-    assert_eq!(p.sent_by_b(44).len(), 1, "b answered the last");
+    assert!(matches!(replies.last(), Some(Msg::PullReply(r)) if r.report && r.events.is_empty()), "the join's reply asks a report: a stored one is owed");
+    let stored: Vec<bool> = p.sent_by_b(44).iter().map(|m| matches!(m, Msg::Applied { stored: true, .. })).collect();
+    assert_eq!(stored, [false, true], "b answered both, the last with its cursor stored");
+    assert!(p.a.reported_at(s).is_some(), "the position b stored is reported");
     assert!(p.a.streams.caught_up(C, &s));
 }
 
@@ -2483,26 +2490,30 @@ fn a_member_at_the_stream_opened_after_the_first_pull_joins_spec_sync_streams_4(
     assert!(p.b.streams.caught_up(C, &s));
 }
 
-// spec/sync-streams.md §4 (Reports: an Applied reports applied the message it names and every
-// one before it), spec/sync-status.md §1: a requester whose Applieds fall more than the server
-// keeps cursors of behind (they arrive late, in order) and then goes quiet is counted caught up:
-// the Applied of the last message names a cursor still kept and covers the rest.
+// spec/sync-streams.md §4 (Reports: a server sends no message asking a report while
+// `REPORT_WINDOW` it sent are not reported applied; an Applied reports applied the message it
+// names and every one before it), spec/sync-status.md §1: b's Applieds are held back while a logs
+// more than the window of entries; a pushes the window and waits. Once they arrive, in order, a
+// pushes the rest and counts b caught up (failed: a pushed on and forgot the oldest cursors).
 #[test]
-fn a_requester_far_behind_on_reports_is_caught_up_once_quiet_spec_sync_status_1() {
+fn pushes_wait_while_the_report_window_is_full_spec_sync_streams_4() {
     let s = sid(1);
     let mut p = Pair::sharing(&[s]);
+    p.b.table.held = Some(true);
     p.run();
-    let kept = 2 * osis_sync::streams::PENDING_CAP;
-    for i in 0..kept + 10 {
-        p.a.log(s, 100 + i);
+    let window = osis_proto::limits::REPORT_WINDOW;
+    let pushes = p.sent_by_a(43).len();
+    let xs: Vec<BlobId> = (0..window + 10).map(|i| {
+        let x = p.a.log(s, 100 + i);
         p.run_with(|ab, m| !ab && m.kind() == 44);
-    }
-    let reports = p.held.len();
-    assert!(reports > kept, "{reports} Applieds held back");
+        x
+    }).collect();
+    assert_eq!(p.sent_by_a(43).len() - pushes, window, "a pushes the window and waits");
     assert!(!p.a.streams.caught_up(C, &s));
     p.release();
     p.run();
-    assert!(p.a.streams.caught_up(C, &s), "the last Applied covers every push");
+    assert!(xs.iter().all(|x| p.b.store.entry(&s, x).unwrap().is_some()));
+    assert!(p.a.streams.caught_up(C, &s), "the rest pushed and reported");
 }
 
 // spec/sync-streams.md §4 (Reports: a server seals each message's cursor afresh), notes/principles.md
@@ -2592,7 +2603,7 @@ fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
     p.b.streams.closed(C);
     p.join(s);
     p.run();
-    let Some(Msg::Applied { cursor: old, anchor: None }) = p.sent_by_b(44).last().map(|m| (*m).clone()) else { panic!("b reported") };
+    let Some(Msg::Applied { cursor: old, stored: true, anchor: None }) = p.sent_by_b(44).last().map(|m| (*m).clone()) else { panic!("b reported") };
     let at = p.a.store.position(old.as_bytes()).unwrap();
     assert!(p.a.streams.caught_up(C, &s));
     // a reconnect again: the last Applied is of the connection before
@@ -2604,7 +2615,7 @@ fn an_applied_of_an_earlier_connection_reports_nothing_spec_sync_streams_4() {
     p.run_with(|ab, m| !ab && m.kind() == 44);
     assert!(held(&p.b, s).contains(&e));
     assert_eq!(p.a.store.position(old.as_bytes()).unwrap(), at, "the old cursor names the stream's position");
-    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor: old, anchor: None })));
+    p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor: old, stored: true, anchor: None })));
     assert!(!p.a.streams.caught_up(C, &s), "an Applied of an earlier connection reported this one's push");
     p.release();
     p.run();
@@ -3154,9 +3165,9 @@ fn an_applied_with_no_anchor_counts_nothing_spec_sync_streams_4() {
     p.run_with(|ab, m| !ab && m.kind() == 44);
     let mut stripped = 0;
     for (_, f) in std::mem::take(&mut p.held) {
-        let Msg::Applied { cursor, anchor } = f.msg() else { continue };
+        let Msg::Applied { cursor, stored, anchor } = f.msg() else { continue };
         stripped += usize::from(anchor.is_some());
-        p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor, anchor: None })));
+        p.a.with(p.now, |st, c| st.message(c, C, Incoming::Push(Msg::Applied { cursor, stored, anchor: None })));
     }
     p.run();
     assert!(stripped > 0 && p.b.store.entry(&s, &x).unwrap().is_some(), "b took x and anchored its Applied");
@@ -3194,6 +3205,126 @@ fn a_gap_is_counted_from_the_reply_that_reads_it_again_spec_sync_streams_4() {
         assert_eq!([x, y].iter().all(|e| p.b.store.entry(&s, e).unwrap().is_some()), keep.is_some(), "b keeps them exactly when its table holds them");
         assert_eq!(p.b.streams.holding(C), 0, "nothing kept for the gap");
     }
+}
+
+// spec/sync-streams.md §4 (Reports: a server keeps every message an Applied may name, and a
+// listing's pages are reported applied as they apply), NetStream SN_reportwin: b's first sync of
+// S is a listing from the start of far more pages than `REPORT_WINDOW`; a counts b holding every
+// entry b took (failed: a kept only the newest pages' cursors and counted their sends alone,
+// while b counted them all and never streamed them back).
+#[test]
+fn a_long_listing_is_counted_held_whole_spec_sync_streams_4() {
+    let s = sid(1);
+    let mut p = Pair::new();
+    p.b.table.held = Some(true);
+    // about 7 KB inline each: two to a page of `SMALL_REPLY`
+    let xs: Vec<BlobId> = (0..300).map(|i| p.a.log(s, 7000 + i)).collect();
+    p.b.pipe.max_reply = Some(SMALL_REPLY as u64);
+    p.shared_read(s);
+    // a follows b's stream before b pulls
+    p.run_with(|ab, m| !ab && m.kind() == 41);
+    // b's pushes of what it takes are lost and a's Pull reading them again waits: what b took
+    // reaches a by b's Applieds, and b streams back nothing they counted
+    p.release();
+    p.run_with(|ab, m| (!ab && matches!(m, Msg::Stream(st) if st.cursor.is_some())) || (ab && m.kind() == 41));
+    p.held.retain(|(ab, _)| *ab);
+    p.release();
+    p.run();
+    let pages = p.sent_by_a(42).len();
+    assert!(pages > 2 * osis_proto::limits::REPORT_WINDOW, "{pages} pages");
+    assert!(xs.iter().all(|x| p.b.store.entry(&s, x).unwrap().is_some()));
+    let uncounted = xs.iter().filter(|x| !knows(&p.a, p.a.src(), s, **x)).count();
+    assert_eq!(uncounted, 0, "a counts b holding every entry it took");
+}
+
+// spec/sync-streams.md §4 (Sends counted: a requester tells 14 only where it told no refusal
+// since its last Applied; what it told is what the server leaves uncounted): b keeps S unread and
+// holds a's push of y in hand awaiting its body; a sends x under a bad stamp, which b refuses
+// (code 1) as it comes. y's body comes and both pushes apply before one Applied: b tells nothing
+// more of x (failed: b forgot its refusal at y's apply, and told x not held, 14, at x's).
+#[test]
+fn a_refusal_told_before_an_earlier_apply_stands_for_the_report_spec_sync_streams_4() {
+    let (mut p, k) = Pair::kept();
+    p.join(k.id);
+    p.run();
+    let y = k.stamped(&mut p.a, 40_000, true);
+    // b's Fetch of y is held back: the push of y stays in hand
+    p.run_with(|ab, m| !ab && m.kind() == 19);
+    let x = k.stamped(&mut p.a, 500, false);
+    p.run_with(|ab, m| !ab && m.kind() == 19);
+    assert!(p.b.store.entry(&k.id, &y).unwrap().is_none(), "y's push is in hand");
+    p.release();
+    p.run();
+    assert!(p.b.store.entry(&k.id, &y).unwrap().is_some());
+    let told: Vec<Code> = p.sent_by_b(43).iter().flat_map(|m| match m {
+        Msg::Stream(st) if st.cursor.is_none() => st.events.iter().filter_map(|(_, e)| match e {
+            Event::Refused(b, c) if *b == x => Some(*c),
+            _ => None,
+        }).collect(),
+        _ => Vec::new(),
+    }).collect();
+    assert_eq!(told, [Code::REFUSED], "b refused x once, and told nothing more of it");
+}
+
+// hostile requester: one pulling on and never reporting is answered `REPORT_WINDOW` replies
+// asking a report, then refused (spec/sync-streams.md §4 Reports: no message asking a report past
+// the window), however long it goes on.
+#[test]
+fn a_requester_never_reporting_is_refused_past_the_window_spec_sync_streams_4() {
+    let s = sid(1);
+    let mut p = Pair::sharing(&[s]);
+    p.a.log(s, 100);
+    let window = osis_proto::limits::REPORT_WINDOW;
+    let mut cursor = None;
+    let mut answered = Vec::new();
+    for i in 0..window + 3 {
+        let id = TOP_BIT | (1000 + i as u32);
+        let pull = Pull { id, ..plain_pull(cursor.clone(), Vec::new(), REPLY_BUDGET) };
+        p.a.with(p.now, |st, c| st.message(c, C, Incoming::Request(id, Msg::Pull(Box::new(pull)))));
+        let answer = p.a.pipe.out.drain(..).find_map(|(_, f)| match f {
+            Frame::Ans(x, _) if x == id => Some(f.msg()),
+            _ => None,
+        });
+        match answer {
+            Some(Msg::PullReply(r)) => {
+                assert!(r.report);
+                cursor = r.cursor.map(osis_proto::Cursor::into_bytes);
+                answered.push(true);
+            }
+            Some(Msg::Error { code, .. }) => {
+                assert_eq!(code, Code::DECLINED);
+                answered.push(false);
+            }
+            m => panic!("{m:?}"),
+        }
+    }
+    assert!(answered[..window].iter().all(|x| *x), "the window answered");
+    assert!(answered[window..].iter().all(|x| !*x), "refused past it");
+}
+
+// spec/sync-streams.md §4 (Flow control: a stream owing an Applied not sent yet applies no
+// message): b's pushes find no room, so the Applied for x waits; a's push of y stays in hand
+// until it goes, so what b reports at once stays what one step applied (failed: y applied
+// behind it, the next Applied covering both).
+#[test]
+fn nothing_applies_while_an_applied_waits_spec_sync_streams_4() {
+    let s = sid(1);
+    let mut p = Pair::sharing(&[s]);
+    p.b.table.held = Some(true);
+    p.run();
+    p.b.pipe.full = true;
+    let x = p.a.log(s, 100);
+    p.run();
+    let y = p.a.log(s, 101);
+    p.run();
+    // what a's stream shows of a is recorded as each message applies
+    assert!(knows(&p.b, p.b.src(), s, x), "x's push applied");
+    assert!(!knows(&p.b, p.b.src(), s, y), "y's push waits for x's Applied");
+    p.b.pipe.full = false;
+    p.run();
+    assert!(knows(&p.b, p.b.src(), s, y));
+    assert!(knows(&p.a, p.a.src(), s, x) && knows(&p.a, p.a.src(), s, y));
+    assert!(p.a.streams.caught_up(C, &s));
 }
 
 // hostile requester: refusals told of entries a never sent it grow nothing at a, the same at 2

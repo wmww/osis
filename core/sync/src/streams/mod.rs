@@ -62,11 +62,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// infinity whole blobs come inline, and each again from every source once a second one joins.
 pub const INLINE_LIMIT: u64 = 16 * 1024;
 
-/// Messages a requester keeps in hand per connection while their bodies arrive
-/// (spec/sync-streams.md §4 Flow control: its local bound). At 0 every push is dropped and read
-/// again; at infinity a slow body holds unbounded announcements in memory.
-pub const PENDING_CAP: usize = 64;
-
 /// Fetches a requester keeps out per connection (spec/sync-streams.md §5: how many are asked at
 /// a time is local policy). At 0 nothing is fetched; at infinity the window alone bounds them.
 pub const FETCHES_OUT: usize = 2;
@@ -394,7 +389,7 @@ impl Streams {
             Incoming::Request(id, Msg::Pull(p)) => self.on_pull(ctx, conn, id, *p),
             Incoming::Request(id, Msg::Fetch { max_reply, ids, .. }) => self.on_fetch(ctx, conn, id, max_reply, ids),
             Incoming::Request(id, Msg::Want { max_reply, ids, .. }) => self.on_want(ctx, conn, id, max_reply, ids),
-            Incoming::Push(Msg::Applied { cursor, anchor }) => self.on_applied(ctx, conn, cursor.into_bytes(), anchor.map(osis_proto::Cursor::into_bytes)),
+            Incoming::Push(Msg::Applied { cursor, stored, anchor }) => self.on_applied(ctx, conn, cursor.into_bytes(), stored, anchor.map(osis_proto::Cursor::into_bytes)),
             Incoming::Push(Msg::Stream(st)) => self.on_stream(ctx, conn, *st),
             Incoming::Reply(To::Streams, id, m) => self.on_reply(ctx, conn, id, m),
             _ => {}

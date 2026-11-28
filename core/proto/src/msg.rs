@@ -274,9 +274,10 @@ pub enum Msg {
     Pull(Box<Pull>),
     PullReply(Box<PullReply>),
     Stream(Box<Stream>),
-    /// `Applied [44, 0, cursor, Opt(anchor)]`: `anchor`, a cursor of the requester's own log at
-    /// or past its events of what the messages reported carried.
-    Applied { cursor: Cursor, anchor: Option<Cursor> },
+    /// `Applied [44, 0, cursor, stored, Opt(anchor)]`: `stored`, the requester stored `cursor`
+    /// (no listing from the start under way); `anchor`, a cursor of the requester's own log at or
+    /// past its events of what the messages reported carried.
+    Applied { cursor: Cursor, stored: bool, anchor: Option<Cursor> },
     Digest { digest: [u8; 32] },
     Members { sync_ids: Vec<SyncId>, more: bool },
 }
@@ -496,7 +497,7 @@ impl Msg {
             M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral), opt_cursor(&p.anchor)],
             M::PullReply(r) => vec![k, id, events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.trimmed), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(st) => vec![k, id, events_value(&st.events), opt_cursor(&st.cursor), Value::Bool(st.report), Value::uint(st.seq)],
-            M::Applied { cursor, anchor } => vec![k, id, Value::bytes(cursor.as_bytes()), opt_cursor(anchor)],
+            M::Applied { cursor, stored, anchor } => vec![k, id, Value::bytes(cursor.as_bytes()), Value::Bool(*stored), opt_cursor(anchor)],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
             M::Head { sync_id, after, .. } => vec![k, id, s(sync_id), Value::opt(after.map(|x| Value::bytes(&x.0)))],
@@ -649,7 +650,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             }
             Msg::Stream(Box::new(st))
         }
-        44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)?, anchor: opt_cursor_of(&mut f)? },
+        44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)?, stored: f.bool()?, anchor: opt_cursor_of(&mut f)? },
         45 => Msg::Digest { digest: f.fixed()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
         49 => {
