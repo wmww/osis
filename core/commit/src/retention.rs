@@ -16,13 +16,13 @@ pub const ROLE_PURGE_BY: PurgeBy = PurgeBy::Admin;
 pub const EPHEMERAL_PURGE_BY: PurgeBy = PurgeBy::Writer;
 
 /// The AK of the creation record.
-pub const CREATED: &str = "created.0";
+pub const CREATED: &str = osis_schema::core_types::CREATED.as_str();
 
 /// The AK of a thing's history setting (spec/commits.md §5 The setting).
-pub const RETENTION: &str = "retention^.0";
+pub const RETENTION: &str = osis_schema::core_types::RETENTION.as_str();
 
 /// The AK of the delta a purge request with nothing to reset carries.
-pub const PURGE: &str = "purge.0";
+pub const PURGE: &str = osis_schema::core_types::PURGE.as_str();
 
 /// Whether a delta of `ak` is a destroying request's, what tells another node its thing was
 /// destroyed (spec/commits.md §5 Destruction): a purge's `purge.0`.

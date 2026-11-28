@@ -127,6 +127,11 @@ impl<T> Aspect<T> {
         // checked when built (`new`)
         Ak::new(self.ak).unwrap_or(Ak::MIN)
     }
+
+    /// Its name as text.
+    pub const fn as_str(&self) -> &'static str {
+        self.ak
+    }
 }
 
 impl<T> Clone for Aspect<T> {
