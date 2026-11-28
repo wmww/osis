@@ -1,11 +1,10 @@
 # Stub rewrite: owed and open
-> Summary: What the stub rewrite (design: notes/stubs.md; rules: the spec) still owes, and its open questions for Tess, each with options and the working answer as built.
+> Summary: What the stub design (notes/stubs.md; rules: the spec) still owes, and its questions for Tess: the chain holders a unit's readers learn, a later pass over dependent and independent things.
 
-## Status
-On main: spec, engine, osis-sync and the models. Tess approved the shape and took the working answers below; she may revise any. A decision is recorded by changing the spec and deleting its question here.
+Tess approved the shape and the working answers below; she may revise any. A decision is recorded by changing the spec and deleting its question here.
 
 ## Decided (Tess), to build
-- **Chain holders at sync** (Sheave, built): a sync-only cut names the holders on its unit's chains, chain stubs follow every hop, an entry per boxed role (notes/stubs.md). Where no reader of the unit reads the target's roster nothing names the chain, and the oracle counts only grants a node can learn. For Tess: a reader of the unit learns those holders of the target (its own chain alone); spec/requirements.md says a node granted sync "learns ... who granted it" and a node not reading data "knows none of its role holders", which a strict reading of the second breaks for its own chain's holders.
+- **Chain holders at sync** (built): a sync-only cut names the holders on its unit's chains, chain stubs follow every hop, an entry per boxed role (notes/stubs.md). Where no reader of the unit reads the target's roster nothing names the chain, and the oracle counts only grants a node can learn. For Tess: a reader of the unit learns those holders of the target (its own chain alone); spec/requirements.md says a node granted sync "learns ... who granted it" and a node not reading data "knows none of its role holders", which a strict reading of the second breaks for its own chain's holders.
 - **Settled without her**: pairing hands over no trust records (each node sides by its own trust set).
 - **Later (Tess)**: a pass over dependent and independent things. Among its questions: a weak to a dependent thing its independent's unit does not hold; the record grant's writes go as whole grant-class parts, so a commit writing a mint admin's grant on X beside other grants on X shows those grants to the unit's readers (a lone `demote`, as the API writes it, shows nothing more); what X was written while dependent stays openable under its mint admin's epochs in the bodies under that admin's sync ID (the minting commit writes the admin's `holds`), its readers reading it no more only by their judgement of X's role entries.
 

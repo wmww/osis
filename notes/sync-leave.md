@@ -18,7 +18,7 @@ One wait, for a sync ID leaving the sync set and a thing leaving the node closur
 ## A sync ID
 - Each sync ID out of the sync set that this node syncs or holds rows of is one `Effects` key (`leave::judge`). The first settle wants every stored one (a start, or a restart of the modules), later ones each S the sync set loses.
 - S has left when it has an entry (as synced, else as this node's keys hold it, `Engine::sync_holder`). Its entry and pass place are noted (`leaving`); it stays synced while it waits.
-- Nor while an own self-removal waiting (`Engine::removal_waits_under`: one of S's own commits still in `held_wait`) has a body under S, pass or no source: a node whose own removal ends its role there keeps S (served, its secrets kept by the same wait) until status tells the removal done. Without it, a removal made with no source of S stopped S at once and was shredded with it, so its peers never learned it (`holding::a_self_removal_made_cut_off_reaches_the_reader_once_back_*`).
+- Nor while an own self-removal waiting (`Engine::removal_waits_under`: one of S's own commits still in `held_wait`) has a body under S, pass or no source: a node whose own removal ends its role there keeps S (served, its secrets kept by the same wait) until status tells the removal done. Without it, a removal made with no source of S would stop S at once and be shredded with it, so its peers would never learn it (`holding::a_self_removal_made_cut_off_reaches_the_reader_once_back_*`).
 - After the pass, this node's keys must still hold S as when it left (`sync_holder` equal); else it stops at once (secrets lost, a removal: shredded, nothing released).
 - Then it stops: a read S's thing is released (below), then `Store::shred`, then not synced. Before each shred the engine drops what only S's entries own of the blobs no other sync ID's entry or tombstone names (`Store::alone_under`, `Engine::shredding`): its notes (`bp/`) of S's per-sync-ID copies sealed for S's thing alone, whether the commit stays held or not (a certificate copy of the account's chain under a released thing's sync ID), the held commit's openings under things whose record is gone (`ou/`), and blobs of commits not held. A shared blob of a held commit stays: a peer still listing it under another sync ID is how a commit dropped as invalid is found again. Engine first, so a crash between does both again.
 
@@ -36,6 +36,6 @@ Per sync ID out of the sync set with rows or an entry, one key; per leaving S it
 
 ## Reasons
 - One value every module follows, written by the module that owns leaving: a per-module "also synced while waiting" would be a carve-out in each.
-- No wait for a peer to take own unsynced writes: it kept rows for a peer that may never return.
+- No wait for a peer to take own unsynced writes: it would keep rows for a peer that may never return.
 
 Tests: rules on a fake ground, core/sync/tests/it/leave.rs.

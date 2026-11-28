@@ -38,7 +38,7 @@ The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engi
 - The same rule as leaving (notes/sync-leave.md): it waits only while a peer could take it. Own nodes leave by the same commit, so counting them would leave two nodes of one account waiting on each other for good. Skipping them is safe because they learn the removal from this account's own sync IDs and inbox (spec/permissions.md §2), never only from S.
 - `by_commit` is a plain map: a pair leaving it leaves `held_pairs`, which the judgement reads per (S, commit).
 - Own commits come by pair (`Engine::own_feed`, each pair read as it stands with `own_has`), so one more own commit costs one pair, never the S's set (osis `minting::*`, `status: own commits taken`).
-- Tests: status.rs `self_removal_*`, flows.rs `a_self_removal_*`, siblings.rs `a_siblings_self_removal_*`.
+- Tests: status.rs `self_removal_*`, holding.rs `a_self_removal_*`, core/engine/tests/it/facade.rs `a_siblings_self_removal_*`.
 
 ## Stranded
 The rule is mod.rs's (`judge_strandings`: heard out and the engine's word, the report from `Engine::stranding`). The judgement reads the engine's word first and S's sources only where it could strand S, so a reconnect judges no other S. `SyncStatus::stranded` is that or unread's stranded.
