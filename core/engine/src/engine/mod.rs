@@ -3554,9 +3554,9 @@ impl Engine {
 
     /// An open from the persisted index and a rebuild from the commit records each compute the
     /// indexes and role timelines this node holds (spec/permissions.md §5.1 step 5: validity is
-    /// a function of the held set), the open reading no blob (what a held
-    /// record needs is in the store, whatever blobs expiry or a drop took) and judging every
-    /// part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
+    /// a function of the held set), the open's load reading no blob (what a held
+    /// record needs is in the store, whatever blobs expiry or a drop took; its sweep reads the
+    /// `secrets.0` states whole, a paged one's pages too) and judging every part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
     /// difference. Debug builds run it at the end of the engine's history (its drop), with the
     /// verdicts (`checked_verdicts`) and states (`checked_states`) left unchecked; tests call it
     /// where a reproducer's point is.
@@ -3620,9 +3620,12 @@ impl Engine {
                     return Ok(None);
                 }
                 crate::apply::load(&mut tx, rebuild)?;
+                // what the load read of blobs: none but a rebuild's
+                let loaded = tx.blobs.reads;
                 // then the open's sweep (`Engine::load`; a rebuild's load runs it): every
                 // `secrets.0` state and pending commit's boxes read whole again, so a live index
-                // lacking what they give now fails here, not only after a restart
+                // lacking what they give now fails here, not only after a restart; a state
+                // stored as a paged part reads its pages, held with the part
                 if !rebuild {
                     crate::flows::reopen_all(&mut tx)?;
                 }
@@ -3635,7 +3638,7 @@ impl Engine {
                     }
                     assert!(rows.is_empty(), "node/perm rows without a role commit: {:?}", rows.keys().collect::<Vec<_>>());
                 }
-                Ok(Some(tx.blobs.reads))
+                Ok(Some(loaded))
             };
             // its work is not the measured code's (scale checks count work)
             let r = osis_base::costs::paused(|| osis_perm::uncounted(load));
