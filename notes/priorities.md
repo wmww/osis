@@ -9,6 +9,16 @@
 
 **Structure first (Tess).** Get the code to the right shape as soon as possible; bugs and polish after. A fix in an area a structural piece will rewrite may be re-broken or fixed by it: leave it, or record it. Main need not work between pieces. Tests need not match what was there 1:1: a piece that reaches old tests or harnesses rewrites them slimmer. Combine or reshuffle work when it saves effort; non-colliding structural pieces run in parallel (two agents on the primary line).
 
+## First: an alpha candidate (Tess)
+Goal: a commit that, as far as known, behaves roughly correctly: no catastrophic known security issue, no completely broken functionality; performance problems are fine. Reach it in as few worker sessions as possible; once there, record its hash in notes/handoff.md as the point to back out to, then perf, review, API, wire and app work go in any order as Tess's time allows, and stabilizing after.
+Blocking, in order:
+1. Main red only with listed failures (the local-part log's landing and whatever else broke the sim and rotation tests).
+2. The full-size sync differential's classes: each fixed or judged a model question (issues/differential-full-size-classes.md).
+3. Security: issues/demoted-writer-deletes-at-stores.md and issues/record-edge-removal-carriage.md; issues/engine-fault-outside-units.md (a node that spins).
+4. A dogfood smoke pass (notes/dogfood.md): chat between two accounts, pairing, removing a node, a link; fix what is broken.
+5. One full gate at the candidate, known failures each judged not blocking.
+Not blocking: perf and cost issues, low issues, the structural items below.
+
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
 - Purge by ID read differently forgotten or not (purge-by-id-forgetting: three seeds).
