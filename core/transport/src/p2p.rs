@@ -201,8 +201,12 @@ impl Relay {
         format!("{}@{}", osis_base::hex::encode(&self.key), self.addr)
     }
 
+    /// `<key>@<socket address>`, the key as 64 lowercase hex digits (spec/sync-transport.md §3).
     pub fn parse(s: &str) -> Option<Relay> {
         let (k, a) = s.split_once('@')?;
+        if k.len() != 64 || !k.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
+            return None;
+        }
         let key = osis_base::hex::decode(k)?.try_into().ok()?;
         Some(Relay { key, addr: a.parse().ok()? })
     }

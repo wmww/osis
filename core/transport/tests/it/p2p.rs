@@ -1195,3 +1195,18 @@ fn quic_session_protocol_ranks_alike_spec_sync_10() {
         }
     });
 }
+
+// spec/sync-transport.md §3: a `peer://` URL's items are socket addresses or relays (a key of 64
+// lowercase hex digits); other items are skipped, and items past the 16th.
+#[test]
+fn peer_url_items_skip_other_forms_and_past_the_16th_spec_sync_transport_3() {
+    let key = "ab".repeat(32);
+    let url = format!("peer://1.2.3.4:5 {key}@6.7.8.9:10 {}@6.7.8.9:11 {key}@6.7.8.9 x:1 ab@1.1.1.1:1", key.to_uppercase());
+    let got = p2p::items(&url).unwrap();
+    assert_eq!(got.direct, [sa("1.2.3.4:5")]);
+    assert_eq!(got.relays, [Relay { key: [0xab; 32], addr: sa("6.7.8.9:10") }], "uppercase, portless and short keys skipped");
+    let many: Vec<String> = (1..=20).map(|i| format!("10.0.0.{i}:1")).collect();
+    let got = p2p::items(&format!("peer://{}", many.join(" "))).unwrap();
+    assert_eq!(got.direct.len(), 16);
+    assert_eq!(got.direct.last(), Some(&sa("10.0.0.16:1")));
+}
