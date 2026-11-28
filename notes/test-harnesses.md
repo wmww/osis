@@ -205,3 +205,6 @@ A part no honest writer makes, to test how receivers judge it: `Engine::commit_h
 
 ## Long by-hand runs
 Run a long by-hand job (a shrink, a sweep) from a copied test binary, as `tools/mutate.py` does, not through `cargo test`: an edit to the tree mid-run rebuilds under it and the run is lost.
+
+## Waiting commits in World
+`World::run` jumps to every wake within `HORIZON_MS` (an hour), so a commit waiting on `Drift` (`MAX_DRIFT`, also an hour) applies inside the same run: a test of a waiting commit lowers `w.horizon_ms`.
