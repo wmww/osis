@@ -123,13 +123,15 @@ fn a_text_session_commits_when_idle() {
     drop(s);
 }
 
-// notes/api.md Handle and lifecycle: on the app's runtime `close` returns `Closed` only once the
-// node's sync driver is gone, so the app may shut that runtime down next. The driver waits after
-// a step (`Knobs::driver_step`, after a socket client's arrival) until `close` has let the node
-// go (a value the node keeps for its life dropped), then goes on; once `close` returns the
-// driver has dropped the hook it keeps until it ends.
+// notes/api.md Handle and lifecycle: `close` returns `Closed` only once the node's sync driver is
+// gone, on the app's runtime (so the app may shut it down next) and on osis's own (shut down after
+// the driver, never from it: a task that shuts its runtime down goes on polling it, and a timer
+// it registers panics). The driver waits after a step (`Knobs::driver_step`, after a socket
+// client's arrival) until `close` has let the node go (a value the node keeps for its life
+// dropped), then goes on; once `close` returns the driver has dropped the hook it keeps until it
+// ends.
 #[test]
-fn close_on_the_app_runtime_returns_once_the_driver_is_gone() {
+fn close_returns_once_the_driver_is_gone() {
     use std::sync::{atomic::AtomicBool, atomic::Ordering, mpsc, Arc, Mutex};
     struct Dropped(mpsc::Sender<()>);
     impl Drop for Dropped {
@@ -137,33 +139,35 @@ fn close_on_the_app_runtime_returns_once_the_driver_is_gone() {
             let _ = self.0.send(());
         }
     }
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let dir = Dir::new("close-driver");
-    let (stepped_tx, stepped_rx) = mpsc::channel();
-    let (gone_tx, gone_rx) = mpsc::channel();
-    let (armed, gone_rx) = (AtomicBool::new(true), Mutex::new(gone_rx));
-    let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        if armed.swap(false, Ordering::AcqRel) {
-            stepped_tx.send(()).unwrap();
-            gone_rx.lock().unwrap().recv().unwrap();
-        }
-    });
-    let mut o = at(&dir.0, Runtime::Tokio(rt.handle().clone()));
-    o.app.internals.no_listen = true;
-    o.app.internals.driver_step = Some(hook.clone());
-    let kept = Dropped(gone_tx);
-    o.app.internals.text_save = Some(Arc::new(move || {
-        let _ = &kept;
-    }));
-    let db = osis::internals::create(o).unwrap();
-    db.listen_socket().unwrap();
-    // a client's arrival is a step of the driver's; the client's own outcome does not matter
-    let path = dir.0.clone();
-    let client = std::thread::spawn(move || drop(block_on(Osis::connect_socket(&path, osis::AppConfig::default()))));
-    stepped_rx.recv().unwrap();
-    assert_eq!((db.close().unwrap(), Arc::strong_count(&hook)), (osis::Close::Closed, 1), "closed, the driver's hook dropped");
-    client.join().unwrap();
-    drop(rt);
+    let app = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    for (name, rt) in [("app", Runtime::Tokio(app.handle().clone())), ("own", Runtime::Own)] {
+        let dir = Dir::new("close-driver");
+        let (stepped_tx, stepped_rx) = mpsc::channel();
+        let (gone_tx, gone_rx) = mpsc::channel();
+        let (armed, gone_rx) = (AtomicBool::new(true), Mutex::new(gone_rx));
+        let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if armed.swap(false, Ordering::AcqRel) {
+                stepped_tx.send(()).unwrap();
+                gone_rx.lock().unwrap().recv().unwrap();
+            }
+        });
+        let mut o = at(&dir.0, rt);
+        o.app.internals.no_listen = true;
+        o.app.internals.driver_step = Some(hook.clone());
+        let kept = Dropped(gone_tx);
+        o.app.internals.text_save = Some(Arc::new(move || {
+            let _ = &kept;
+        }));
+        let db = osis::internals::create(o).unwrap();
+        db.listen_socket().unwrap();
+        // a client's arrival is a step of the driver's; the client's own outcome does not matter
+        let path = dir.0.clone();
+        let client = std::thread::spawn(move || drop(block_on(Osis::connect_socket(&path, osis::AppConfig::default()))));
+        stepped_rx.recv().unwrap();
+        assert_eq!((db.close().unwrap(), Arc::strong_count(&hook)), (osis::Close::Closed, 1), "{name}: closed, the driver's hook dropped");
+        client.join().unwrap();
+    }
+    drop(app);
 }
 
 // spec/sync-transport.md §6 (a path socket), notes/client-port.md §5: the socket directory is

@@ -206,7 +206,7 @@ impl Inner {
 
 /// What `close` waits on: the count of user handles (clones, `WeakOsis::upgrade`, streams,
 /// text sessions; not the dispatcher's or timers' short-lived ones), whether `Inner` is gone,
-/// and whether a driver task on the app's runtime still runs (`DriverAlive`).
+/// and whether the driver task still runs (`DriverAlive`).
 #[derive(Default)]
 pub(crate) struct Life {
     m: Mutex<(usize, bool, bool)>,
@@ -233,8 +233,9 @@ impl Drop for LifeGuard {
     }
 }
 
-/// Held by the driver task on the app's multi-thread runtime until it ends: `close` returns only
-/// after, so the app may shut that runtime down next with nothing of the node left to poll it.
+/// Held by the driver task on a multi-thread runtime until it ends (on osis's own, until that
+/// runtime is shut down after it, `net::OwnRuntime`): `close` returns only after, so nothing of
+/// the node is left to poll the runtime, and the app may shut its own down next.
 pub(crate) struct DriverAlive(Arc<Life>);
 
 impl DriverAlive {
@@ -671,8 +672,8 @@ impl Osis {
         let life = self.inner.life.0.clone();
         drop(self);
         // what still holds it besides user handles (a callback, an engine call, a timer) ends,
-        // then the driver task on the app's runtime (in place on a multi-thread runtime: the
-        // holder may need that worker's tasks)
+        // then the driver task (in place on a multi-thread runtime: the holder may need that
+        // worker's tasks)
         let (users, closed, _) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed, driver)| *users == 0 && !(*closed && !*driver)).unwrap_or_else(|e| e.into_inner()));
         if !closed {
             return Ok(Close::StillOpen { handles: users });

@@ -5,7 +5,7 @@
 //! (`TransportLinks`), or through a test's in-process fabric (`ManualNet`).
 
 use crate::error::{Error, Result};
-use crate::handle::{Locked, WeakOsis};
+use crate::handle::{DriverAlive, Locked, WeakOsis};
 use crate::watch::lock;
 use osis_base::{Clock, ManualClock, Mono, Tid, Time};
 use osis_sync::{ConnId, Input, Links, Listening, NodeKey, Out, TransportLinks, apply};
@@ -67,17 +67,31 @@ pub(crate) enum Ctl {
     Listening(oneshot::Sender<Vec<osis_blob::Address>>),
 }
 
-/// Where the driver task runs and what it hears from the handle.
-pub(crate) type DriverStart = (tokio::runtime::Handle, mpsc::UnboundedReceiver<Ctl>);
+/// Where the driver task runs, what it hears from the handle, and, on osis's own runtime, where
+/// it hands its `DriverAlive` as it ends (`OwnRuntime`).
+pub(crate) type DriverStart = (tokio::runtime::Handle, mpsc::UnboundedReceiver<Ctl>, Option<oneshot::Sender<DriverAlive>>);
 
-/// osis's own runtime, shut down without waiting when the node goes (from any thread, its own
-/// workers included).
-pub(crate) struct OwnRuntime(Option<tokio::runtime::Runtime>);
+/// osis's own runtime. When the node goes it is shut down once the driver task has ended, on a
+/// thread of its own: the node may go on the driver task, and a task that shuts its own runtime
+/// down goes on polling it (a timer it then registers panics). The driver's `DriverAlive` drops
+/// after, so `close` returns with nothing of the node left on the runtime.
+pub(crate) struct OwnRuntime(Option<(tokio::runtime::Runtime, oneshot::Receiver<DriverAlive>)>);
 
 impl Drop for OwnRuntime {
     fn drop(&mut self) {
-        if let Some(rt) = self.0.take() {
+        let Some((rt, ended)) = self.0.take() else { return };
+        let (tx, rx) = std::sync::mpsc::channel::<tokio::runtime::Runtime>();
+        let stopper = std::thread::Builder::new().name("osis-stop".into()).spawn(move || {
+            let Ok(rt) = rx.recv() else { return };
+            // the driver's mark, or none once it ended without one (never started)
+            let alive = ended.blocking_recv().ok();
             rt.shutdown_background();
+            drop(alive);
+        });
+        match stopper {
+            Ok(_) => drop(tx.send(rt)),
+            // no thread to wait on: as before the node had one
+            Err(_) => rt.shutdown_background(),
         }
     }
 }
@@ -98,16 +112,17 @@ impl Net {
         if let Some(m) = manual {
             return Ok((Net::Manual { net: m.clone(), index: usize::MAX }, None));
         }
-        let (handle, own) = match rt {
+        let (handle, own, ended) = match rt {
             Runtime::None => return Ok((Net::Off, None)),
-            Runtime::Tokio(h) => (h.clone(), None),
+            Runtime::Tokio(h) => (h.clone(), None, None),
             Runtime::Own => {
                 let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("osis-sync").enable_all().build().map_err(|e| Error::Network(e.to_string()))?;
-                (rt.handle().clone(), Some(rt))
+                let (tx, rx) = oneshot::channel();
+                (rt.handle().clone(), Some((rt, rx)), Some(tx))
             }
         };
         let (ctl, rx) = mpsc::unbounded_channel();
-        Ok((Net::Driver { ctl, _own: OwnRuntime(own) }, Some((handle, rx))))
+        Ok((Net::Driver { ctl, _own: OwnRuntime(own) }, Some((handle, rx, ended))))
     }
 
     /// Whether another node can ever be reached.
@@ -204,7 +219,7 @@ impl crate::Osis {
                 }
             }
             Net::Driver { .. } => {
-                let Some((handle, rx)) = driver else { return Ok(()) };
+                let Some((handle, rx, ended)) = driver else { return Ok(()) };
                 let mut lan = osis_transport::lan::LanConfig::default();
                 if let Lan::On { also_announce_to } = &cfg.lan {
                     lan.to.extend(also_announce_to.iter().copied());
@@ -215,12 +230,16 @@ impl crate::Osis {
                 let listen = !cfg.app.internals.no_listen;
                 let start = Start { listen: listen.then(|| (peer_urls(), secret)), discover: listen && matches!(cfg.lan, Lan::On { .. }) };
                 let db = self.downgrade();
-                let app_runtime = matches!(cfg.runtime, crate::Runtime::Tokio(_)) && handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread;
-                let alive = app_runtime.then(|| crate::handle::DriverAlive::new(&self.inner.life.0));
+                // `close` waits for the driver where it can block: a multi-thread runtime, the app's
+                // or osis's own (there it waits for the runtime's shutdown too, `OwnRuntime`)
+                let alive = (handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread).then(|| DriverAlive::new(&self.inner.life.0));
                 let hook = cfg.app.internals.driver_step.clone();
                 handle.spawn(async move {
                     drive(db, links, rx, start, hook).await;
-                    drop(alive);
+                    match (alive, ended) {
+                        (Some(a), Some(to)) => drop(to.send(a)),
+                        (a, _) => drop(a),
+                    }
                 });
             }
         }
