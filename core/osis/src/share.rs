@@ -370,7 +370,7 @@ fn known_holder(e: &mut osis_engine::Engine, h: Tid) -> Result<()> {
 pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder> {
     let mut out: Vec<Holder> = Vec::new();
     // the ways looked behind so far, per holder: a way none of them beats goes behind it too,
-    // else a member's role through a nested holder is that of the holder's first way in
+    // else a member's role through a nested holder is that of the holder's first way
     let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
     let mut queue = std::collections::VecDeque::<(Tid, Option<Role>, Option<Time>, Vec<Tid>)>::from([(target, None, None, Vec::new())]);
     while let Some((at, role, until, through)) = queue.pop_front() {
@@ -401,7 +401,7 @@ pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder
 
 impl ReadOnly {
     /// Everyone who holds a role on `target`, directly or through a thing that holds one (an account
-    /// through an organization, a joiner through a link), nearest first. A holder with several ways in is
+    /// through an organization, a joiner through a link), nearest first. A holder holding by several ways is
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through a thing:
     /// `holders` of that thing, or those here with it in `through`. Grants one level down, with
@@ -534,7 +534,7 @@ impl Osis {
 
     /// `set_role`'s writes.
     fn change_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-        // each round removes one way in; the bound only guards against grants that never settle
+        // each round removes one way `holder` holds by; the bound only guards against grants that never settle
         for _ in 0..16 {
             let Some(way) = self.holders(target)?.into_iter().find(|h| h.thing == holder) else {
                 let Some(r) = role else { return Ok(()) };
@@ -586,10 +586,10 @@ impl Osis {
         Ok(())
     }
 
-    /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
+    /// Ends the ways `holder` holds a role on `target` by: its own grant on it, and its join of any link
     /// to it. `holder` is `author()`, or an organization or other thing this node is an admin of (as when an organization's
     /// admin drops a thing that was shared with it). The keys change when the target's next writer or
-    /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
+    /// admin writes, or at once when this node is an admin of `target` by another way. With no such way it
     /// writes nothing.
     ///
     /// An organization or other thing the holder reaches `target` through stays: `Invalid` when that is all it

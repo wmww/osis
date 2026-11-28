@@ -83,8 +83,8 @@ pub fn beacon_of(m: &[u8; 32], s: &SyncId, r: &[u8; 32]) -> [u8; 32] {
 pub enum Shown {
     /// A sync proof, with the sync key it is of.
     Proof([u8; 32], [u8; 32]),
-    /// A head claim (its public key).
-    Claim([u8; 32]),
+    /// A head claim key (its public key).
+    ClaimKey([u8; 32]),
     /// Shown so a sealed fire's sender finds a peer that may hold S (spec/sync-inbox.md §3); its
     /// Hit opens nothing (spec/sync-opens.md §5 Proof).
     Deposit([u8; 32]),
@@ -94,7 +94,7 @@ impl Shown {
     /// The match value (spec/sync-opens.md §5 Beacon).
     pub fn matched(&self) -> &[u8; 32] {
         match self {
-            Shown::Proof(m, _) | Shown::Claim(m) | Shown::Deposit(m) => m,
+            Shown::Proof(m, _) | Shown::ClaimKey(m) | Shown::Deposit(m) => m,
         }
     }
 
@@ -102,7 +102,7 @@ impl Shown {
     pub fn credential(&self) -> Option<Credential> {
         Some(match self {
             Shown::Proof(_, k) => Credential::SyncProof(*k),
-            Shown::Claim(k) => Credential::Claim(*k),
+            Shown::ClaimKey(k) => Credential::ClaimKey(*k),
             Shown::Deposit(_) => return None,
         })
     }
@@ -113,9 +113,9 @@ impl Shown {
 pub enum Tested {
     /// A sync proof, with the sync key it is of.
     Proof([u8; 32], [u8; 32]),
-    /// A claim and its key: the Hit carries an open signature by it; `sync` the sync key of the
-    /// step it is a claim at, which signs the answer.
-    Claim { key: SigningSecret, sync: [u8; 32] },
+    /// A claim key, its secret half: the Hit carries an open signature by it; `sync` the sync key
+    /// of the step it is a claim key at, which signs the answer.
+    ClaimKey { key: SigningSecret, sync: [u8; 32] },
 }
 
 impl Tested {
@@ -123,14 +123,14 @@ impl Tested {
     pub fn matched(&self) -> [u8; 32] {
         match self {
             Tested::Proof(p, _) => *p,
-            Tested::Claim { key, .. } => key.verifying_key().to_bytes(),
+            Tested::ClaimKey { key, .. } => key.verifying_key().to_bytes(),
         }
     }
 
     pub fn credential(&self) -> Credential {
         match self {
             Tested::Proof(_, k) => Credential::SyncProof(*k),
-            Tested::Claim { key, .. } => Credential::Claim(key.verifying_key().to_bytes()),
+            Tested::ClaimKey { key, .. } => Credential::ClaimKey(key.verifying_key().to_bytes()),
         }
     }
 }

@@ -212,7 +212,7 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     let key = match net.member_at(*src, s) {
         Some(m) if m.class == SourceClass::Store => match m.by {
             Credential::SyncProof(k) => Some(k),
-            Credential::Claim(_) => None,
+            Credential::ClaimKey(_) => None,
         },
         _ => return Ok(Plan::Nothing),
     };

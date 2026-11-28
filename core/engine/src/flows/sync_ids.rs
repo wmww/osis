@@ -57,7 +57,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: (&St
     let [(se, ss), _, (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let claim = claim.or_else(|| tx.core.keyset(t, Role::Sync, &se).and_then(|k| k.claim)).ok_or(Error::Misuse("the sync epoch's claim epoch is not held"))?;
     let roles = epochs.read.checked_roles(&claim).ok_or(Error::Misuse("the claim epoch's roles secret is not held"))?;
-    let step_key = osis_crypto::claim_key(ss, &roles).public();
+    let step_key = osis_crypto::step_secret(ss, &roles).public();
     let keys = StepKeys::derive(ss, ws, adm, deposit, &parent.0.sync_id);
     let del = role_key(RoleKey::Delete, parent.1);
     // its KEM key only beside a read keyset carrying one (spec/crypto.md §3, Published KEM keys)

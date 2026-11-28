@@ -2,28 +2,28 @@
 (* Who may open sync ID S on a connection (spec/sync-opens.md §4, the one open rule): S is in a
    connection's shared set exactly while each side syncs S and holds, judged by itself on what it
    holds now, a credential of S the other showed on this connection: the sync proof of a step's
-   sync key on its path, or a claim among its head claims proven by an open signature bound to the
+   sync key on its path, or a claim key among its head claim keys proven by an open signature bound to the
    signer's side and this connection. A credential of the head opens S whole; an older step's sync
    proof opens S served up to that step's end. Nothing else opens S: which side dialed, a deposit
-   key (public), a claim bound to an older epoch.
+   key (public), a claim key bound to an older epoch.
    Steps are a chain (step = sync epoch); events in a fixed order, each at any time, each honest
-   node learning them in order at its own pace: a grant (an entry bound to the current epoch, no
-   new step), a removal (it rotates: a new step whose seed and entries reach every other holder),
+   node learning them in order at its own pace: a grant (a claim bound to the current epoch, no
+   new step), a removal (it rotates: a new step whose seed and claims reach every other holder),
    a rotation. Removal ends opens by the head move alone: at a head move a node ends each whole
    open whose credential is of an older step, served up to that step's end (`until`); an ended
    open closes (its Lost) at any time after.
    Honest nodes are readers or stores (the class only: both hold the seeds of the steps they were
-   holders at once they took their entries, show the sync proof of each step on their path whose
-   seed they hold, their head claims (every holder's claim at the head) and the head's deposit key,
+   holders at once they took their claims, show the sync proof of each step on their path whose
+   seed they hold, their head claim keys (every holder's claim key at the head) and the head's deposit key,
    and test their held seeds' proofs newest first and, while no held seed derives the source's
-   step's key, their own claim at the source's head). A holder granted later takes its entries
+   step's key, their own claim key at the source's head). A holder granted later takes its claims
    (its seeds) only once it is open whole toward an honest peer (pulling S; the store's head
    registered by that peer, abstracted): before, it shows and accepts nothing and opens by its
-   claim alone.
+   claim key alone.
    Adv knows every event at once. It holds the seed and proof of every step it was a holder at,
-   its claim at every step it knows (a claim derives from the public step key and its own key)
-   and, with AdvPublic, every public value of S (each step and deposit key, every claim public key
-   in S's clear entry blocks). It picks its Hello challenges from those it has seen or the other
+   its claim key at every step it knows (a claim key derives from the public step key and its own key)
+   and, with AdvPublic, every public value of S (each step and deposit key, every claim key
+   in S's clear claim blocks). It picks its Hello challenges from those it has seen or the other
    side's fresh one, dials and is dialed by anyone, answers Head with any step, Hits anything a
    peer ever showed it (a stored filter keeps removed entries), answers any Hit with any token it
    holds or makes, and replays any token it was sent. A token (a Hit keyed by a proof, an open
@@ -39,17 +39,17 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC
 CONSTANTS
     Nodes, Adv,
     Role,           \* Role[n] \in {"reader", "store"} for n # Adv: the class it declares
-    InitMembers,    \* the holders at the start (holding their entries)
+    InitMembers,    \* the holders at the start (holding their claims)
     Events,         \* [op |-> "grant" | "rm" | "rot", n |-> node or "-"], in order
     MaxConn,
-    SideByte,       \* a claim's open signature (and an answer signature) holds the signer's side
+    SideByte,       \* a claim key's open signature (and an answer signature) holds the signer's side
     AnswerSig,      \* a tester opens only on a valid answer (FALSE: on its own credential alone)
     ProofSecret,    \* the proof derives from the seed, not from the public sync key
     OlderEnds,      \* an older step's proof opens S served up to that step's end (FALSE: whole)
     HeadEnds,       \* a head move ends each whole open by an older step's credential
-    ClaimOld,       \* TRUE: a claim bound to an older epoch counts (the rejected rule)
+    ClaimOld,       \* TRUE: a claim key bound to an older epoch counts (the rejected rule)
     DepositOpens,   \* TRUE: a Hit on the head's deposit key opens (the rejected rule)
-    Claims,         \* a holder holding no seed of the source's step tests its claim there
+    Claims,         \* a holder holding no seed of the source's step tests its claim key there
     DialProves,     \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
     AdvPublic,      \* Adv holds S's public values
     AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
@@ -66,7 +66,7 @@ Mem[k \in 0..NE] ==
     ELSE IF Events[k].op = "rm" THEN Mem[k - 1] \ {Events[k].n}
     ELSE Mem[k - 1]
 St[k \in 0..NE] == IF k = 0 THEN 0 ELSE St[k - 1] + (IF Events[k].op \in {"rm", "rot"} THEN 1 ELSE 0)
-\* The holders boxed at step s by the first k events (each with an entry bound to s).
+\* The holders boxed at step s by the first k events (each with a claim bound to s).
 HoldersAt(s, k) == {a \in Nodes : \E j \in 0..k : St[j] = s /\ a \in Mem[j]}
 
 \* Keys and tokens are records of one shape (TLC compares only like values).
@@ -79,7 +79,7 @@ DialB == Key("dial", 0, "-")
 Tok(key, sd, ch, lk) == [k |-> key, sd |-> sd, ch |-> ch, lk |-> lk]
 NoTok == Tok(Key("none", 0, "-"), 0, 0, "-")
 \* The key an answer to a Hit on v carries: the tag keyed by the proof, else a signature by the
-\* sync key of the replier's head (the claim's step).
+\* sync key of the replier's head (the claim key's step).
 AnsKey(v) == IF v.c = "proof" THEN v ELSE SyncK(v.s)
 \* What n declares of itself; Adv declares what it likes ("adv").
 Cls(n) == IF n = Adv THEN "adv" ELSE Role[n]
@@ -90,7 +90,7 @@ Open(i, n, m, s, cl) == [i |-> i, n |-> n, m |-> m, s |-> s, u |-> s, cl |-> cl]
 
 VARIABLES conns, opens, known, seen, next, happened, know,
     leak,       \* a Lost named S to Adv while Adv held no value of S
-    took        \* took[n]: n holds its entries (its seeds and S's entry blocks)
+    took        \* took[n]: n holds its claims (its seeds and S's claim blocks)
 vars == <<conns, opens, known, seen, next, happened, know, leak, took>>
 
 HeadOf(n) == IF n = Adv THEN St[happened] ELSE St[know[n]]
@@ -131,8 +131,8 @@ Accept(v, k, key) ==
            [] key.c = "dep" /\ DepositOpens /\ key.s = St[k] -> "whole"
            [] OTHER -> "no"
 \* How tester t takes its own credential v once the peer's answer proves it: a proof by where its
-\* step lies on t's path; a claim at t's head whole, at an older step of t's up to its end, at a
-\* step t holds no entry block of not at all.
+\* step lies on t's path; a claim key at t's head whole, at an older step of t's up to its end, at a
+\* step t holds no claim block of not at all.
 TesterMode(t, v) ==
     CASE v.c = "proof" -> IF v.s = HeadOf(t) \/ ~OlderEnds THEN "whole" ELSE "until"
       [] v.c = "claim" /\ t \in HoldersAt(v.s, know[t]) -> IF v.s = HeadOf(t) THEN "whole" ELSE "until"
@@ -265,7 +265,7 @@ DialOpen(i) ==
     /\ opens' = opens \cup {Open(i, c.d, "whole", 0, "reader")}
     /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, took>>
 
-\* A holder granted later, open whole toward an honest peer, pulls S and takes its entries.
+\* A holder granted later, open whole toward an honest peer, pulls S and takes its claims.
 Take(n) ==
     /\ ~took[n] /\ Syncs(n)
     /\ \E o \in opens : o.n = n /\ o.m = "whole" /\ Peer(conns[o.i], n) # Adv

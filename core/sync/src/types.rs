@@ -61,8 +61,8 @@ pub fn class_of(h: Holding) -> SourceClass {
 pub enum Credential {
     /// The sync proof of this sync key.
     SyncProof([u8; 32]),
-    /// A claim (its public key).
-    Claim([u8; 32]),
+    /// A claim key (its public key).
+    ClaimKey([u8; 32]),
 }
 
 /// One entry of a store of S (spec/sync-ids.md §5).

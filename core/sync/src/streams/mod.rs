@@ -110,9 +110,9 @@ pub trait Ground {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
-    /// An entry of S kept unread here, taken: an entry of a holder this node reaches S's thing
-    /// through in its blob's blocks (`Engine::take_unread_entry`, spec/sync-ids.md §3 Taking an
-    /// entry), at a step of S's registered path.
+    /// An entry of S kept unread here, taken: a claim of a holder this node reaches S's thing
+    /// through in its blob's blocks (`Engine::take_unread_entry`, spec/sync-ids.md §3 Taking a
+    /// claim), at a step of S's registered path.
     fn take_unread(&mut self, store: &crate::store::Store, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<()> {
         let _ = (store, s, e, bytes);
         Ok(())

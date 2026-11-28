@@ -535,6 +535,10 @@ STUB_DEAD_WORDS = {w: re.compile(p) for w, p in {
     "Departed rule": r"(?i)\bdeparted (rule|clause)\b",
     "static entry": r"(?i)\bstatic[ _-]entr(y|ies)\b",
     "entry box": r"(?i)\bentry[ _-]box(es)?\b",
+    "entry block": r"(?i)\bentry[ _-]?blocks?\b|\bENTRY_BLOCK\w*",
+    "entry page": r"(?i)\bentry[ _-]?pages?\b|\bENTRY_PAGE\b",
+    "EntryKeys": r"\bEntryKeys\b",
+    "way in": r"(?i)\bways? in\b(?=\s*([.,;:()]|$|\b(from|is|are|at|to|for|it|they|of)\b))",
 }.items()}
 # Entry.tla is the checked rejected alternative notes/stubs.md cites: it keeps its own words.
 STUB_DEAD_WORDS_OK = ("core/test/tla/rotation/Entry.tla",)

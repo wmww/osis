@@ -98,7 +98,7 @@ fn decode_row(commit: CommitId, v: &[u8]) -> Option<BlobOf> {
             let (n, mut r) = r.split_first_chunk::<4>()?;
             let mut blocks = Vec::new();
             for _ in 0..u32::from_be_bytes(*n) {
-                let (b, len) = osis_blob::EntryBlock::parse(r).ok()?;
+                let (b, len) = osis_blob::ClaimBlock::parse(r).ok()?;
                 blocks.push(b);
                 r = r.get(len..)?;
             }
@@ -1165,8 +1165,8 @@ impl Engine {
                         o => return Ok(o),
                     }
                 }
-                // else an entry of a holder this node reaches S's thing through (spec/sync-ids.md
-                // §3 Taking an entry)
+                // else a claim of a holder this node reaches S's thing through (spec/sync-ids.md
+                // §3 Taking a claim)
                 match self.took(s, bytes, &[], pages)? {
                     Some((thing, key, section)) => (thing, key, Some(section)),
                     None => return Ok(Opened::NotOpen),
@@ -1178,8 +1178,8 @@ impl Engine {
 
     /// Entry `blob` of S kept unread here, its bytes `bytes`: an entry of a holder this node
     /// reaches S's thing through found in it by its claim at a step of `path` (S's registered
-    /// path) or one known here, in it or its entry pages `pages` (spec/wire.md §5), taken
-    /// (spec/sync-ids.md §3 Taking an entry): a sync holder's
+    /// path) or one known here, in it or its claim pages `pages` (spec/wire.md §5), taken
+    /// (spec/sync-ids.md §3 Taking a claim): a sync holder's
     /// secret kept, a read holder's commit opened as `open_entry` opens one.
     pub fn take_unread_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], pages: &[Vec<u8>], path: &[osis_blob::Step]) -> Result<Opened> {
         match self.took(s, bytes, path, pages)? {
@@ -1188,11 +1188,11 @@ impl Engine {
         }
     }
 
-    /// `take_entry`, each sync holder's secret noted: the read entry's thing and keys, if any.
+    /// `take_claims`, each sync holder's secret noted: the read claim's thing and keys, if any.
     fn took(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step], pages: &[Vec<u8>]) -> Result<Option<(Tid, osis_crypto::Secret32, osis_crypto::Secret32)>> {
-        let took = self.take_entry(s, bytes, path, pages)?;
+        let took = self.take_claims(s, bytes, path, pages)?;
         for (thing, holder) in took.sync {
-            self.took_sync_entry(s, thing, holder)?;
+            self.took_sync_claim(s, thing, holder)?;
         }
         Ok(took.read)
     }

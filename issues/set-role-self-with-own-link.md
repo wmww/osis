@@ -1,5 +1,5 @@
 # set_role removing oneself from a thing with one's own link fails midway
-> Summary: `set_role(t, me, None)` on a thing `me` administers and made a link to removes `me`'s own grant, then fails `Permission { needs: Admin }` on the second way in (through the link's actor K, which `me` is admin of as its mint admin), leaving the call half done.
+> Summary: `set_role(t, me, None)` on a thing `me` administers and made a link to removes `me`'s own grant, then fails `Permission { needs: Admin }` on the second way it holds a role (through the link's actor K, which `me` is admin of as its mint admin), leaving the call half done.
 > Priority: low
 > Tags: osis
 

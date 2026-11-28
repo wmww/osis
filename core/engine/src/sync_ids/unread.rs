@@ -26,11 +26,11 @@ use std::sync::Arc;
 /// budget, a writer's stamp aside.
 pub(crate) const SYNC_CUTS: &[u8] = b"su/";
 
-/// `se/` + thing (15 bytes) + holder (15 bytes): a holder's entry gave this node a sync secret of
-/// the thing (`Engine::took_sync_entry`); its value the sync ID. Kept until the thing is forgotten:
+/// `se/` + thing (15 bytes) + holder (15 bytes): a holder's claim gave this node a sync secret of
+/// the thing (`Engine::took_sync_claim`); its value the sync ID. Kept until the thing is forgotten:
 /// the secret it tells of is never taken back (spec/permissions.md §3 Lost access: a sync secret
 /// held by no grant held is judged by its steps alone).
-pub(crate) const ENTRY_SYNCS: &[u8] = b"se/";
+pub(crate) const CLAIM_SYNCS: &[u8] = b"se/";
 
 /// What two blobs of one sync-only cut share: the hash of its canonical plaintext.
 pub type ContentKey = [u8; 32];
@@ -69,31 +69,31 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (b, c) in rows {
         index(tx, b, c);
     }
-    let bad = || Error::Corrupt("entry sync row");
-    let rows = tx.scan_rows(ENTRY_SYNCS, |k, v| {
+    let bad = || Error::Corrupt("claim sync row");
+    let rows = tx.scan_rows(CLAIM_SYNCS, |k, v| {
         let (t, u) = k.split_at_checked(15).ok_or_else(bad)?;
         let tid = |x: &[u8]| x.try_into().map(Tid::from_bytes).map_err(|_| bad());
         Ok((tid(t)?, tid(u)?, SyncId(v.try_into().map_err(|_| bad())?)))
     })?;
     for (t, u, s) in rows {
-        index_entry(tx, t, u, s);
+        index_claim(tx, t, u, s);
     }
     Ok(())
 }
 
-fn index_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) {
-    tx.core.ix.entry_syncs.insert(thing, (under, s));
+fn index_claim(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) {
+    tx.core.ix.claim_syncs.insert(thing, (under, s));
     tx.core.ix.sync_cut_ids.insert(thing, s);
     tx.core.ix.sync_cut_things.insert(s, thing);
 }
 
-/// Notes that `under`'s entry under `s` gave this node a sync secret of `thing`.
-pub(crate) fn note_entry(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) -> Result<()> {
-    if tx.core.ix.entry_syncs.get(&thing).is_some_and(|x| x.contains(&(under, s))) {
+/// Notes that `under`'s claim under `s` gave this node a sync secret of `thing`.
+pub(crate) fn note_claim(tx: &mut Tx<'_>, thing: Tid, under: Tid, s: SyncId) -> Result<()> {
+    if tx.core.ix.claim_syncs.get(&thing).is_some_and(|x| x.contains(&(under, s))) {
         return Ok(());
     }
-    tx.txn.put_local(&[ENTRY_SYNCS, thing.as_bytes().as_slice(), under.as_bytes()].concat(), &s.0, Shred::No)?;
-    index_entry(tx, thing, under, s);
+    tx.txn.put_local(&[CLAIM_SYNCS, thing.as_bytes().as_slice(), under.as_bytes()].concat(), &s.0, Shred::No)?;
+    index_claim(tx, thing, under, s);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ pub(crate) fn drop_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
     tx.core.ix.sync_cuts.remove(b);
     tx.core.ix.sync_cuts_under.remove(&c.under, b);
     tx.core.ix.sync_cuts_of.remove(&c.cut.thing, b);
-    let left = tx.core.ix.sync_cuts_of.get(&c.cut.thing).into_iter().flatten().any(|x| tx.core.ix.sync_cuts.get(x).is_some_and(|x| x.cut == c.cut)) || tx.core.ix.entry_syncs.get(&c.cut.thing).is_some_and(|x| x.iter().any(|(_, s)| *s == c.cut.sync_id));
+    let left = tx.core.ix.sync_cuts_of.get(&c.cut.thing).into_iter().flatten().any(|x| tx.core.ix.sync_cuts.get(x).is_some_and(|x| x.cut == c.cut)) || tx.core.ix.claim_syncs.get(&c.cut.thing).is_some_and(|x| x.iter().any(|(_, s)| *s == c.cut.sync_id));
     if !left {
         tx.core.ix.sync_cut_ids.remove(&c.cut.thing, &c.cut.sync_id);
         tx.core.ix.sync_cut_things.remove(&c.cut.sync_id, &c.cut.thing);
@@ -140,12 +140,12 @@ pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         tx.core.ix.sync_cuts_under.remove(&c.under, &b);
         tx.core.ix.sync_cuts_of.remove(t, &b);
     }
-    let entries: Vec<(Tid, SyncId)> = tx.core.ix.entry_syncs.get(t).into_iter().flatten().copied().collect();
-    for (u, _) in entries.iter() {
-        tx.txn.remove_local(&[ENTRY_SYNCS, t.as_bytes().as_slice(), u.as_bytes()].concat(), Shred::No)?;
+    let claims: Vec<(Tid, SyncId)> = tx.core.ix.claim_syncs.get(t).into_iter().flatten().copied().collect();
+    for (u, _) in claims.iter() {
+        tx.txn.remove_local(&[CLAIM_SYNCS, t.as_bytes().as_slice(), u.as_bytes()].concat(), Shred::No)?;
     }
-    for e in entries {
-        tx.core.ix.entry_syncs.remove(t, &e);
+    for e in claims {
+        tx.core.ix.claim_syncs.remove(t, &e);
     }
     let ids: Vec<SyncId> = tx.core.ix.sync_cut_ids.get(t).into_iter().flatten().copied().collect();
     for s in ids {
@@ -185,8 +185,8 @@ impl Core {
     }
 
     fn unread_derived(&self, t: &Tid) -> Unread {
-        // what role commits gave (a box applied, a lowering) and entries gave (a sync holder's,
-        // spec/sync-ids.md §3 Taking an entry): `t`'s own sync secrets, never derived ones
+        // what role commits gave (a box applied, a lowering) and claims gave (a sync holder's,
+        // spec/sync-ids.md §3 Taking a claim): `t`'s own sync secrets, never derived ones
         let candidates: BTreeMap<Epoch, Secret32> = self.ix.secrets.get(t).map(|e| e.role(Role::Sync).held().map(|(e, s)| (e, s.secret().clone())).collect()).unwrap_or_default();
         // borne by a step of its `sync.0`, or of the path heard of a sync ID it is followed by or its
         // `keys.0` names (spec/sync-ids.md §4 Owner)
@@ -207,7 +207,7 @@ impl Core {
     /// The holders a sync-only cut of `x` was taken under (`cut_under`), each once or more.
     pub(crate) fn cut_holders(&self, x: &Tid) -> impl Iterator<Item = Tid> + '_ {
         let cuts = self.ix.sync_cuts_of.get(x).into_iter().flatten().filter_map(|b| self.ix.sync_cuts.get(b).map(|c| c.under));
-        cuts.chain(self.ix.entry_syncs.get(x).into_iter().flatten().map(|(h, _)| *h))
+        cuts.chain(self.ix.claim_syncs.get(x).into_iter().flatten().map(|(h, _)| *h))
     }
 
     /// The chain holders the sync-only cuts of `x` taken under `u` name (spec/permissions.md §4
@@ -233,15 +233,15 @@ impl crate::engine::Engine {
         Ok(true)
     }
 
-    /// A sync holder's entry under `s` gave this node a sync secret of `thing` (spec/sync-ids.md
-    /// §3 Taking an entry): holder `under` holds sync on `thing`, as a sync-only cut of `thing`
+    /// A sync holder's claim under `s` gave this node a sync secret of `thing` (spec/sync-ids.md
+    /// §3 Taking a claim): holder `under` holds sync on `thing`, as a sync-only cut of `thing`
     /// under `under` says (spec/sync-set.md §2 Holding a stub: a sync holder's stub is the
-    /// sync-only cut and what its entries give it). The public's entry and a link key's name no
+    /// sync-only cut and what its claims give it). The public's claim and a link key's name no
     /// holder.
-    pub(crate) fn took_sync_entry(&mut self, s: &SyncId, thing: Tid, under: Option<Tid>) -> Result<()> {
+    pub(crate) fn took_sync_claim(&mut self, s: &SyncId, thing: Tid, under: Option<Tid>) -> Result<()> {
         let Some(under) = under.filter(|u| !u.is_public() && *u != thing) else { return Ok(()) };
         let s = *s;
-        self.run(|tx| note_entry(tx, thing, under, s))
+        self.run(|tx| note_claim(tx, thing, under, s))
     }
 
     /// No store entry names blob `b` any more: its sync-only cut row (`SYNC_CUTS`), if any, goes.

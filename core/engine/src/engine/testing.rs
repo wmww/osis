@@ -748,7 +748,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("sync_cuts_of", &*ix.sync_cuts_of),
         ("sync_cut_ids", &*ix.sync_cut_ids),
         ("sync_cut_things", &*ix.sync_cut_things),
-        ("entry_syncs", &*ix.entry_syncs),
+        ("claim_syncs", &*ix.claim_syncs),
         ("keys_sync_id", &*ix.keys_sync_id),
         ("gone", &*ix.gone),
         ("sync_recorded", &*ix.sync_recorded),

@@ -19,7 +19,7 @@ pub struct Step {
     pub sync_id: SyncId,
     pub prev: Option<StepId>,
     pub keys: StepKeys,
-    /// Raw X25519 public key: the public half of the claim key of the sync epoch whose sync key
+    /// Raw X25519 public key: the public half of the step key of the sync epoch whose sync key
     /// the step bears.
     pub step_key: [u8; 32],
     /// By the parent's delete key (the genesis step: its own).

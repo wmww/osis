@@ -108,7 +108,7 @@ fn encode_member(m: &Member, basis: &[u8; 32]) -> Vec<u8> {
     let mut w = vec![class_byte(m.class), class_byte(m.own)];
     let (tag, k) = match m.by {
         Credential::SyncProof(k) => (0, k),
-        Credential::Claim(k) => (1, k),
+        Credential::ClaimKey(k) => (1, k),
     };
     w.push(tag);
     w.extend_from_slice(&k);
@@ -129,7 +129,7 @@ fn decode_member(v: &[u8]) -> Res<(Member, [u8; 32])> {
     let own = class_of(r.u8()?)?;
     let by = match r.u8()? {
         0 => Credential::SyncProof(r.a32()?),
-        1 => Credential::Claim(r.a32()?),
+        1 => Credential::ClaimKey(r.a32()?),
         _ => return Err(corrupt()),
     };
     let until = match r.u8()? {

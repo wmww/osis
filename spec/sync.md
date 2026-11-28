@@ -20,13 +20,13 @@
 ## 3. Holdings
 A node holds S of thing T, at each moment, by the secrets it holds of T:
 - **Read**: it holds a read secret of T. It judges every entry by the full rules (spec/sync-judgement.md §2-§5): what S must hold, may hold and must not hold, and acts on it.
-- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only its sync secrets and the sync ID it keeps for T (below): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures, entry blocks and delete signatures, and follows only its own entries: the sync secrets they give (Held sync secrets, below) and the steps registered with it (spec/sync-judgement.md §6).
+- **Kept unread**: it holds a sync secret of T and no read secret. Of T it holds only its sync secrets and the sync ID it keeps for T (below): no roster, chain, `keys.0`, commit or other state of what S carries. It keeps ciphertext, relays it, verifies stamps, deposit signatures, claim blocks and delete signatures, and follows only its own claims: the sync secrets they give (Held sync secrets, below) and the steps registered with it (spec/sync-judgement.md §6).
 - **Stub**: it holds T as a stub (spec/sync-set.md §2 Holding a stub) and a read secret of T, or follows T: it holds S's role entries alone, judged as a reader judges them (it declares the stub class opening S, spec/sync-opens.md §4 Source), and none of T's content.
 - One predicate decides read and kept unread: read exactly while a read secret of T is held (its role entries alone where T is held as a stub). A change of holding never empties the store (spec/sync-judgement.md §6 Read and unread move).
 
 **Kept sync IDs.** Principle: a node keeping T unread trusts only what it holds: only a step on the node's own path bearing the sync key of a held secret keeps S's entries. Nothing the granter, a roster or a chain says is needed or used.
 - **Kept for T**: the sync ID by which it follows T (spec/sync-set.md §2 Sync set: a stub's, a followed signal's or a locator's, spec/sync-ids.md §4 Owner), and, from its own reading, the one it judged T's when it stopped reading T while holding a sync secret of it (spec/sync-judgement.md §6 Read and unread move).
-- **Held sync secrets** of T: those its entries gave it (spec/sync-ids.md §3 Taking an entry: of its own things, of the holders it reaches T through, and the public's), and those it held of T when it stopped reading it. A secret no step of S's path bears keeps nothing and proves nothing there.
+- **Held sync secrets** of T: those its claims gave it (spec/sync-ids.md §3 Taking a claim: of its own things, of the holders it reaches T through, and the public's), and those it held of T when it stopped reading it. A secret no step of S's path bears keeps nothing and proves nothing there.
 - It syncs only the sync IDs it keeps; the node keeps this state as its own, and shares none of it with other nodes.
 
 ## 4. Areas

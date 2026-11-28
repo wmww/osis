@@ -4,14 +4,14 @@
 use crate::Error;
 use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_base::{BlobId, WallMs};
-use crate::entry::EntryBlock;
+use crate::claim::ClaimBlock;
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob};
 
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
 const MAX_GROUPS: usize = u16::MAX as usize;
-/// Most entry blocks a prefix lists: its count byte.
+/// Most claim blocks a prefix lists: its count byte.
 const MAX_BLOCKS: usize = u8::MAX as usize;
 
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 the commit's purge author, 3 thing write.
@@ -48,7 +48,7 @@ impl Class {
 /// levels (spec/wire.md §5).
 pub type Group = Vec<[u8; COMMITMENT_LEN]>;
 
-/// The clear prefix of a blob: salt, optional expiry, class, commitment groups, entry blocks. A
+/// The clear prefix of a blob: salt, optional expiry, class, commitment groups, claim blocks. A
 /// Delete needs a delete-key signature per group (spec/sync-ids.md §6): an empty group (a
 /// `nobody` delta's) blocks deletion by level.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +57,7 @@ pub struct Prefix {
     expiry: Option<WallMs>,
     class: Class,
     groups: Vec<Group>,
-    blocks: Vec<EntryBlock>,
+    blocks: Vec<ClaimBlock>,
 }
 
 impl Prefix {
@@ -114,7 +114,7 @@ impl Prefix {
             }
         }
         if self.blocks.len() > MAX_BLOCKS {
-            return Err(Error::Malformed("more than 255 entry blocks"));
+            return Err(Error::Malformed("more than 255 claim blocks"));
         }
         if self.expiry == Some(WallMs(0)) {
             return Err(Error::Malformed("expiry 0"));
@@ -122,16 +122,16 @@ impl Prefix {
         Ok(())
     }
 
-    /// This prefix with entry blocks `blocks`, in their order (spec/wire.md §5); `Malformed`
+    /// This prefix with claim blocks `blocks`, in their order (spec/wire.md §5); `Malformed`
     /// past 255.
-    pub fn with_blocks(mut self, blocks: Vec<EntryBlock>) -> Result<Prefix, Error> {
+    pub fn with_blocks(mut self, blocks: Vec<ClaimBlock>) -> Result<Prefix, Error> {
         self.blocks = blocks;
         self.validate()?;
         Ok(self)
     }
 
-    /// Its entry blocks, as they came (each counts under a sync ID only where it verifies there).
-    pub fn blocks(&self) -> &[EntryBlock] {
+    /// Its claim blocks, as they came (each counts under a sync ID only where it verifies there).
+    pub fn blocks(&self) -> &[ClaimBlock] {
         &self.blocks
     }
 
@@ -167,7 +167,7 @@ impl Prefix {
 
     /// Encoded length.
     pub fn len(&self) -> usize {
-        PREFIX_FIXED_LEN + self.groups.iter().map(|g| 1 + COMMITMENT_LEN * g.len()).sum::<usize>() + 1 + self.blocks.iter().map(EntryBlock::len).sum::<usize>()
+        PREFIX_FIXED_LEN + self.groups.iter().map(|g| 1 + COMMITMENT_LEN * g.len()).sum::<usize>() + 1 + self.blocks.iter().map(ClaimBlock::len).sum::<usize>()
     }
 
     /// Never empty; for clippy's `len` convention.
@@ -225,7 +225,7 @@ impl Prefix {
         at += 1;
         let mut blocks = Vec::with_capacity(usize::from(b));
         for _ in 0..b {
-            let (block, len) = EntryBlock::parse(blob.get(at..).ok_or(Error::Malformed("short prefix"))?)?;
+            let (block, len) = ClaimBlock::parse(blob.get(at..).ok_or(Error::Malformed("short prefix"))?)?;
             blocks.push(block);
             at += len;
         }
@@ -242,7 +242,7 @@ impl Prefix {
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
     /// §4, spec/sync-ids.md §1): the same expiry, exactly the commitment groups of `groups` under
     /// this salt and the header's blind `hb`, and the class of the header's ephemeral marker (its
-    /// entry blocks are its maker's, judged apart). A mismatch makes the commit blob bad input.
+    /// claim blocks are its writer's, judged apart). A mismatch makes the commit blob bad input.
     pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {
         Prefix::for_delete_keys(self.salt, hb, expiry, groups).is_ok_and(|p| p.groups == self.groups && p.expiry == self.expiry && class == self.class)
     }
@@ -293,17 +293,17 @@ pub fn frame_under(key: osis_crypto::BlobKey, prefix: &Prefix, plaintext: &[u8])
     })
 }
 
-/// Parses the prefix and decrypts a blob that carries no entry block (a chunk, tree node, page,
+/// Parses the prefix and decrypts a blob that carries no claim block (a chunk, tree node, page,
 /// record blob or sync-only cut: one with blocks is bad input, spec/wire.md §5); returns both.
 pub fn open(blob: &[u8], key: &Secret32) -> Result<(Prefix, Vec<u8>), Error> {
     let (p, pt) = open_commit(blob, key)?;
     if !p.blocks().is_empty() {
-        return Err(Error::Malformed("entry blocks on a blob of no commit"));
+        return Err(Error::Malformed("claim blocks on a blob of no commit"));
     }
     Ok((p, pt))
 }
 
-/// `open` of a commit blob, whose prefix may carry entry blocks (spec/wire.md §5).
+/// `open` of a commit blob, whose prefix may carry claim blocks (spec/wire.md §5).
 pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Prefix, Vec<u8>), Error> {
     check_size(blob)?;
     let p = Prefix::parse(blob)?;
@@ -358,12 +358,12 @@ mod tests {
         assert_eq!(b[95], 0);
         assert_eq!(b[96], 1);
         assert_eq!(b[97..130], c(3, 4));
-        assert_eq!(b[130], 0, "no entry blocks");
+        assert_eq!(b[130], 0, "no claim blocks");
         assert_eq!(Prefix::parse(&b).unwrap(), p);
-        // entry blocks after the groups, counted by a byte
+        // claim blocks after the groups, counted by a byte
         let mut rng = SeededRng::from_u64(0);
         let k = osis_crypto::SigningSecret::from_seed(&Secret32::from_bytes([1; 32]));
-        let block = EntryBlock::sign(&k, &osis_base::SyncId([1; 16]), &[7; 16], vec![], &mut rng).unwrap();
+        let block = ClaimBlock::sign(&k, &osis_base::SyncId([1; 16]), &[7; 16], vec![], &mut rng).unwrap();
         let with = p.clone().with_blocks(vec![block.clone(), block.clone()]).unwrap();
         let wb = with.to_bytes();
         assert_eq!(wb.len(), with.len());

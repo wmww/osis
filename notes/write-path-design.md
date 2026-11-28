@@ -201,7 +201,7 @@ issues/readers-see-readers.md wants an option under which reader-level grants op
 
 ## 3. Public things
 **Rule: a thing is public by an ordinary grant to the public, a holder that is no thing.** Specified, with the card, its decisions, model and pieces: notes/public-and-cards-brief.md.
-- **The public** (spec/permissions.md §1): named by the zero tid, nobody signs as it, holds a role on it or lists it on a path; boxed in the open form; its entry is the public's claim with W in clear (spec/sync-ids.md §3). Every other rule reads its grant as any grant (rotations, departures, removal by the thing's admins).
+- **The public** (spec/permissions.md §1): named by the zero tid, nobody signs as it, holds a role on it or lists it on a path; boxed in the open form; its claim's key is the public's claim key, with W in clear (spec/sync-ids.md §3). Every other rule reads its grant as any grant (rotations, departures, removal by the thing's admins).
 - **Every thing's keys open what the public reads** by its grant on the thing's independent (spec/sync-set.md §2), so a strong brings a public thing into the referrer's unit (founded by X's stub, spec/sync-set.md §2 Carriers).
 - **The deposit budget of a public thing is open to everyone**: the reader budget the requirements call best effort (spec/requirements.md, Data a node cannot read); keeping the public from depositing would mean moving the seed, not a check in one place (Tess: acceptable).
 - **To say in the API**: a public thing's dependents are public; a thing that grants a public thing read is readable by everyone through it (carried in others' units only by its own public grant); a holder with may-grant at read may publish.

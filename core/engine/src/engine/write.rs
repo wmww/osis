@@ -1104,11 +1104,11 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
 }
 
 impl Engine {
-    /// Tests: entries per entry page this node writes (spec/wire.md §5 Entry pages), so a few
+    /// Tests: entries per claim page this node writes (spec/wire.md §5 Claim pages), so a few
     /// holders page; readers take pages of any size.
     #[doc(hidden)]
-    pub fn set_entry_page(&mut self, per_page: usize) {
-        self.core.entry_page = per_page;
+    pub fn set_claim_page(&mut self, per_page: usize) {
+        self.core.claim_page = per_page;
     }
 
     /// Tests: a new thing whose mint admin is `admin`, created by `m` (spec/data-model.md §1) and

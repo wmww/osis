@@ -161,8 +161,8 @@ pub(crate) fn grant_keys(tx: &mut Tx<'_>, h: Tid, role: Role, done: &mut crate::
             lacking.insert(r);
         }
     }
-    // the read keyset too, where this node may rotate it: the grant's entry is sealed to its KEM
-    // key (spec/sync-ids.md §3 Entry; one left out is written by a re-seal)
+    // the read keyset too, where this node may rotate it: the grant's claim is sealed to its KEM
+    // key (spec/sync-ids.md §3 Claims; one left out is written by a re-seal)
     if role == Role::Sync && may.contains(&Role::Read) && !carries(tx, &h, Role::Read)? {
         lacking.insert(Role::Read);
     }

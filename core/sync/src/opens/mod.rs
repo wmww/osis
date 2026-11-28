@@ -579,7 +579,7 @@ impl Adm {
         let at = |k: &[u8; 32]| self.tests.iter().position(|t| matches!(t, Tested::Proof(_, x) if x == k));
         match by {
             Credential::SyncProof(k) => self.head.is_none_or(|h| h == *k || at(k).zip(at(&h)).is_some_and(|(a, b)| a < b)),
-            Credential::Claim(k) => self.shows.contains(&Shown::Claim(*k)) || self.tests.iter().any(|t| matches!(t, Tested::Claim { key, .. } if key.verifying_key().to_bytes() == *k)),
+            Credential::ClaimKey(k) => self.shows.contains(&Shown::ClaimKey(*k)) || self.tests.iter().any(|t| matches!(t, Tested::ClaimKey { key, .. } if key.verifying_key().to_bytes() == *k)),
         }
     }
 }
@@ -2073,14 +2073,14 @@ impl Opens {
                 let h = bind.hit(&m, &s, &b);
                 let class = adm.own;
                 items.push(match t {
-                    Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), class },
+                    Tested::ClaimKey { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), class },
                     Tested::Proof(..) => OfferItem::Hit { hit: h, sig: None, class },
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
             }
             // following S with no path, or by claims the peer's filter does not show: its head
             // is asked (spec/sync-ids.md §6 Head)
-            if items.len() == before && adm.own != SourceClass::Store && (adm.head.is_none() || adm.tests.iter().any(|t| matches!(t, Tested::Claim { .. }))) {
+            if items.len() == before && adm.own != SourceClass::Store && (adm.head.is_none() || adm.tests.iter().any(|t| matches!(t, Tested::ClaimKey { .. }))) {
                 heads.push(s);
             }
             if items.len() >= MAX_OFFER_ITEMS {
@@ -2247,7 +2247,7 @@ impl Opens {
         // and its answer one by this side's head's sync key (spec/sync-opens.md §5 Proof).
         let answer_sig = match &shown {
             Shown::Proof(..) => None,
-            Shown::Claim(k) => {
+            Shown::ClaimKey(k) => {
                 let Some(step) = adm.step.as_ref().filter(|_| sig.is_some_and(|g| bind.peer_signed(k, &s, g))) else { return refuse };
                 Some(bind.sign(step, &s))
             }
@@ -2315,7 +2315,7 @@ impl Opens {
         };
         // a claim opened by its open signature stays admissible here once its block is bound to
         // an older step (the head moved): ended, as an older step's proof is (§6)
-        let claimed = matches!(m.by, Credential::Claim(_)) && adm.head.is_some();
+        let claimed = matches!(m.by, Credential::ClaimKey(_)) && adm.head.is_some();
         let admissible = claimed || basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(), &s, &rr) == b));
         if !admissible {
             self.end_member(ctx, rid, conn, s, Close::AtOnce, moved);
@@ -2565,7 +2565,7 @@ impl Opens {
 fn replier_proved(bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem) -> bool {
     match cred {
         Tested::Proof(..) => true,
-        Tested::Claim { sync, .. } => a.sig.as_ref().is_some_and(|sig| bind.peer_signed(sync, s, sig)),
+        Tested::ClaimKey { sync, .. } => a.sig.as_ref().is_some_and(|sig| bind.peer_signed(sync, s, sig)),
     }
 }
 

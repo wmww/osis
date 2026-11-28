@@ -861,7 +861,7 @@ mod tests {
         e.commit_in_memory(m).unwrap().unwrap()
     }
 
-    /// `e` takes memory-class commit `b` as a sync entry brings it (`Engine::note_delivered`).
+    /// `e` takes memory-class commit `b` as a pulled entry brings it (`Engine::note_delivered`).
     fn take(e: &mut Engine, b: &[u8]) {
         e.note_delivered(&osis_commit::CommitBlob::decode(b).unwrap());
         e.ingest_memory(b, u64::MAX).unwrap();

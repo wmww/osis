@@ -78,10 +78,10 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
 
 // notes/api.md Sharing and roles (`holders`): a holder through an organization is listed with the organization
 // between, at the least role along the way, after the organization itself (nearest first); an actor
-// with two ways in is listed once per way.
+// holding by two ways is listed once per way.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn holders_list_every_way_in_nearest_first() {
+fn holders_list_every_way_nearest_first() {
     let (alice, bob) = alice_knows_bob();
     let b = bob.author();
     let (g, org) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
@@ -99,7 +99,7 @@ fn holders_list_every_way_in_nearest_first() {
     assert!(ways.contains(&(Role::Write, vec![])) && ways.contains(&(Role::Read, vec![org])));
 }
 
-// notes/api.md Sharing and roles (`leave`): leaving with no way in writes nothing; this node,
+// notes/api.md Sharing and roles (`leave`): leaving while holding no role there writes nothing; this node,
 // an admin of the target, leaving for another holder is `Invalid` (that is `set_role`'s) and
 // writes nothing, a link's join of the same holder included; a holder's own leave ends its role
 // at once, and a link it made goes on.
@@ -110,7 +110,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     let (g, org) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     let n = commits(&alice);
     alice.leave(org, g, SetRoleOpts::default()).unwrap();
-    assert_eq!(commits(&alice), n, "no way in: nothing written");
+    assert_eq!(commits(&alice), n, "no role held: nothing written");
     alice.grant(g, org, Role::Write, Default::default()).unwrap();
     alice.make_link(g, Role::Write, alice.node(), Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.thing();
@@ -134,7 +134,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     assert!(matches!(alice.leave(alice.author(), t, SetRoleOpts::default()), Err(Error::LeavesNoAdmin { tid }) if tid == k));
     assert_eq!(commits(&alice), n, "refused before anything is written");
     alice.leave(alice.author(), t, SetRoleOpts { leave_adminless: true, ..Default::default() }).unwrap();
-    assert_eq!(alice.role_on(t).unwrap(), None, "no way in is left");
+    assert_eq!(alice.role_on(t).unwrap(), None, "no role is left");
     assert_eq!(alice.links_of(t).unwrap().len(), 1, "a leave ends no link");
 }
 
@@ -349,7 +349,7 @@ fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     assert!(!bob.grants(m).unwrap().contains_key(&erin.author()), "Erin left M");
     assert!(carol.grants(m).unwrap().is_empty(), "no roster of M once Erin left");
     assert!(carol.holders(g).unwrap().iter().all(|h| h.thing != erin.author()), "nor through G's holders");
-    // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
+    // once Carol reads M (a roster change on a thing M holds through, not on M's), her watch on M's grants
     // hears its roster
     let t = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(m, t, Role::Read, Default::default()).unwrap();

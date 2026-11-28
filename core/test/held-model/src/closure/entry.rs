@@ -1,6 +1,6 @@
 //! First entry under stubs (notes/stubs.md; spec/sync-set.md §2), a greenfield model: what a
 //! node holds when a grant is its target's data, a node finds what it cares about by references,
-//! and the only way in from outside is a held signal (signal → reference → sync → permissions).
+//! and nothing from outside reaches a node but a held signal (signal → reference → sync → permissions).
 //! Properties and hand worlds in tests/it/spec_entry.rs.
 //!
 //! A unit is a thing's unit or a node's local part (its node root's references, in its own store;

@@ -83,7 +83,7 @@ pub const MAX_MESSAGE_ITEMS: usize = 1 << 20;
 /// How long a complete pass waits for a peer whose record holds the sync ID: recommended
 /// 1 hour (spec/wire.md §2, spec/sync-status.md §1).
 pub const PASS_WAIT_MS: u64 = 60 * 60 * 1000;
-/// The recommended minimum deposit budget of a sync ID whose head has `claims` head claims
+/// The recommended minimum deposit budget of a sync ID whose head has `claims` head claim keys
 /// (spec/sync-ids.md §3): `64 + 4 × claims` entries and that many × 32 KiB bytes (spec/wire.md §2,
 /// spec/sync-inbox.md §3).
 pub fn deposit_budget(claims: usize) -> (usize, usize) {

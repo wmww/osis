@@ -1792,25 +1792,26 @@ fn a_record_with_no_member_leaves_memory_with_its_connection_spec_sync_opens_3()
 }
 
 
-/// A store of S at head `head` showing `claims` as its head claims (spec/sync-ids.md §3 Bound).
+/// A store of S at head `head` showing `claims` as its head claim keys (spec/sync-ids.md §3 Bound).
 fn store_claiming(head: &StepKeys, claims: &[[u8; 32]]) -> osis_sync::opens::holds::Creds {
     let mut c = store(head);
-    c.shows.extend(claims.iter().map(|k| osis_sync::opens::cred::Shown::Claim(*k)));
+    c.shows.extend(claims.iter().map(|k| osis_sync::opens::cred::Shown::ClaimKey(*k)));
     c
 }
 
 /// A node holding no secret of S that tests `claim` at the store's head `head` (a grantee).
 fn claimant(head: &StepKeys, claim: &osis_crypto::SigningSecret) -> osis_sync::opens::holds::Creds {
-    osis_sync::opens::holds::Creds { holding: Some(osis_sync::types::Holding::Read), tests: vec![osis_sync::opens::cred::Tested::Claim { key: claim.clone(), sync: head.pk() }], ..Default::default() }
+    osis_sync::opens::holds::Creds { holding: Some(osis_sync::types::Holding::Read), tests: vec![osis_sync::opens::cred::Tested::ClaimKey { key: claim.clone(), sync: head.pk() }], ..Default::default() }
 }
 
-// spec/sync-opens.md §4 (One open rule) and §6 (a claim no longer a head claim): a claim among
-// the head claims opens S whole, proven by an open signature by it, its answer by the replier's
-// head sync key; one no longer a head claim is ended, served up to its step's end. A grantee holding no secret of S opens a store by its
-// claim, whole on both sides; the store's head moves past the claim's epoch and its member is
+// spec/sync-opens.md §4 (One open rule) and §6 (a claim key no longer a head claim key): a claim
+// key among the head claim keys opens S whole, proven by an open signature by it, its answer by
+// the replier's head sync key; one no longer a head claim key is ended, served up to its step's
+// end. A grantee holding no secret of S opens a store by its claim key, whole on both sides; the
+// store's head moves past the claim key's epoch and its member is
 // ended, not closed at once.
 #[test]
-fn a_claim_opens_whole_and_ends_at_a_head_move_spec_sync_opens_6() {
+fn a_claim_key_opens_whole_and_ends_at_a_head_move_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let claim = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([3; 32]));
     let mut g = Side::new(1);
@@ -1821,7 +1822,7 @@ fn a_claim_opens_whole_and_ends_at_a_head_move_spec_sync_opens_6() {
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "opened by the claim both ways");
     let at_store = p.b.opens.members(p.cb)[&S].clone();
-    assert_eq!((at_store.by, at_store.until), (Credential::Claim(claim.verifying_key().to_bytes()), None), "whole");
+    assert_eq!((at_store.by, at_store.until), (Credential::ClaimKey(claim.verifying_key().to_bytes()), None), "whole");
     // the head moves: the claim is bound to an older step now
     p.b.table.set(S, Some(store_with(&s1, &[&s0])));
     p.b.settle();

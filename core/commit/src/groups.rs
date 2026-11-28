@@ -42,8 +42,8 @@ pub fn prefix_expiry(h: &Header, ais: &[usize]) -> Option<u64> {
     if ais.is_empty() { None } else { blob_expiry(h) }
 }
 
-/// The least entry block (spec/wire.md §5): its sync key, count, two entries and signature.
-const MIN_ENTRY_BLOCK: usize = 32 + 2 + 2 * (32 + osis_crypto::W_LEN) + 64;
+/// The least claim block (spec/wire.md §5): its sync key, count, two claims and signature.
+const MIN_CLAIM_BLOCK: usize = 32 + 2 + 2 * (32 + osis_crypto::W_LEN) + 64;
 
 /// The build error of a commit that does not fit one blob.
 pub const COMMIT_PAST_BLOB: &str = "the commit does not fit a blob";
@@ -62,11 +62,11 @@ pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
     let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], nonce: [0; osis_crypto::SECTION_NONCE_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
-    // the entry-block count byte, and per thing its role parts are on the least block (two
+    // the claim-block count byte, and per thing its role parts are on the least block (two
     // entries); the entries of the holders a block carries past that are its encryption's
     // (spec/sync-ids.md §3: counted where it is framed)
     let roles = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "secrets.0" | "sync.0")).map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len();
-    let blocks = 1usize.saturating_add(roles.saturating_mul(MIN_ENTRY_BLOCK));
+    let blocks = 1usize.saturating_add(roles.saturating_mul(MIN_CLAIM_BLOCK));
     let prefix = PREFIX_FIXED_LEN.saturating_add(groups.saturating_mul(1 + 3 * COMMITMENT_LEN)).saturating_add(blocks);
     osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads).saturating_add(keyed))
 }

@@ -1,12 +1,12 @@
-//! Entries (spec/sync-ids.md §3): the entry blocks an encryption of a commit boxing holders on an
-//! independent thing carries, and the claim keys and claims they are found by.
+//! Claims (spec/sync-ids.md §3): the claim blocks an encryption of a commit boxing holders on an
+//! independent thing carries, and the step secrets and claim keys they are found by.
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{Role, SyncId, Tid};
-use osis_blob::{Entry, EntryBlock};
+use osis_blob::{Claim, ClaimBlock};
 use osis_commit::{CommitBlob, Header, SectionSeal};
-use osis_crypto::{CryptoRngCore, EntryKeys, Epoch, KemPublicKey, RoleKey, Secret32, X25519Secret, role_key};
+use osis_crypto::{CryptoRngCore, WPayload, Epoch, KemPublicKey, RoleKey, Secret32, X25519Secret, role_key};
 use std::collections::BTreeMap;
 
 /// What an encryption of a commit holds of one thing its role parts are on: the thing, its sync
@@ -41,14 +41,14 @@ impl To {
 }
 
 impl Core {
-    /// The claim key of sync epoch `e` of `x` (spec/sync-ids.md §3), where this node holds `e`'s
+    /// The step secret of sync epoch `e` of `x` (spec/sync-ids.md §3), where this node holds `e`'s
     /// sync secret and the roles secret of the read epoch `e`'s keyset names: readers alone.
-    pub(crate) fn claim_key(&self, x: &Tid, e: &Epoch) -> Option<X25519Secret> {
+    pub(crate) fn step_secret(&self, x: &Tid, e: &Epoch) -> Option<X25519Secret> {
         let epochs = self.epochs(x)?;
         let sync = epochs.sync.reading_secret(e)?;
         let r = self.keyset(x, Role::Sync, e)?.claim?;
         let roles = epochs.read.checked_roles(&r).or_else(|| epochs.read.reading_secret(&r).map(|s| osis_crypto::roles_secret(s.secret())))?;
-        Some(osis_crypto::claim_key(sync.secret(), &roles))
+        Some(osis_crypto::step_secret(sync.secret(), &roles))
     }
 }
 
@@ -89,59 +89,59 @@ impl Engine {
         Ok(out)
     }
 
-    /// The entry blocks of an encryption of blob key `blob_key` and salt `salt` (spec/sync-ids.md
-    /// §3 Entry block): per thing of `boxing`, per current sync epoch of it whose secret this node
-    /// holds, each holder's entries: a read entry where it is boxed at a read epoch, a sync entry
+    /// The claim blocks of an encryption of blob key `blob_key` and salt `salt` (spec/sync-ids.md
+    /// §3 Claim block): per thing of `boxing`, per current sync epoch of it whose secret this node
+    /// holds, each holder's claims: a read claim where it is boxed at a read epoch, a sync claim
     /// where at sync at that epoch (the public's one), each sealed to the KEM key of the keyset
     /// its box of that role is to (the newest read box's; one with no KEM key here left out),
-    /// signed by that epoch's sync key; a block of dummies alone where this node holds no claim
-    /// key of the epoch; paged where they are more than an entry page holds (`frame` makes each
+    /// signed by that epoch's sync key; a block of dummies alone where this node holds no step
+    /// secret of the epoch; paged where they are more than a claim page holds (`frame` makes each
     /// page).
-    pub(crate) fn entry_blocks(&mut self, boxing: &[Boxing], blob_key: &Secret32, salt: &[u8; 16], frame: &mut crate::sync_ids::blobs::PageFrame<'_>, rng: &mut dyn CryptoRngCore) -> Result<Vec<EntryBlock>> {
+    pub(crate) fn claim_blocks(&mut self, boxing: &[Boxing], blob_key: &Secret32, salt: &[u8; 16], frame: &mut crate::sync_ids::blobs::PageFrame<'_>, rng: &mut dyn CryptoRngCore) -> Result<Vec<ClaimBlock>> {
         let mut out = Vec::new();
         for b in boxing {
             let Some(epochs) = self.core.epochs(&b.thing) else { continue };
             for e in epochs.sync.current() {
                 let Some(secret) = epochs.sync.reading_secret(&e) else { continue };
                 let sync_key = role_key(RoleKey::Sync, secret.secret());
-                let mut entries = Vec::new();
-                if let Some(ck) = self.core.claim_key(&b.thing, &e) {
+                let mut claims = Vec::new();
+                if let Some(ss) = self.core.step_secret(&b.thing, &e) {
                     for (m, at) in &b.boxes {
-                        // a read entry by its newest read box, a sync entry by its box at `e`; the
-                        // public's one entry, in clear, by its read box where it has one
+                        // a read claim by its newest read box, a sync claim by its box at `e`; the
+                        // public's one claim, in clear, by its read box where it has one
                         let newest = osis_keys::newest_of(at.iter().filter(|(r, _, _)| *r == Role::Read).map(|(_, x, _)| x));
                         let read = at.iter().find(|(r, x, _)| *r == Role::Read && Some(*x) == newest).zip(b.section.as_ref());
                         let sync = at.iter().find(|(r, x, _)| *r == Role::Sync && *x == e).filter(|_| !(m.is_public() && read.is_some()));
-                        let read = read.map(|((_, _, to), s)| (EntryKeys::Read { blob_key: blob_key.clone(), section_key: s.clone() }, (Role::Read, *to)));
-                        let sync = sync.map(|(_, _, to)| (EntryKeys::Sync { n: e.n(), secret: secret.secret().clone() }, (Role::Sync, *to)));
+                        let read = read.map(|((_, _, to), s)| (WPayload::Read { blob_key: blob_key.clone(), section_key: s.clone() }, (Role::Read, *to)));
+                        let sync = sync.map(|(_, _, to)| (WPayload::Sync { n: e.n(), secret: secret.secret().clone() }, (Role::Sync, *to)));
                         for (keys, to) in read.into_iter().chain(sync) {
-                            if let Some(entry) = self.entry_of(m, to, &ck, &b.sync_id, &keys, rng)? {
-                                entries.push(entry);
+                            if let Some(claim) = self.claim_of(m, to, &ss, &b.sync_id, &keys, rng)? {
+                                claims.push(claim);
                             }
                         }
                     }
                 }
-                out.push(EntryBlock::sign_paged(&sync_key, &b.sync_id, salt, entries, self.core.entry_page, frame, rng)?.block);
+                out.push(ClaimBlock::sign_paged(&sync_key, &b.sync_id, salt, claims, self.core.claim_page, frame, rng)?.block);
             }
         }
         Ok(out)
     }
 
-    /// Holder `m`'s entry under claim key `ck`, carrying `keys`, sealed to the KEM key of `m`'s
+    /// Holder `m`'s claim under step secret `ss`, carrying `keys`, sealed to the KEM key of `m`'s
     /// keyset of role `to.0` its box is to: none where that key is not held here or the DH is
     /// non-contributory.
-    fn entry_of(&mut self, m: &Tid, to: (Role, Option<To>), ck: &X25519Secret, sync_id: &SyncId, keys: &EntryKeys, rng: &mut dyn CryptoRngCore) -> Result<Option<Entry>> {
-        let step_key = ck.public();
+    fn claim_of(&mut self, m: &Tid, to: (Role, Option<To>), ss: &X25519Secret, sync_id: &SyncId, keys: &WPayload, rng: &mut dyn CryptoRngCore) -> Result<Option<Claim>> {
+        let step_key = ss.public();
         if m.is_public() {
-            let claim = osis_crypto::public_claim(sync_id, &step_key).verifying_key().to_bytes();
-            return Ok(Some(Entry { claim, w: osis_crypto::public_entry(keys) }));
+            let key = osis_crypto::public_claim_key(sync_id, &step_key).verifying_key().to_bytes();
+            return Ok(Some(Claim { key, w: osis_crypto::public_w(keys) }));
         }
         let (r, Some(to)) = to else { return Ok(None) };
         let Some(kem) = self.holder_kem_key(m, r, to)? else { return Ok(None) };
-        let Ok(claim) = osis_crypto::claim(ck, &kem.x25519(), sync_id, &step_key) else { return Ok(None) };
-        let claim = claim.verifying_key().to_bytes();
-        let w = osis_crypto::seal_entry(&kem, sync_id, &claim, keys, rng)?;
-        Ok(Some(Entry { claim, w }))
+        let Ok(key) = osis_crypto::claim_key(ss, &kem.x25519(), sync_id, &step_key) else { return Ok(None) };
+        let key = key.verifying_key().to_bytes();
+        let w = osis_crypto::seal_w(&kem, sync_id, &key, keys, rng)?;
+        Ok(Some(Claim { key, w }))
     }
 
     /// The KEM key of `m`'s keyset of role `r` a box is to: a sealed box's, read from the body
@@ -157,9 +157,9 @@ impl Engine {
 /// The step key of each sync key on a known path (`Engine::step_keys`).
 type StepKeys = BTreeMap<[u8; 32], [u8; 32]>;
 
-/// What the entries of a blob under S give this node (spec/sync-ids.md §3 Taking an entry): every
-/// entry of a holder it reaches S's thing through is taken, so one holder's entry never hides
-/// another's (an account's sync entry beside the public's read one).
+/// What the claims of a blob under S give this node (spec/sync-ids.md §3 Taking a claim): every
+/// claim of a holder it reaches S's thing through is taken, so one holder's claim never hides
+/// another's (an account's sync claim beside the public's read one).
 #[derive(Default)]
 pub(crate) struct Took {
     /// A read holder's (the public's alike): S's thing, the blob key and the key of the section
@@ -172,7 +172,7 @@ pub(crate) struct Took {
 
 impl Engine {
     /// Takes a path a Head answer gave for `s` (`Core::heard`; verified from genesis by the
-    /// caller): the steps this node computes claims at and finds entries by while it records no
+    /// caller): the steps this node computes claim keys at and finds claims by while it records no
     /// path of `s` of its own. The same again moves nothing.
     pub fn hear_path(&mut self, s: &SyncId, steps: Vec<osis_blob::Step>) {
         if self.core.heard.get(s).is_some_and(|p| **p == steps) {
@@ -209,22 +209,22 @@ impl Engine {
         Ok((out, head.1))
     }
 
-    /// Every entry of a holder this node reaches `s`'s thing through (`claimants`) in blob `bytes`
-    /// under `s`, opened and taken (spec/sync-ids.md §3 Taking an entry): each found by its claim at the
+    /// Every claim of a holder this node reaches `s`'s thing through (`claimants`) in blob `bytes`
+    /// under `s`, opened and taken (spec/sync-ids.md §3 Taking a claim): each found by its claim key at the
     /// step key of the sync key its block is bound to (a block that does not verify under `s`
     /// counts for nothing); a sync holder's secret kept only where it derives that sync key; the
     /// public's, where this node holds `s` without reading it, only in a block bound to its head.
     /// `path`: a path of `s` known beside this node's own (a store's); `pages`: the bytes of the
-    /// blob's entry pages held (spec/wire.md §5 Entry pages), an entry in a page not given not
+    /// blob's claim pages held (spec/wire.md §5 Claim pages), a claim in a page not given not
     /// found.
-    pub(crate) fn take_entry(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step], pages: &[Vec<u8>]) -> Result<Took> {
+    pub(crate) fn take_claims(&mut self, s: &SyncId, bytes: &[u8], path: &[osis_blob::Step], pages: &[Vec<u8>]) -> Result<Took> {
         let mut took = Took::default();
         let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(took) };
-        if prefix.blocks().is_empty() || osis_blob::is_entry_page(bytes) {
+        if prefix.blocks().is_empty() || osis_blob::is_claim_page(bytes) {
             return Ok(took);
         }
-        // the entry pages at hand, by blob ID (spec/wire.md §5 Entry pages)
-        let pages: BTreeMap<osis_base::BlobId, (EntryBlock, [u8; 16])> = pages.iter().filter_map(|p| osis_blob::read_page(p)).map(|(id, b, salt)| (id, (b, salt))).collect();
+        // the claim pages at hand, by blob ID (spec/wire.md §5 Claim pages)
+        let pages: BTreeMap<osis_base::BlobId, (ClaimBlock, [u8; 16])> = pages.iter().filter_map(|p| osis_blob::read_page(p)).map(|(id, b, salt)| (id, (b, salt))).collect();
         let things = self.sync_things_of(s)?;
         let Some(thing) = things.first().copied() else { return Ok(took) };
         let (steps, head) = self.step_keys(s, &things, path)?;
@@ -234,31 +234,31 @@ impl Engine {
             if !block.verifies(s, prefix.salt()) {
                 continue;
             }
-            // the public's claim held without reading S: in the blocks bound to the head alone
+            // the public's claim key held without reading S: in the blocks bound to the head alone
             let public = claimants.public || (claimants.public_at_head && head.as_ref() == Some(block.sync_pk()));
-            // its entries: inline, or those of each page it names that verifies under S by the
+            // its claims: inline, or those of each page it names that verifies under S by the
             // same sync key
             let paged = block.pages().iter().filter_map(|id| pages.get(id)).filter(|(b, salt)| b.sync_pk() == block.sync_pk() && b.verifies(s, salt));
-            let entries: Vec<&osis_blob::Entry> = block.entries().iter().chain(paged.flat_map(|(b, _)| b.entries())).collect();
-            let mut found: Vec<(Option<Tid>, EntryKeys)> = Vec::new();
+            let claims: Vec<&osis_blob::Claim> = block.claims().iter().chain(paged.flat_map(|(b, _)| b.claims())).collect();
+            let mut found: Vec<(Option<Tid>, WPayload)> = Vec::new();
             for (holder, k) in claimants.each().filter(|(_, k)| k.is_some() || public) {
-                let Some(claim) = crate::sync::claim_at(k, s, step_key) else { continue };
-                let claim = claim.verifying_key().to_bytes();
-                let Some(e) = entries.iter().find(|e| e.claim == claim) else { continue };
+                let Some(key) = crate::sync::claim_key_at(k, s, step_key) else { continue };
+                let key = key.verifying_key().to_bytes();
+                let Some(c) = claims.iter().find(|c| c.key == key) else { continue };
                 let keys = match k {
-                    Some(kem) => osis_crypto::open_entry(kem, s, &e.claim, &e.w),
-                    None => osis_crypto::read_public_entry(&e.w),
+                    Some(kem) => osis_crypto::open_w(kem, s, &c.key, &c.w),
+                    None => osis_crypto::read_public_w(&c.w),
                 };
                 found.extend(keys.map(|k| (holder, k)));
             }
-            // a holder's sync entry is for a node holding its sync secrets alone: one that opens
-            // its read entry takes that (spec/sync-ids.md §3 Entries)
-            let read: Vec<Option<Tid>> = found.iter().filter(|(_, k)| matches!(k, EntryKeys::Read { .. })).map(|(h, _)| *h).collect();
+            // a holder's sync claim is for a node holding its sync secrets alone: one that opens
+            // its read claim takes that (spec/sync-ids.md §3 Claims)
+            let read: Vec<Option<Tid>> = found.iter().filter(|(_, k)| matches!(k, WPayload::Read { .. })).map(|(h, _)| *h).collect();
             for (holder, keys) in found {
                 match keys {
-                    EntryKeys::Read { blob_key, section_key } => took.read = took.read.or(Some((thing, blob_key, section_key))),
-                    EntryKeys::Sync { .. } if read.contains(&holder) => {}
-                    EntryKeys::Sync { n, secret } if derives(&secret, block.sync_pk()) => {
+                    WPayload::Read { blob_key, section_key } => took.read = took.read.or(Some((thing, blob_key, section_key))),
+                    WPayload::Sync { .. } if read.contains(&holder) => {}
+                    WPayload::Sync { n, secret } if derives(&secret, block.sync_pk()) => {
                         let Ok(epoch) = Epoch::derive(&thing, Role::Sync, n, &secret) else { continue };
                         self.run(|tx| {
                             crate::apply::keys::edit_epochs(tx, thing, |ep| ep.role_mut(Role::Sync).set_secret(epoch, osis_crypto::RoleSecret::new(secret.clone())));
@@ -275,8 +275,8 @@ impl Engine {
     }
 }
 
-/// Whether a sync holder's secret from an entry is kept: only where it derives the sync key of
-/// the block the entry is in (spec/sync-ids.md §3 Taking an entry), so an entry names no secret
+/// Whether a sync holder's secret from a claim is kept: only where it derives the sync key of
+/// the block the claim is in (spec/sync-ids.md §3 Taking a claim), so a claim names no secret
 /// of another epoch, nor one a block's signer did not hold.
 pub(crate) fn derives(secret: &Secret32, sync_pk: &[u8; 32]) -> bool {
     role_key(RoleKey::Sync, secret).verifying_key().to_bytes() == *sync_pk
@@ -286,7 +286,7 @@ pub(crate) fn derives(secret: &Secret32, sync_pk: &[u8; 32]) -> bool {
 mod tests {
     use super::*;
 
-    // spec/sync-ids.md §3 Taking an entry: a sync secret is kept only where it derives the
+    // spec/sync-ids.md §3 Taking a claim: a sync secret is kept only where it derives the
     // block's sync key
     #[test]
     fn a_sync_secret_is_kept_only_where_it_derives_the_blocks_key_spec_sync_ids_3() {

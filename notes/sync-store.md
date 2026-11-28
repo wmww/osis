@@ -48,7 +48,7 @@ The engine keeps a loose record only while a store entry names a blob carrying i
 - `Policy::from_caps` reads each value from `caps^.0`'s `policy` by field name; per-thing caps replace `entries` and `bytes`.
 - Caps apply to sync IDs kept unread only, but `memory_bytes`, which also bounds what a reader holds of S's ephemeral commits (`memory_room`; a held one's blob counts at `Engine::memory_charge`, at least its bytes, under every sync ID an entry of it is under, keyed by blob: `set_memory_charge`). Role entries count toward none.
 - A memory-part entry or tombstone counts what it holds there (`entries::overhead`, `tomb_overhead`: rows at their bytes and `osis_store::MEM_ROW_COST` each, a held-elsewhere row whether written or not, its blob's place, its log event, `memory::EVENT`/`REMOVAL`), so the memory caps bound what the memory part holds (`Store::memory_held`; at n and 10n by `store::memory_caps_count_what_memory_holds_spec_sync_ids_6`). Durable ones count `ENTRY_OVERHEAD`/`TOMB_OVERHEAD`, an approximation of disk. Uncounted: issues/sync-memory-uncounted.md.
-- The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head claims' count. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps; why: notes/sync-reasons.md, Nodes).
+- The deposit budget is the policy's raised to `osis_proto::limits::deposit_budget` for the head claim keys' count. A child step past the caps is taken at most once per `register_every_ms` per sync ID (spec/sync-ids.md §6 Storage caps; why: notes/sync-reasons.md, Nodes).
 
 ## What peers can make it keep
 - **Tombstones**: a Delete of an entry not held writes nothing, so tombstones never outnumber what was held.

@@ -1,5 +1,5 @@
 # Sync protocol: wire choices, osis-proto, osis-blob
-> Summary: Why the sync wire is laid out as it is (fixed prefix, Padmé marker, request/reply framing, what open signatures bind), and how osis-proto (frames, Hello, messages and their decode caps, relay-only gate) and osis-blob (blobs, chunk trees, large values, steps and entry blocks, signatures, sealed fires, `sync.0` records, links) are built. osis-proto holds bytes only, no session: the session is osis-sync's (notes/sync-session.md), the store too (notes/sync-store.md). Layouts: spec/wire.md.
+> Summary: Why the sync wire is laid out as it is (fixed prefix, Padmé marker, request/reply framing, what open signatures bind), and how osis-proto (frames, Hello, messages and their decode caps, relay-only gate) and osis-blob (blobs, chunk trees, large values, steps and claim blocks, signatures, sealed fires, `sync.0` records, links) are built. osis-proto holds bytes only, no session: the session is osis-sync's (notes/sync-session.md), the store too (notes/sync-store.md). Layouts: spec/wire.md.
 
 **Principle:** the wire and blob crates are bytes only: every layout and limit of spec/wire.md as a codec and a named constant, every decode bounded before anything is built; sessions, stores and judgement live above them.
 

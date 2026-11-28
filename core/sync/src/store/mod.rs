@@ -479,7 +479,7 @@ fn expired(at: Option<WallMs>, now: WallMs) -> bool {
 }
 
 /// The deposit budget of S (spec/sync-inbox.md §3 Budget): entries and bytes, the policy's
-/// raised to the recommended minimum for `claims` head claims.
+/// raised to the recommended minimum for `claims` head claim keys.
 fn deposit_budget(policy: &Policy, claims: usize) -> (u64, u64) {
     let (e, b) = osis_proto::limits::deposit_budget(claims);
     (policy.deposit_entries.max(e as u64), policy.deposit_bytes.max(b as u64))
@@ -897,16 +897,16 @@ impl Store {
         self.lock().read(|t, env| Ok(path::head(t, env, s)?.map(|(_, st)| st)))
     }
 
-    /// S's head claims (spec/sync-ids.md §3 Bound): the claims of its entries' blocks bound to its
+    /// S's head claim keys (spec/sync-ids.md §3 Bound): the claim keys of its entries' blocks bound to its
     /// head's sync key; none with no head.
-    pub fn head_claims(&self, s: &SyncId) -> Result<Vec<[u8; 32]>> {
+    pub fn head_claim_keys(&self, s: &SyncId) -> Result<Vec<[u8; 32]>> {
         self.lock().read(|t, env| match path::head(t, env, s)? {
             Some((_, head)) => claims::bound_to(t, s, &head.keys.sync.to_bytes()),
             None => Ok(Vec::new()),
         })
     }
 
-    /// S's entries with an entry block bound to its head's sync key (spec/sync-ids.md §3 Bound).
+    /// S's entries with a claim block bound to its head's sync key (spec/sync-ids.md §3 Bound).
     pub fn head_bound_entries(&self, s: &SyncId) -> Result<Vec<BlobId>> {
         self.lock().read(|t, env| match path::head(t, env, s)? {
             Some((_, head)) => claims::entries_bound_to(t, s, &head.keys.sync.to_bytes()),
@@ -914,15 +914,15 @@ impl Store {
         })
     }
 
-    /// S's entries with an entry block bound to sync key `pk` (a heard head's, spec/sync-ids.md
+    /// S's entries with a claim block bound to sync key `pk` (a heard head's, spec/sync-ids.md
     /// §3 Bound).
-    /// The entry pages entry `b` of S names (spec/wire.md §5 Entry pages), as indexed from its
+    /// The claim pages entry `b` of S names (spec/wire.md §5 Claim pages), as indexed from its
     /// bytes: they go with it.
     pub fn pages_of(&self, s: &SyncId, b: &BlobId) -> Result<Vec<BlobId>> {
         self.lock().read(|t, _| claims::pages_of(t, s, b))
     }
 
-    /// The entry of S whose blocks name entry page `p`, if one is indexed here.
+    /// The entry of S whose blocks name claim page `p`, if one is indexed here.
     pub fn page_owner(&self, s: &SyncId, p: &BlobId) -> Result<Option<BlobId>> {
         self.lock().read(|t, _| claims::page_owner(t, s, p))
     }
@@ -1099,7 +1099,7 @@ impl Store {
 
     /// Entry `b` of S gives this node something held: its charge to the peer that brought it ends.
     pub fn uncharge(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
-        // its entry pages with it (spec/wire.md §5 Entry pages: a page gives what its blob does)
+        // its claim pages with it (spec/wire.md §5 Claim pages: a page gives what its blob does)
         for p in self.pages_of(s, b)? {
             self.uncharge(s, &p)?;
         }

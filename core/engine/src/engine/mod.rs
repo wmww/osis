@@ -625,7 +625,7 @@ indexes! {
     pub sync_cut_things: JSetMap<SyncId, Tid>,
     /// Per thing, each holder whose entry gave this node a sync secret of it, with the sync ID
     /// (`sync_ids::unread`, rows `se/`): a sync-only cut of it under that holder.
-    pub entry_syncs: JSetMap<Tid, (Tid, SyncId)>,
+    pub claim_syncs: JSetMap<Tid, (Tid, SyncId)>,
     /// The certificate blobs sealed here per sync ID, each with what it carries
     /// (`sync::certblobs`).
     pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,
@@ -1151,9 +1151,9 @@ pub struct Core {
     /// sync, the answerer's word on its own head): the steps claims are computed at and entries
     /// found by where this node records no path of its own. In memory only.
     pub(crate) heard: memo::Stamped<SyncId, Arc<Vec<osis_blob::Step>>>,
-    /// Entries per entry page this node writes (spec/wire.md §5 Entry pages): `ENTRY_PAGE`, a
-    /// smaller power of two in tests (`Engine::set_entry_page`).
-    pub(crate) entry_page: usize,
+    /// Entries per claim page this node writes (spec/wire.md §5 Claim pages): `CLAIM_PAGE`, a
+    /// smaller power of two in tests (`Engine::set_claim_page`).
+    pub(crate) claim_page: usize,
     /// Link keys held by `Engine::hold_link_key` until `drop_link_key` (making a link, a redeem,
     /// bearer use).
     pub(crate) held_link_keys: BTreeMap<Tid, Arc<Identity>>,
@@ -1913,7 +1913,7 @@ impl Core {
             links: _,
             // heard paths: a Head answer's word, kept whatever is undone
             heard: _,
-            entry_page: _,
+            claim_page: _,
             caught_up: _,
             unit_of: _,
             closure_follow: _,
@@ -2256,7 +2256,7 @@ impl Core {
             whole_secrets_snapshots: false,
             link_keys: Default::default(),
             heard: Default::default(),
-            entry_page: osis_blob::ENTRY_PAGE,
+            claim_page: osis_blob::CLAIM_PAGE,
             held_link_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),

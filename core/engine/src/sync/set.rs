@@ -129,7 +129,7 @@ impl Engine {
             }
         }
         // held as a stub by a sync-only cut: the sync ID it names is followed (spec/sync.md §3
-        // Kept for T), its holders' claims open it (spec/permissions.md §4 Stub)
+        // Kept for T), its holders' claim keys open it (spec/permissions.md §4 Stub)
         let cut = self.core.cut_sync_ids(t);
         if !cut.is_empty() && self.core.ix.closure.stub_only(t) {
             let owned = self.owned_sync_ids(t)?;
@@ -188,7 +188,7 @@ impl Engine {
             let Some(o) = self.owned_sync_ids(t)?.iter().find(|o| o.id == *s).cloned() else { continue };
             self.credentials_of(&mut c, t, &o)?;
         }
-        // claims at the recorded head and the heard one, where no held secret opens by proof
+        // claim keys at the recorded head and the heard one, where no held secret opens by proof
         let held: BTreeSet<[u8; 32]> = c.held_proofs.iter().map(|(_, k)| *k).collect();
         let heard = self.core.heard.get(s).and_then(|p| p.last().cloned());
         let mut at: Vec<osis_blob::Step> = c.head.iter().cloned().chain(heard).filter(|st| !held.contains(&st.keys.sync.to_bytes())).collect();
@@ -196,7 +196,7 @@ impl Engine {
         if !at.is_empty() {
             let claimants = self.claimants(s, &things);
             for st in &at {
-                c.claims.extend(claimants.each().filter_map(|(_, k)| super::claim_at(k, s, &st.step_key)).map(|x| (st.keys.sync.to_bytes(), x)));
+                c.claim_keys.extend(claimants.each().filter_map(|(_, k)| super::claim_key_at(k, s, &st.step_key)).map(|x| (st.keys.sync.to_bytes(), x)));
             }
         }
         Ok(Some(Arc::new(c)))
@@ -206,7 +206,7 @@ impl Engine {
     /// Admissible, tests): its own things (its node thing, the things it holds a grant on, its
     /// link keys), each holder of a thing's independent it holds a read secret of (by the role
     /// entries held), each thing naming `s` to it (a sync-only cut's unit's thing and the chain
-    /// holders it names, a holder whose entry gave it a sync secret, a followed signal's holder, a
+    /// holders it names, a holder whose claim gave it a sync secret, a followed signal's holder, a
     /// followed link's key), and the public where it redeems a locator or the public holds a role there (at any
     /// step), or where it holds `s` without reading it (at its head).
     pub(crate) fn claimants(&mut self, s: &SyncId, things: &[Tid]) -> super::Claimants {
@@ -231,16 +231,16 @@ impl Engine {
                 holders.insert(c.under);
                 holders.extend(c.cut.holders.iter().copied());
             }
-            // a holder whose entry gave this node a sync secret of it
-            holders.extend(self.core.ix.entry_syncs.get(t).into_iter().flatten().filter(|(_, x)| x == s).map(|(h, _)| *h));
+            // a holder whose claim gave this node a sync secret of it
+            holders.extend(self.core.ix.claim_syncs.get(t).into_iter().flatten().filter(|(_, x)| x == s).map(|(h, _)| *h));
             match self.core.followed_links.link_of(t, s) {
                 Some(None) => public = true,
                 Some(Some(l)) => keys.extend(l.link_read_kem().cloned().map(|k| (None, k))),
                 None => {}
             }
         }
-        // an entry is sealed to the keyset its box of its role is to: a read entry to a read
-        // keyset, a sync entry to a sync keyset (spec/sync-ids.md §3 Entries)
+        // a claim is sealed to the keyset its box of its role is to: a read claim to a read
+        // keyset, a sync claim to a sync keyset (spec/sync-ids.md §3 Claims)
         for m in holders {
             let Some(e) = self.core.epochs(&m) else { continue };
             for (_, x) in e.role(Role::Read).held_newest_first().into_iter().chain(e.role(Role::Sync).held_newest_first()) {

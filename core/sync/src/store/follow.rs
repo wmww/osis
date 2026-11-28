@@ -153,8 +153,8 @@ pub fn blob_bytes(engine: &mut Engine, store: &Store, b: &BlobId) -> Result<Opti
     store.kept_bytes(b)
 }
 
-/// The bytes of the entry pages held here that blob `bytes` names (spec/wire.md §5 Entry pages):
-/// what taking an entry of it reads beside it. None for a blob of no paged block.
+/// The bytes of the claim pages held here that blob `bytes` names (spec/wire.md §5 Claim pages):
+/// what taking a claim of it reads beside it. None for a blob of no paged block.
 pub fn page_bytes(engine: &mut Engine, store: &Store, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
     let Ok(Some(prefix)) = osis_blob::clear_prefix(bytes) else { return Ok(Vec::new()) };
     let mut out = Vec::new();
@@ -337,8 +337,8 @@ impl Follow {
                 let mut woken = Vec::new();
                 for (s, b) in f.added() {
                     park_read(engine, store, &self.read, &mut self.parked, &mut self.creds, s, b)?;
-                    // an entry page come after its blob: the blob, parked, may open by it now
-                    // (spec/wire.md §5 Entry pages)
+                    // a claim page come after its blob: the blob, parked, may open by it now
+                    // (spec/wire.md §5 Claim pages)
                     woken.extend(store.page_owner(&s, &b)?.map(|o| (s, o)).filter(|k| self.parked.of.contains_key(k)));
                 }
                 if !woken.is_empty() {

@@ -34,20 +34,20 @@ pub fn seed() -> VecFile {
 
     let sync_id = SyncId([0x0a; 16]);
     let (sync_secret, roles) = (s32(0x06), roles_secret(&s32(0x08)));
-    let ck = osis_crypto::claim_key(&sync_secret, &roles);
-    let step_key = ck.public();
-    let holder = claim(&ck, &kem.public().x25519(), &sync_id, &step_key).unwrap();
-    let by_holder = claim(kem.x25519(), &step_key, &sync_id, &step_key).unwrap();
-    assert_eq!(holder.verifying_key(), by_holder.verifying_key(), "both sides derive one claim");
+    let ss = osis_crypto::step_secret(&sync_secret, &roles);
+    let step_key = ss.public();
+    let holder = claim_key(&ss, &kem.public().x25519(), &sync_id, &step_key).unwrap();
+    let by_holder = claim_key(kem.x25519(), &step_key, &sync_id, &step_key).unwrap();
+    assert_eq!(holder.verifying_key(), by_holder.verifying_key(), "both sides derive one claim key");
     cases.push(
-        case("claim key and claim", "spec/wire.md §8")
+        case("step secret and claim key", "spec/wire.md §8")
             .with("holder-read-secret", hex(link_key_role_secret(&seed, Role::Read).expose()))
             .with("sync-secret", hex(sync_secret.expose()))
             .with("roles-secret", hex(roles.expose()))
             .with("step-key", hex(&step_key))
             .with("sync-id", hex(&sync_id.0))
-            .with("claim-public", hex(&holder.verifying_key().to_bytes()))
-            .with("public-claim", hex(&public_claim(&sync_id, &step_key).verifying_key().to_bytes())),
+            .with("claim-key-public", hex(&holder.verifying_key().to_bytes()))
+            .with("public-claim-key", hex(&public_claim_key(&sync_id, &step_key).verifying_key().to_bytes())),
     );
     {
         let mut c = case("role keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));

@@ -326,7 +326,7 @@ pub(crate) fn change(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
 /// With a tombstone, the tombstone is made whether or not the entry was held. Whether it was.
 pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, how: Removal) -> Result<bool> {
     let held = get(t, s, b)?;
-    // its entry pages go with it, however it left (spec/wire.md §5 Entry pages)
+    // its claim pages go with it, however it left (spec/wire.md §5 Claim pages)
     let pages = match held {
         Some(_) => super::claims::pages_of(t, s, b)?,
         None => Vec::new(),
@@ -452,7 +452,7 @@ pub(crate) fn made_len(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<u64
 /// The engine makes blob `b` (`len` bytes) on demand (`CipherStore::made`): its bytes go unless the
 /// engine holds them too, and every entry naming it is servable.
 pub(crate) fn made(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobId, len: u64) -> Result<()> {
-    // its entries' claims, from the bytes before they go
+    // its entries' claim keys, from the bytes before they go
     for s in naming(t, b)? {
         index_held(t, &s, b)?;
     }

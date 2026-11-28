@@ -57,7 +57,7 @@ Each: cost now; why it is there (the concept); the change; what it deletes; wire
 - **Cost of the derived key**: a wrong secret is found by a Poly1305 pass over the section (no wrap to fail on), paid only where the first secret tried is not the one (old-epoch and copy sections).
 - **Left** (each its own job):
   - **Named delete keys** (about 32 B a level): every fresh encryption's maker computes the prefix commitments from the header's keys, so it would resolve each name first; level 1 and 3 keys are checked against the steps placed across any base up the record chain (notes/delete-keys.md), which a name must still single out; a level-2 key is the author's write epoch's, which readers hold no public form of. Needs its own design against notes/delete-keys.md.
-  - **One blinded commitment per author within a sync unit** (Tess: yes; about 33 B a commit): a blob prefix change, beside the entry-block paging job's prefix work.
+  - **One blinded commitment per author within a sync unit** (Tess: yes; about 33 B a commit): a blob prefix change, beside the claim-block paging job's prefix work.
   - **Empty optional header fields** (about 5 B): a trailing optional map would save them at the cost of a second header shape; not worth it alone.
 
 ### F. Entry rows

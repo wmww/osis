@@ -19,5 +19,5 @@ Measured in the engine (the commits of `grant`, `demote` and `ensure_rotated` pa
 | H's content changes | the change | every syncer of H's sync ID, path users included |
 
 So with m members and k independent things below H, one removal costs, by design and before any change here:
-- **H's rotation, in m**: 52 KB at 10 members, 4.9 MB at 1,000 (2.7 MB if they only read), downloaded by each member: m times that across the network. entries page (spec/wire.md §5 Entry pages), so nothing caps direct members; nested three deep at fan-out 47 a removal costs every member the top rotation (about 230 KB), and the members of the two holders below it theirs.
+- **H's rotation, in m**: 52 KB at 10 members, 4.9 MB at 1,000 (2.7 MB if they only read), downloaded by each member: m times that across the network. Claims page (spec/wire.md §5 Claim pages), so nothing caps direct members; nested three deep at fan-out 47 a removal costs every member the top rotation (about 230 KB), and the members of the two holders below it theirs.
 - **A rotation of every thing below H, in k**: lazy (stale boxes, spec/crypto.md §4), 11.7 KB or more each, required for confidentiality (spec/requirements.md Cost: "in proportion to the rosters of what it could read"). Fundamental; candidates are judged against it.

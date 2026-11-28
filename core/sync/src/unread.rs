@@ -179,7 +179,7 @@ impl Unread {
 }
 
 /// One S's judgement, reading its own keys only. At a head past its keys, its entries bound to the
-/// head's sync key are taken first (spec/sync-ids.md §3 Taking an entry: a step registered after
+/// head's sync key are taken first (spec/sync-ids.md §3 Taking a claim: a step registered after
 /// an entry came binds its block to the head; only those blocks are read again).
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
     let path = cx.store.path(s)?;

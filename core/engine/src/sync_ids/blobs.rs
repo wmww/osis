@@ -58,7 +58,7 @@ pub struct Sealed {
     /// Its seal (`crate::sync::BlobSeal`): `None` for an envelope framed as given
     /// (`frame_envelope`), whose section keys are not known here.
     pub seal: Option<Arc<crate::sync::BlobSeal>>,
-    /// Its entry pages' bytes (spec/wire.md §5 Entry pages), in the order its blocks name them:
+    /// Its claim pages' bytes (spec/wire.md §5 Claim pages), in the order its blocks name them:
     /// logged under its sync ID before it.
     pub pages: Vec<Vec<u8>>,
 }
@@ -85,8 +85,8 @@ pub struct OpenedBlob {
     pub copy: bool,
     /// Every section as a seal keeps it (`crate::sync::BlobSeal`).
     pub seals: Vec<osis_commit::SectionSeal>,
-    /// Its prefix's entry blocks, as they came (`crate::sync::BlobSeal`).
-    pub blocks: Vec<osis_blob::EntryBlock>,
+    /// Its prefix's claim blocks, as they came (`crate::sync::BlobSeal`).
+    pub blocks: Vec<osis_blob::ClaimBlock>,
 }
 
 /// How a section opens here (`Engine::section_opens`).
@@ -112,19 +112,19 @@ pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osi
 }
 
 /// `frame_envelope` under `key`, its sections as `seals` keeps them where known, carrying the
-/// entry blocks `blocks` makes.
+/// claim blocks `blocks` makes.
 #[allow(clippy::too_many_arguments)]
-fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_commit::SectionSeal>>, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob, blocks: impl FnOnce(&Secret32, &[u8; 16], &mut PageFrame<'_>, &mut dyn CryptoRngCore) -> Result<Vec<osis_blob::EntryBlock>>) -> Result<Sealed> {
+fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_commit::SectionSeal>>, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob, blocks: impl FnOnce(&Secret32, &[u8; 16], &mut PageFrame<'_>, &mut dyn CryptoRngCore) -> Result<Vec<osis_blob::ClaimBlock>>) -> Result<Sealed> {
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
     let salt = osis_blob::Prefix::random_salt(rng);
     let expiry = osis_commit::prefix_expiry(resolved, &ais).map(WallMs);
-    // an entry page: the blob's prefix under the page's own salt, carrying its one block
-    // (spec/wire.md §5 Entry pages)
+    // a claim page: the blob's prefix under the page's own salt, carrying its one block
+    // (spec/wire.md §5 Claim pages)
     let mut pages = Vec::new();
     let blocks = {
         let blob_key = key.secret().clone();
-        let mut frame = |ps: &[u8; 16], b: &osis_blob::EntryBlock| -> std::result::Result<BlobId, osis_blob::Error> {
+        let mut frame = |ps: &[u8; 16], b: &osis_blob::ClaimBlock| -> std::result::Result<BlobId, osis_blob::Error> {
             let prefix = osis_blob::Prefix::for_delete_keys(*ps, &env.header.blind, expiry, &groups)?.with_class(class);
             let page = osis_blob::frame_page(prefix, b, &blob_key)?;
             let id = osis_blob::blob_id(&page);
@@ -141,7 +141,7 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, seals: Option<Vec<osis_comm
     Ok(Sealed { id: osis_blob::blob_id(&blob), blob, key, salt, ais, parts, unopened, seal, pages })
 }
 
-/// Frames one entry page of the blob being framed and gives its blob ID (`framed`).
+/// Frames one claim page of the blob being framed and gives its blob ID (`framed`).
 pub(crate) use osis_blob::PageFrame;
 
 /// A sync unit as `Engine::commit_bodies_under` sees it.
@@ -403,9 +403,9 @@ impl Engine {
             &whole,
             rng,
         )?;
-        // its entries (spec/sync-ids.md §3 Entry block): a fresh encryption of a body, never a copy
+        // its claims (spec/sync-ids.md §3 Claim block): a fresh encryption of a body, never a copy
         let boxing = self.boxing(&c, &resolved, &seals)?;
-        let s = framed(osis_crypto::BlobKey::fresh(rng), &env, Some(seals), &resolved, class, rng, &c, |k, salt, frame, rng| self.entry_blocks(&boxing, k, salt, frame, rng))?;
+        let s = framed(osis_crypto::BlobKey::fresh(rng), &env, Some(seals), &resolved, class, rng, &c, |k, salt, frame, rng| self.claim_blocks(&boxing, k, salt, frame, rng))?;
         if b.parts.iter().any(|p| !s.parts.contains(p)) {
             return Ok(None);
         }
@@ -439,8 +439,8 @@ impl Engine {
         self.open_commit_by(blob, key, &[])
     }
 
-    /// `open_commit`, also opening a section by a section key of `section_keys` (an entry's,
-    /// spec/sync-ids.md §3 Taking an entry), whatever it holds of its thing.
+    /// `open_commit`, also opening a section by a section key of `section_keys` (a claim's,
+    /// spec/sync-ids.md §3 Taking a claim), whatever it holds of its thing.
     pub(crate) fn open_commit_by(&mut self, blob: &[u8], key: &Secret32, section_keys: &[Secret32]) -> Result<OpenedBlob> {
         let (prefix, pt) = osis_blob::open_commit(blob, key)?;
         let env = Envelope::decode(&pt)?;

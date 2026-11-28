@@ -512,7 +512,7 @@ impl Ways {
     /// between are not listed), the hops marked direct (a mint ancestor two or more record edges
     /// up reaching by its direct edge), and whether its last hop is a record edge (so the thing's
     /// own dependents are reached from the same listed things); the empty path for `from` itself.
-    /// `None` where `from` has no way in. O(its length × the record chains' depth).
+    /// `None` where no path reaches it from `from`. O(its length × the record chains' depth).
     pub fn path(&self, records: &Records, from: &Tid) -> Option<(Vec<Tid>, PathMarks, bool)> {
         if *from == self.to {
             return Some((Vec::new(), 0, true));

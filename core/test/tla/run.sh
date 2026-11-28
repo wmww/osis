@@ -40,7 +40,7 @@ instances=(
   "rotation rotation Rotation MC_reorder.cfg pass"
   "rotation rotation Rotation MC_fork.cfg pass"
   "rotation rotation Rotation MC_c2_boxcovers.cfg fail" # negative control: a box-less holder covered
-  "rotation rotation Rotation MC_grant_noentry.cfg fail:temporal" # negative control: a grant carries no entry: the late grantee never opens S
+  "rotation rotation Rotation MC_grant_noclaim.cfg fail:temporal" # negative control: a grant carries no claim: the late grantee never opens S
   "reseal rotation Reseal RS_build.cfg pass"       # another's content encrypted under the node's epoch only while an epoch it opened it under is established (spec/crypto.md §5 Passing on)
   "reseal rotation Reseal RS_build_live.cfg pass"  # ... and once W arrives, it is
   "reseal rotation Reseal RS_openedest.cfg pass"   # sealing again under the opened epoch itself is safe too

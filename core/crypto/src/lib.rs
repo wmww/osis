@@ -8,7 +8,7 @@ pub mod aead;
 mod blob;
 mod boxes;
 mod delete;
-mod entry;
+mod claim;
 mod error;
 pub mod kdf;
 mod kem;
@@ -24,7 +24,7 @@ pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, HistoryEntry, open_box, open_f
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with};
 pub use keys::{creation_nonce, dedup_secret, delta_hash, link_hash, link_key_role_secret, link_tree_hash, RoleSecret, role_kem, signing_key, thing_role_secret};
-pub use entry::{ENTRY_PAYLOAD_LEN, EntryKeys, W_LEN, claim, claim_key, entry_block_digest, open_entry, public_claim, public_entry, read_public_entry, seal_entry, sign_entry_block, verify_entry_block};
+pub use claim::{W_LEN, W_PAYLOAD_LEN, WPayload, claim_block_digest, claim_key, open_w, public_claim_key, public_w, read_public_w, seal_w, sign_claim_block, step_secret, verify_claim_block};
 pub use sync_id::{RoleKey, deposit_key, genesis_seed, role_key, role_key_seed, open_digest, proof_digest, sign_open, sync_id, verify_open};
 pub use rng::{NodeRng, SeededRng};
 pub use secret::Secret32;

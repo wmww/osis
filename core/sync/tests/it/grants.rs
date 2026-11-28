@@ -261,10 +261,10 @@ fn an_accepted_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     assert!(!hinted(&w), "gone with the signal");
 }
 
-// spec/sync-ids.md §3 (Entry; Taking an entry), §6 Head, spec/sync-opens.md §4 (One open rule):
-// grant and entry are one write, and a claim among the head claims opens S whole. Alice grants Bob read and
+// spec/sync-ids.md §3 (Claims; Taking a claim), §6 Head, spec/sync-opens.md §4 (One open rule):
+// grant and claim are one write, and a claim key among the head claim keys opens S whole. Alice grants Bob read and
 // tells him while Bob's node reaches only Carol's node, which keeps T unread; Alice's node goes
-// off. Bob asks Carol's node Head, opens T's sync ID there by his claim, finds his entry in the
+// off. Bob asks Carol's node Head, opens T's sync ID there by his claim key, finds his claim in the
 // grant's blob and reads T: no reader of T online.
 #[test]
 fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
@@ -278,9 +278,9 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "Carol's node keeps T unread");
     // the grant reaches Carol's store; Alice's node goes off as soon as Bob's holds the signal
-    let claims = w.store(1).head_claims(&s).unwrap().len();
+    let claims = w.store(1).head_claim_keys(&s).unwrap().len();
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
-    while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claims(&s).unwrap().len() == claims {
+    while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claim_keys(&s).unwrap().len() == claims {
         assert!(w.step_or_wake(), "the signal reaches Bob");
     }
     w.power_off(0);
@@ -289,14 +289,14 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     assert_eq!(w.engine(2).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T, got in at Carol's store");
 }
 
-// spec/wire.md §5 (Entry pages), spec/sync-ids.md §3 (Entry block; Bound; Taking an entry),
-// spec/sync-opens.md §4: a rotation boxing more holders than one entry page holds goes with its
-// entries in pages, and the store holding them lets every holder in. Alice's node writes pages of
-// 2 entries; T has Carol's node keeping it unread, and Bob and Dave granted read but not told, so
-// each grant's entries go as 2 pages and the rotation's 8 as 4. Told after the rotation, with
+// spec/wire.md §5 (Claim pages), spec/sync-ids.md §3 (Claim block; Bound; Taking a claim),
+// spec/sync-opens.md §4: a rotation boxing more holders than one claim page holds goes with its
+// claims in pages, and the store holding them lets every holder in. Alice's node writes pages of
+// 2 claims; T has Carol's node keeping it unread, and Bob and Dave granted read but not told, so
+// each grant's claims go as 2 pages and the rotation's 8 as 4. Told after the rotation, with
 // Alice's node off, Bob's and Dave's nodes, holding nothing of T, each get in at Carol's store by
 // a claim only a page holds, take its entry from a page and read the write after the rotation.
-// Carol's node takes the new sync secret by its sync entry in a page.
+// Carol's node takes the new sync secret by its sync claim in a page.
 #[test]
 fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_5() {
     let mut w = crate::harness::history::world_of(0, 4, 4);
@@ -310,7 +310,7 @@ fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_
     let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "Carol's node keeps T unread");
     // from here every entry of Bob and Dave is in a page: a grant's 2 pad to 4
-    w.write(0, |e| e.set_entry_page(2));
+    w.write(0, |e| e.set_claim_page(2));
     for h in [bob, dave] {
         w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
     }
@@ -324,7 +324,7 @@ fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_
     // the rotation's entries went in pages to Carol's store
     let paged = w.store(1).entries(&s).unwrap().into_iter().map(|e| w.store(1).pages_of(&s, &e.blob).unwrap().len()).max();
     assert_eq!(paged, Some(4), "8 entries in 4 pages of 2");
-    assert!(w.store(1).head_claims(&s).unwrap().len() >= 8, "the store shows the claims in the pages at the head");
+    assert!(w.store(1).head_claim_keys(&s).unwrap().len() >= 8, "the store shows the claims in the pages at the head");
     let head = w.store(1).path(&s).unwrap().expect("a path").steps.last().unwrap().keys.sync;
     assert!(w.engine(1).kept_sync_secrets(&s).iter().any(|(_, x)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, x).verifying_key() == head), "Carol's node took the head's sync secret from a page");
     for (i, h) in [(2, bob), (3, dave)] {
@@ -341,11 +341,11 @@ fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_
     }
 }
 
-// spec/sync-ids.md §3 (Entry), spec/sync-opens.md §4-§5 (shows:
-// its head claims; tests: its claims at the source's step): one sync ID with n and 10n holders
+// spec/sync-ids.md §3 (Claims), spec/sync-opens.md §4-§5 (shows:
+// its head claim keys; tests: its claim keys at the source's step): one sync ID with n and 10n holders
 // (each granted apart, then a rotation boxing them all), what a node keeping it unread shows for
-// it (each head claim is a filter entry) and what one new grantee getting in at that store costs
-// (claims indexed, entry blocks verified, beacons, decapsulations), counted: each grows at most
+// it (each head claim key is a filter entry) and what one new grantee getting in at that store costs
+// (claim keys indexed, claim blocks verified, beacons, decapsulations), counted: each grows at most
 // linearly with the holders, and the grantee's own work not at all.
 #[test]
 fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
@@ -370,13 +370,13 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
         w.run();
         w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
         w.run();
-        let shown = w.store(1).head_claims(&s).unwrap().len();
+        let shown = w.store(1).head_claim_keys(&s).unwrap().len();
         // one new grantee, getting in at the store alone (as `a_grantee_gets_in_at_a_store_*`)
         let beacons = w.node(2).node.opens().work().beacons;
         osis_base::costs::take();
-        let claims = w.store(1).head_claims(&s).unwrap().len();
+        let claims = w.store(1).head_claim_keys(&s).unwrap().len();
         w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
-        while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claims(&s).unwrap().len() == claims {
+        while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claim_keys(&s).unwrap().len() == claims {
             assert!(w.step_or_wake(), "the signal reaches Bob");
         }
         w.power_off(0);
@@ -385,9 +385,9 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
         let costs: std::collections::BTreeMap<&str, u64> = osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
         let at = |name: &str| costs.get(name).copied().unwrap_or(0);
         let open = [
-            ("claims indexed at the store", (w.store(1).head_claims(&s).unwrap().len() - claims) as u64),
-            ("blocks verified at the store", at("store: entry blocks verified @node 1")),
-            ("blocks verified at the grantee", at("store: entry blocks verified @node 2")),
+            ("claims indexed at the store", (w.store(1).head_claim_keys(&s).unwrap().len() - claims) as u64),
+            ("blocks verified at the store", at("store: claim blocks verified @node 1")),
+            ("blocks verified at the grantee", at("store: claim blocks verified @node 2")),
             ("beacons at the grantee", w.node(2).node.opens().work().beacons - beacons),
             ("decapsulations at the grantee", at("kem: decapsulate @node 2")),
         ];

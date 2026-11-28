@@ -84,14 +84,14 @@ pub struct BlobOf {
 }
 
 /// A commit blob's seal: its length, blob key, each section as kept (`osis_commit::SectionSeal`)
-/// and its entry blocks (spec/sync-ids.md §5: a blob made again carries them). With the prefix
+/// and its claim blocks (spec/sync-ids.md §5: a blob made again carries them). With the prefix
 /// salt (`BlobOf::salt`) and the commit as held it gives the blob byte for byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobSeal {
     pub len: u64,
     pub key: Secret32,
     pub sections: Vec<osis_commit::SectionSeal>,
-    pub blocks: Vec<osis_blob::EntryBlock>,
+    pub blocks: Vec<osis_blob::ClaimBlock>,
 }
 
 impl BlobOf {
@@ -406,34 +406,34 @@ pub struct ReadCredentials {
     /// The sync proof and sync key of each sync secret of S's thing held here, newest first:
     /// tested (spec/sync-opens.md §4 Admissible).
     pub held_proofs: Vec<([u8; 32], [u8; 32])>,
-    /// The claims tested (spec/sync-opens.md §4 Admissible, tests): at its recorded head and the
+    /// The claim keys tested (spec/sync-opens.md §4 Admissible, tests): at its recorded head and the
     /// head a Head answer gave (`Engine::hear_path`), where no sync secret held derives that step's
     /// sync key, of each holder this node reaches S's thing through (`Engine::claimants`), each
-    /// with the sync key of the step it is a claim at (which signs the answer).
-    pub claims: Vec<([u8; 32], SigningSecret)>,
+    /// with the sync key of the step it is a claim key at (which signs the answer).
+    pub claim_keys: Vec<([u8; 32], SigningSecret)>,
 }
 
 /// The holders a node reaches S's thing through (spec/sync-opens.md §4 Admissible, tests): the
 /// KEM key pair of each read, then sync, keyset of each such holder it holds (newest first, each
 /// once),
-/// and whether the public is one (it tests the public's claim): at every step, or at its head
+/// and whether the public is one (it tests the public's claim key): at every step, or at its head
 /// alone where it holds S without reading it.
 #[derive(Clone, Default)]
 pub(crate) struct Claimants {
     /// Each holder's KEM key pairs, with the holder (none: a link's key).
     pub(crate) keys: Vec<(Option<Tid>, osis_crypto::KemSecret)>,
     pub(crate) public: bool,
-    /// S held without reading it (kept unread, or its thing as a stub): the public's entry at its
-    /// head is its one word of the public's role (spec/sync-ids.md §3 Taking an entry).
+    /// S held without reading it (kept unread, or its thing as a stub): the public's claim at its
+    /// head is its one word of the public's role (spec/sync-ids.md §3 Taking a claim).
     pub(crate) public_at_head: bool,
 }
 
-/// A claim of a holder (`key`, one of its KEM key pairs; none: the public's) at a step of key
-/// `step_key` of `s` (spec/sync-ids.md §3 Claim).
-pub(crate) fn claim_at(key: Option<&osis_crypto::KemSecret>, s: &SyncId, step_key: &[u8; 32]) -> Option<SigningSecret> {
+/// The claim key of a holder (`key`, one of its KEM key pairs; none: the public's) at a step of
+/// key `step_key` of `s` (spec/sync-ids.md §3 Claim key).
+pub(crate) fn claim_key_at(key: Option<&osis_crypto::KemSecret>, s: &SyncId, step_key: &[u8; 32]) -> Option<SigningSecret> {
     match key {
-        Some(k) => osis_crypto::claim(k.x25519(), step_key, s, step_key).ok(),
-        None => Some(osis_crypto::public_claim(s, step_key)),
+        Some(k) => osis_crypto::claim_key(k.x25519(), step_key, s, step_key).ok(),
+        None => Some(osis_crypto::public_claim_key(s, step_key)),
     }
 }
 
@@ -449,7 +449,7 @@ impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): its public values.
     #[allow(clippy::type_complexity)]
     fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, &[(StepId, [u8; 32])], &[([u8; 32], [u8; 32])], Vec<([u8; 32], [u8; 32])>) {
-        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, &self.held_proofs, self.claims.iter().map(|(k, c)| (*k, c.verifying_key().to_bytes())).collect())
+        (self.head.as_ref().map(Step::id), &self.keys, &self.proofs, &self.held_proofs, self.claim_keys.iter().map(|(k, c)| (*k, c.verifying_key().to_bytes())).collect())
     }
 }
 

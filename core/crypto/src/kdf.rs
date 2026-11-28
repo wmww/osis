@@ -84,10 +84,11 @@ pub const SYNC_KEY: &str = "sync key";
 pub const SYNC_WRITE: &str = "sync write";
 pub const SYNC_DELETE: &str = "sync delete";
 pub const SYNC_DEPOSIT: &str = "sync deposit";
-pub const SYNC_CLAIM: &str = "sync claim";
-/// A sync epoch's claim key, and the public's claim (spec/wire.md §8).
+/// A holder's claim key (spec/wire.md §8).
 pub const CLAIM_KEY: &str = "claim key";
-pub const PUBLIC_CLAIM: &str = "public claim";
+/// A sync epoch's step secret, and the public's claim key (spec/wire.md §8).
+pub const STEP_KEY: &str = "step key";
+pub const PUBLIC_CLAIM_KEY: &str = "public claim key";
 /// A thing's genesis seed from its mint admin's, and its genesis step's key
 /// (spec/crypto.md §3 Genesis seed, spec/wire.md §8).
 pub const SYNC_GENESIS: &str = "sync genesis";
@@ -106,14 +107,14 @@ pub const SYNC_PROOF: &str = "sync proof";
 pub const PATH: &str = "path";
 /// A split entry's commitment to its path key (spec/crypto.md §5 Path entry).
 pub const PATH_COMMIT: &str = "path commit";
-/// An entry page's blob key, from its commit blob's key and its own salt (spec/wire.md §5 Entry pages).
-pub const ENTRY_PAGE: &str = "entry page";
+/// A claim page's blob key, from its commit blob's key and its own salt (spec/wire.md §5 Claim pages).
+pub const CLAIM_PAGE: &str = "claim page";
 
 /// Every kdf purpose, for distinctness checks and vectors.
 pub const PURPOSES: [&str; 40] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM, CLAIM_KEY, PUBLIC_CLAIM, SYNC_GENESIS, GENESIS_STEP,
-    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, ENTRY_PAGE,
+    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, CLAIM_KEY, STEP_KEY, PUBLIC_CLAIM_KEY, SYNC_GENESIS, GENESIS_STEP,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT, CLAIM_PAGE,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

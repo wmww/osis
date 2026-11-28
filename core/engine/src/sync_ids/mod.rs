@@ -6,7 +6,7 @@ pub(crate) mod actors;
 mod blobs;
 pub(crate) use blobs::RoleKeyEpochs;
 mod certs;
-pub(crate) mod entries;
+pub(crate) mod claims;
 pub(crate) use certs::{Cut, judged_valid};
 pub(crate) mod opened;
 pub(crate) mod steps;

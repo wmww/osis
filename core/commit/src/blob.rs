@@ -404,7 +404,7 @@ impl Section {
     }
 
     /// `open`, also trying each of `keys` as the section key itself (an entry's, spec/wire.md
-    /// §5 Entry blocks), with the section key that opened it (what a seal keeps, `SectionSeal`)
+    /// §5 Claim blocks), with the section key that opened it (what a seal keeps, `SectionSeal`)
     /// and the one of `secrets` it derived from.
     pub fn open_keyed_by(&self, commit: &CommitId, split: bool, secrets: &[Secret32], keys: &[Secret32]) -> Result<Option<OpenedSection>, Error> {
         let derived = secrets.iter().map(|s| (osis_crypto::section_key(s, commit, &self.nonce), Some(s)));

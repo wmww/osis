@@ -99,7 +99,7 @@ fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, cl
 }
 
 impl Live<'_, '_> {
-    /// Logs a blob's entry pages `pages` under S before the blob (spec/wire.md §5 Entry pages),
+    /// Logs a blob's claim pages `pages` under S before the blob (spec/wire.md §5 Claim pages),
     /// each as its own entry with a filler wrap, of the blob's class and role: a page held under S
     /// becomes own, else logged from the bytes given or held here (none: left out, its holders'
     /// entries in it not served from here).
@@ -449,7 +449,7 @@ impl Ground for Live<'_, '_> {
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
         // judged here, whoever logged it first: a pulled entry's row does not say
         let role = self.cx.engine.role_entry(s, b);
-        // its entry pages first, under the same key (spec/wire.md §5 Entry pages)
+        // its claim pages first, under the same key (spec/wire.md §5 Claim pages)
         let mut all = Vec::new();
         for p in self.cx.store.pages_of(s, b)? {
             all.extend(self.cx.store.entry(s, &p)?.map(|e| (p, e)));
