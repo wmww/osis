@@ -61,6 +61,7 @@ A brief is the only context its agent has. Say the goal and why, what is already
 - **"Ruled out" about counts comes from a diff of every counter** (`costs::beside`, notes/test-harnesses.md, Counts beside neighbours), never from an assert passing: an assert reads only its own counts.
 - **Main is red only with listed failures**: a landing whose gate stages show a failure it caused fixes it or lists it (tools/known_failures.txt plus an issue naming the commit) in the same session; the next reviewer must never inherit unlisted reds.
 - **A change to a harness every crate's tests use is gated before its first land**, whatever the chunking; and a brief's scope count for a rule change comes from an instrumented run flagging what the new rule refuses, not from grep.
+- **An issue's cause is marked checked or guessed**: a worker starts from a guessed cause only after confirming it.
 - **One agent per worktree**: two agents in one tree share one git index, so one's staged `git rm` lands in the other's commit. A worker that spawns helpers gives each its own claimed worktree.
 - **A test that fails without each fix**: with several fixes, `tools/mutate.py` with a revert-to-old expression per fix checks which a test needs, in one build.
 - **Main keeps compiling**, even while broken in behaviour: a job that changes an API other crates use (a test model included) runs `cargo test --workspace --no-run` before landing.
