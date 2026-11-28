@@ -1722,7 +1722,7 @@ mod tests {
     // once and the content goes (failed: it waited for a pass end, and the content stayed read).
     #[test]
     fn a_thing_leaving_at_a_restart_goes_with_no_pass_in_flight_spec_sync_set_3() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let x = Ak::new("x:a.0").unwrap();
