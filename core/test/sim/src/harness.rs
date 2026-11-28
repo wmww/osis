@@ -765,6 +765,7 @@ impl Sim {
             }
             let before = self.fingerprint();
             self.sync_all()?;
+            self.passes_end()?;
             if self.fingerprint() == before && self.queue.is_empty() {
                 let pending = self.nodes.iter().any(|n| !n.peer.engine.pending().is_empty());
                 if !pending {
@@ -781,13 +782,29 @@ impl Sim {
         Err(self.fail(format!("not quiescent after {max_rounds} rounds; pending per node {p:?}")))
     }
 
+    /// Each up node's pass ends, a full exchange (`sync_all`) being a complete pass: what it was
+    /// handed that nothing it holds needs goes (`Engine::settle_needs`; spec/commits.md §5
+    /// Dropped when the pass that brought it ends), content of a thing it holds as a stub alone
+    /// among it.
+    fn passes_end(&mut self) -> Res<()> {
+        for i in 0..self.nodes.len() {
+            if !self.node(i)?.up {
+                continue;
+            }
+            if let Err(e) = self.engine(i)?.settle_needs() {
+                self.engine_err(i, "pass end", e)?;
+            }
+        }
+        Ok(())
+    }
+
     fn fingerprint(&self) -> Vec<(check::Held, usize)> {
         self.nodes.iter().map(|n| (check::held(&n.peer.engine), n.peer.engine.pending().len())).collect()
     }
 
-    /// Quiescent invariants: nothing pending; every node holds each part another node sends it
-    /// (`missing`: what the sync IDs it syncs carry as the sender sees them, and certificates);
-    /// reads converge.
+    /// Quiescent invariants: nothing pending; every node holds each part the sync IDs it syncs
+    /// carry as another node sees them (`Engine::carried_under`; the certificates `missing` sends
+    /// besides go at a pass end where nothing held needs them); reads converge.
     pub fn check_quiescent(&mut self) -> Res<()> {
         let es: Vec<(usize, &Engine)> = self.nodes.iter().enumerate().map(|(i, n)| (i, &n.peer.engine)).collect();
         let r = check::quiescent(&es);
@@ -795,8 +812,20 @@ impl Sim {
         for a in 0..self.nodes.len() {
             for b in (0..self.nodes.len()).filter(|b| *b != a) {
                 let theirs = check::held(&self.node(b)?.peer.engine);
+                // a sync ID in the stub class carries its thing's role entries alone (spec/sync-set.md §2 Holding a stub)
+                let set = self.engine(b)?.sync_set().map_err(|e| self.fail(format!("node {b} sync set: {e}")))?;
+                let stub = |h: &osis_engine::sync::Held| h.1 == osis_engine::sync::Holding::Stub;
+                let stubs: BTreeSet<osis_base::SyncId> = set.ids.iter().filter(|(_, h)| stub(h)).map(|(s, _)| *s).collect();
+                let whole: BTreeSet<osis_base::SyncId> = set.ids.iter().filter(|(_, h)| !stub(h)).map(|(s, _)| *s).collect();
                 for p in self.missing(a, b)? {
-                    let parts: BTreeSet<usize> = osis_commit::CommitBlob::decode(&p.bytes).map(|x| x.parts.iter().map(|q| q.ai).collect()).unwrap_or_default();
+                    let e = self.engine(a)?;
+                    let roles: BTreeSet<usize> = e.header(&p.id).map(|h| h.aspects.iter().enumerate().filter(|(_, x)| ct::is_role_class(x.ak.as_str())).map(|(ai, _)| ai).collect()).unwrap_or_default();
+                    let carried = e.carried_under(&p.id, &whole).and_then(|w| e.carried_under(&p.id, &stubs).map(|s| (w, s)));
+                    let (w, st) = carried.map_err(|e| self.fail(format!("node {a} carried: {e}")))?;
+                    let parts: BTreeSet<usize> = w.unwrap_or_default().into_iter().chain(st.unwrap_or_default().into_iter().filter(|ai| roles.contains(ai))).collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
                     let lacks = theirs.get(&p.id).is_none_or(|gaps| parts.iter().any(|ai| gaps.contains(ai)));
                     if lacks {
                         return Err(self.fail(format!("at quiescence node {b} lacks what node {a} sends it of {:?} (parts {parts:?}; holds it: {})", p.id, theirs.contains_key(&p.id))));
