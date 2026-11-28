@@ -3218,7 +3218,7 @@ mod tests {
         received_kept(&mut txn, &unit, &mut st, delta);
     }
 
-    // spec/crdt.md §5.7 (a delete writes a record per run of consecutive dots), §6, §8: a stretch
+    // spec/crdt.md §5.7 (Ops: a delete writes a record per run of consecutive dots), §6, §8: a stretch
     // of a text deleted here as one range record, and received in a new session, another writer's
     // delete of it made concurrently, after typing a char before every other one: a record per
     // pair and per typed char, each cutting the stored records at its bounds, past 64 cuts. Each
