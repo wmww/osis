@@ -610,7 +610,8 @@ pub(crate) struct Played {
     /// The grants on the things outside G (`share_top`), each with the holder it names: setup,
     /// never played.
     pub(crate) access: Vec<(Tid, Package)>,
-    /// The sealed fires the three peers owe at the history's end, each with its commit and the
+    /// The sealed fires the three peers owed as they granted the things outside G and at the
+    /// history's end (`Access`), each with its commit and the
     /// wall time it is stamped: a node under test takes those on its account's inbox before each
     /// ingest once its clock reaches them (`take_fires`).
     pub(crate) fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
@@ -758,25 +759,22 @@ fn fresh_base() -> std::sync::MutexGuard<'static, Peer> {
 }
 
 /// Peer `by`, an admin of `g`, grants the fresh nodes under test read on it (`fresh`), their
-/// account's chain delivered to it first, every peer keeping their account: the grant's commits.
+/// account's chain delivered to every peer first, every peer keeping their account and inbox (as
+/// a card gives them: each grant's signal is sealed to it): the grant's commits.
 fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
     let (reader, pks) = {
         let mut b = fresh_base();
         let pks: Vec<Package> = b.engine.commit_ids().iter().map(|id| b.engine.package(id).unwrap().unwrap()).collect();
         (b.engine.tid(), pks)
     };
-    for p in &mut lp.peers {
-        p.know(&[reader]).unwrap();
-    }
-    for pk in &pks {
-        lp.deliver(by, pk).unwrap();
-    }
-    // its inbox kept too, now its `keys.0` naming it is held: the grant's signal is sealed to it
-    for p in &mut lp.peers {
-        p.know(&[reader]).unwrap();
-    }
-    for pk in &pks {
-        lp.deliver(by, pk).unwrap();
+    // twice: the inbox is kept once the account's `keys.0` naming it is held
+    for _ in 0..2 {
+        for i in 0..lp.peers.len() {
+            lp.peers[i].know(&[reader]).unwrap();
+            for pk in &pks {
+                lp.deliver(i, pk).unwrap();
+            }
+        }
     }
     lp.peers[by].engine.grant(&g, &reader, &edge(Role::Read)).unwrap().commits
 }
@@ -858,7 +856,7 @@ fn held_record_of(lp: &mut LocalPeer, by: usize, admin: Tid, seen: &mut BTreeSet
 /// history (`access`, pending until the record comes), as a node is granted a thing before it
 /// fetches it. The grants, which the peers sync among them.
 #[allow(clippy::too_many_arguments)]
-fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<usize>, seen: &mut BTreeSet<CommitId>, access: &mut Vec<(Tid, Package)>) -> Vec<CommitId> {
+fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<usize>, seen: &mut BTreeSet<CommitId>, access: &mut Access) -> Vec<CommitId> {
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     for j in (0..3).filter(|j| *j != by) {
         let before: BTreeSet<CommitId> = lp.peers[j].engine.commit_ids().into_iter().collect();
@@ -868,11 +866,33 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
     let mut grants = Vec::new();
     for (h, role) in (0..3).filter(|j| *j != by).map(|j| (ids[j], if write == Some(j) { Role::Write } else { Role::Read })).chain([(reader, Role::Read)]) {
         let made = lp.peers[by].engine.grant(&t, &h, &edge(role)).unwrap().commits;
-        access.extend(made.iter().map(|id| (h, lp.peers[by].engine.package(id).unwrap().unwrap())));
+        access.grants.extend(made.iter().map(|id| (h, lp.peers[by].engine.package(id).unwrap().unwrap())));
         grants.extend(made);
     }
+    // the grants' fires as they are made: a peer that takes one ends its delivery (`fire_taken`),
+    // and the nodes under test are none of the peers
+    access.fire(owed_fires(&mut lp.peers[by].engine));
     seen.extend(grants.iter().copied());
     grants
+}
+
+/// What the nodes under test are given of the things outside G before the history
+/// (`share_top`): the grants to them, and the fires every peer owed as it granted.
+#[derive(Default)]
+struct Access {
+    grants: Vec<(Tid, Package)>,
+    fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
+}
+
+impl Access {
+    /// Keeps each of `fires` not kept yet.
+    fn fire(&mut self, fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>) {
+        for f in fires {
+            if !self.fires.iter().any(|x| x.0 == f.0) {
+                self.fires.push(f);
+            }
+        }
+    }
 }
 
 /// Peer `to` learns `t`'s record chain as peer `from` holds it (each record up to the first
@@ -909,7 +929,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     let reader_id = reader.engine.tid();
     // things outside G (`share_top`), and what the nodes under test take first of them
     let mut tops: Vec<Tid> = Vec::new();
-    let mut access: Vec<(Tid, Package)> = Vec::new();
+    let mut access = Access::default();
     let mut seen: BTreeSet<CommitId> = BTreeSet::new();
     let mut packs = Vec::new();
     let mut authors = Vec::new();
@@ -1606,14 +1626,17 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    // the nodes under test hold the things outside G and take their access first (`share_top`)
+    // the nodes under test hold the things outside G and take their access first (`share_top`),
+    // then the fires that tell them of it: they enter those things by the signals
     for t in &tops {
         reader.engine.hold(osis_base::Strong(*t)).unwrap();
     }
-    let fires: Vec<_> = (0..3).flat_map(|i| owed_fires(&mut lp.peers[i].engine)).collect();
+    access.fire((0..3).flat_map(|i| owed_fires(&mut lp.peers[i].engine)).collect());
+    let Access { grants: access, fires } = access;
     for (_, pk) in &access {
         reader.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
+    take_fires(&mut reader, &fires);
     // the nodes under test are sent what the sync IDs they come to sync carry, as each author
     // sees it (`LocalPeer::trimmed`), never another thing's content, which would wait there
     // (spec/commits.md §4 Outside the node closure): what they sync at any point while given

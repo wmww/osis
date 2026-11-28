@@ -240,7 +240,7 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     let held = |k: &BoxKey| {
         from_schema(&k.epoch).is_ok_and(|e| {
             let r = epochs.role(k.role);
-            r.secret(&e).is_some_and(|s| e.names(actor, k.role, s)) || unchecked.is_some_and(|u| r.get(&e).is_some_and(|i| i.secret.is_some() && i.reading.contains(&u)))
+            r.secret(&e).is_some_and(|s| e.names(actor, k.role, s)) || unchecked.is_some_and(|u| r.get(&e).is_some_and(|i| i.secret.is_some() && i.reading.iter().any(|x| x.commit == u.commit)))
         })
     };
     let (opened, failed) = open_boxes_where(actor, secrets, opener, |k| !held(k));

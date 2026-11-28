@@ -537,6 +537,35 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| !e.read.holds_any()));
 }
 
+// spec/crypto.md §4 (Reading-only secrets), notes/engine-store.md Rebuild: a pending grant's
+// boxes read while its signer is unknown, then again once a fire taught the node the signer's
+// record (the open's sweep reads every pending commit's boxes), give the secret the same
+// sources: one per pending commit, so a store opened afresh equals the live node.
+#[test]
+fn a_pending_grant_read_before_and_after_its_signer_is_known_is_one_source_spec_crypto_4() {
+    // bob's clock two days behind alice's: the grant's fire waits there, stamped ahead
+    let early = osis_base::WallMs(crate::common::T0.0 - 2 * 86_400_000);
+    let mut lp = LocalPeer::apart(vec![osis_engine::local_peer::Peer::new(1, crate::common::T0).unwrap(), osis_engine::local_peer::Peer::new(2, early).unwrap()], 0);
+    let pa = lp.peers[0].engine.tid();
+    let pb = lp.peers[1].engine.tid();
+    lp.peers[0].know(&[pb]).unwrap();
+    let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
+    send_carried(&mut lp, 1, 0, &bobs);
+    let g = thing_of(&mut lp, 0, pa);
+    let grant = *lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap().commits.last().unwrap();
+    lp.hold_fires(true);
+    let fires = crate::order::owed_fires(&mut lp.peers[0].engine);
+    // the grant alone, its signer unknown: its boxes read for reading only
+    let pk = lp.peers[0].engine.package(&grant).unwrap().unwrap();
+    lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert!(lp.peers[1].engine.core.created(&pa).is_none());
+    assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any()), "read from the pending box");
+    // the fire brings alice's record
+    crate::order::take_fires(&mut lp.peers[1], &fires);
+    assert!(lp.peers[1].engine.core.created(&pa).is_some(), "alice's record is known");
+    lp.peers[1].engine.check_index();
+}
+
 // spec/permissions.md §2: a holder whose grant carries the may-grant flag grants a new holder up
 // to its own role, and cannot change or remove anyone else; a holder leaves by self-removal.
 // spec/permissions.md §2 (may-grant scope)

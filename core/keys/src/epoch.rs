@@ -313,7 +313,7 @@ impl RoleEpochs {
             Some(i) if i.checked_roles().is_some() => return,
             Some(i) if i.secret.is_some() || i.roles.is_some() => {
                 i.roles.get_or_insert(roles);
-                i.roles_reading.insert(from);
+                add_source(&mut i.roles_reading, from);
                 return;
             }
             _ => {}
@@ -323,7 +323,7 @@ impl RoleEpochs {
         }
         let info = self.observe(e);
         info.roles = Some(roles);
-        info.roles_reading.insert(from);
+        add_source(&mut info.roles_reading, from);
     }
 
     /// `e`'s roles secret: derived from its secret when held (reading-only included), else as a
@@ -353,7 +353,7 @@ impl RoleEpochs {
         match self.map.get_mut(&e) {
             Some(i) if i.checked().is_some() => return,
             Some(i) if i.secret.is_some() => {
-                i.reading.insert(from);
+                add_source(&mut i.reading, from);
                 return;
             }
             _ => {}
@@ -363,7 +363,7 @@ impl RoleEpochs {
         }
         let info = self.observe(e);
         info.secret = Some(secret.into());
-        info.reading.insert(from);
+        add_source(&mut info.reading, from);
     }
 
     /// Whether a new epoch known only from `from` fits the reading-only bounds.
@@ -727,6 +727,15 @@ impl RoleEpochs {
 }
 
 /// Drops `commit` from `from`: `None` when it was not there, else whether `from` is now empty.
+/// Adds `from` to a reading-only secret's sources: one source per pending commit, its author as
+/// first read (whether the author's chain was known then), so reading the commit again (its
+/// arrival, a re-read, the open's sweep) after the chain came gives the same sources.
+fn add_source(sources: &mut BTreeSet<Unchecked>, from: Unchecked) {
+    if !sources.iter().any(|u| u.commit == from.commit) {
+        sources.insert(from);
+    }
+}
+
 fn drop_source(from: &mut BTreeSet<Unchecked>, commit: &CommitId) -> Option<bool> {
     let n = from.len();
     from.retain(|u| u.commit != *commit);
