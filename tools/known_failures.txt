@@ -12,3 +12,4 @@ held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:O
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=2,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+'s sync set holds thing \d+ as \S+, the model
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=940149075780,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+: entries waiting for a read secret, not parked
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=851492042192,OSIS_ORDER_LEN=60 issues/held-set-purge-order.md seed \d+, Purges
