@@ -208,3 +208,6 @@ Run a long by-hand job (a shrink, a sweep) from a copied test binary, as `tools/
 
 ## Waiting commits in World
 `World::run` jumps to every wake within `HORIZON_MS` (an hour), so a commit waiting on `Drift` (`MAX_DRIFT`, also an hour) applies inside the same run: a test of a waiting commit lowers `w.horizon_ms`.
+
+## Replays without end checks
+`OSIS_NO_END_CHECKS=1` replays may end in another state than the failing check saw (a node judged lost in one, not the other); a shrink's printed state may come from an older binary. Reproducing by hand from the printed script is often faster than a full-size shrink, which waits behind gates for the heavy lock.
