@@ -612,9 +612,10 @@ fn arrival_order(seed: u64) {
             let mut w = lp.copy().unwrap();
             deliver(&mut w, &order);
             let got = held(&w, 3);
-            let what = format!("seed {seed} order {k} {order:?}, N in {n_in}\n{log:?}");
-            assert_eq!(got, n_held, "{what}: N holds otherwise than in order");
-            assert!(held(&w, 4).is_empty(), "{what}: O holds secrets");
+            // the property on the seed line, which the gate's known lines match
+            let what = format!("seed {seed} order {k} {order:?}, N in {n_in}");
+            assert_eq!(got, n_held, "{what}: N holds otherwise than in order\n{log:?}");
+            assert!(held(&w, 4).is_empty(), "{what}: O holds secrets\n{log:?}");
         }
     }
 }
