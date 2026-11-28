@@ -27,12 +27,19 @@ pub fn prefix_groups(h: &Header, ais: impl IntoIterator<Item = usize>) -> Result
 }
 
 /// The prefix expiry of a blob of `h`: the commit's `expires`; for a relay-only commit (which
-/// has none) `ts + MAX_DRIFT`, the end of its replay window (spec/wire.md §5, spec/sync-compaction.md §2).
+/// has none) `relay_end`.
 pub fn blob_expiry(h: &Header) -> Option<u64> {
     match h.ephemeral {
-        Some(crate::EphClass::Relay) => Some(h.ts.wall_ms().0.saturating_add(MAX_DRIFT_MS)),
+        Some(crate::EphClass::Relay) => Some(relay_end(h.ts.wall_ms().0)),
         _ => h.expires,
     }
+}
+
+/// The end of the replay window of a relay-only commit at wall ms `ts`, its blob's expiry
+/// (spec/wire.md §5, spec/sync-compaction.md §2 Replay): `ts + MAX_DRIFT`; at or past it the
+/// commit is dropped.
+pub fn relay_end(ts: u64) -> u64 {
+    ts.saturating_add(MAX_DRIFT_MS)
 }
 
 /// The prefix expiry of a blob of `h` whose sections list `ais`: `blob_expiry`, but none for a

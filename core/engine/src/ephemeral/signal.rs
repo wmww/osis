@@ -122,8 +122,9 @@ impl Engine {
         }
         let now = self.now().0;
         let at = h.ts.wall_ms().0;
+        let ended = |t: u64| osis_commit::relay_end(t) <= now;
         let r = &self.eph.relays;
-        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.signer).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
+        if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.signer).is_some_and(|f| at <= *f) || ended(at) || at > now.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
         // its author's record must be held here (a relay never waits)
@@ -167,17 +168,17 @@ impl Engine {
         let mut all = seen;
         all.extend(decoded.iter().map(|(ai, _)| *ai));
         r.parts.insert(id, all);
-        while r.order.len() > MAX_DELIVERED || r.order.front().is_some_and(|(_, t, _)| t.saturating_add(MAX_DRIFT_MS) < now) {
+        while r.order.len() > MAX_DELIVERED || r.order.front().is_some_and(|(_, t, _)| ended(*t)) {
             if let Some((c, t, a)) = r.order.pop_front() {
                 r.parts.remove(&c);
                 // past its window a commit is dropped anyway: no floor needed
-                if t.saturating_add(MAX_DRIFT_MS) >= now {
+                if !ended(t) {
                     let f = r.floor.entry(a).or_default();
                     *f = (*f).max(t);
                 }
             }
         }
-        r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
+        r.floor.retain(|_, f| !ended(*f));
         let received = self.now();
         let fired = fired(signals, id, h.signer, h.purge_author(), h.ts, received);
         self.core.commits_fired(fired);
@@ -227,7 +228,7 @@ mod tests {
     }
 
     // spec/sync-compaction.md §2 (Relay-only commits; Dropped unopened; Replay): a relay-only commit is delivered once; one
-    // at or below its author's floor, or more than `MAX_DRIFT` from now, is dropped unopened.
+    // at or below its author's floor, or at or past its expiry, is dropped unopened.
     #[test]
     fn a_relay_only_commit_is_delivered_once_in_its_window_spec_sync_compaction_2() {
         let (mut lp, t) = world();
@@ -242,9 +243,11 @@ mod tests {
         assert!(!e.ingest_relay_blob(second.clone()).unwrap(), "at its author's floor");
         e.eph.relays.floor.clear();
         assert!(e.ingest_relay_blob(second).unwrap());
+        // at its blob's expiry, `ts + MAX_DRIFT`, as a store drops it (spec/sync-ids.md §6)
         let old = fire(&mut lp, t, 3);
-        lp.advance(MAX_DRIFT_MS + 1);
-        assert!(!lp.peers[1].engine.ingest_relay_blob(old).unwrap(), "past its window");
+        let end = osis_commit::blob_expiry(&old.header).unwrap();
+        lp.advance(end - lp.peers[1].engine.now().0);
+        assert!(!lp.peers[1].engine.ingest_relay_blob(old).unwrap(), "at the end of its window");
     }
 
     // spec/sync-compaction.md §2 (Replay), notes/ephemeral.md Bounds: past `MAX_DELIVERED` remembered the
