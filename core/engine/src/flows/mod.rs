@@ -1,13 +1,12 @@
 //! Role flows (spec/permissions.md; notes/engine-roles.md, Role flows): accounts, pairing,
-//! grants and inbox delivery, changes and removals with their rotation,
+//! grants and their signals, changes and removals with their rotation,
 //! demotions with their frontier, may-grant grants and self-removal,
 //! re-seal, registration steps, links, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!
 //! Flows build role commits with `Mutation` (`sign_as` for a held link key,
 //! `frontier`, `unchecked` where perm's may-grant and self-removal rules decide authority) and
-//! return the commits written; an inbox delivery a commit owes is recorded in its transaction
-//! (`sync::deliveries::owe`). Where a decision needs sync state (a complete pass of an actor's
+//! return the commits written. Where a decision needs sync state (a complete pass of an actor's
 //! sync IDs) it reads what sync noted (`Engine::note_complete_pass`).
 
 pub(crate) mod addenda;
@@ -37,8 +36,7 @@ use osis_schema::{RawKey, Codec};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// A flow's result: the commits written. What travels is derived from them: inbox deliveries
-/// owed in their transactions (`sync::deliveries`), bodies by the sync judgement.
+/// A flow's result: the commits written. What travels is derived from them by the sync judgement.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Done {
     pub commits: Vec<CommitId>,
@@ -390,14 +388,6 @@ impl Engine {
     pub fn recipient_for(&mut self, holder: &Tid, role: Role) -> Result<Recipient> {
         let holder = *holder;
         self.read(|tx| recipient(tx, holder, role))
-    }
-
-    /// The KEM key of the node thing's newest read epoch held: its claim key's X25519 half
-    /// (spec/crypto.md §3), for tests.
-    #[doc(hidden)]
-    pub fn node_read_kem(&self) -> Option<osis_crypto::KemSecret> {
-        let e = self.core.epochs(&self.core.tid())?;
-        e.read.newest_held().map(|(_, s)| s.kem().clone())
     }
 
 

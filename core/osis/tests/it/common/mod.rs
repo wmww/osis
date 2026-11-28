@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Shared test helpers: deterministic nodes, waiting on channels (never on time).
 
 use osis::internals::Internals as _;
@@ -109,11 +108,6 @@ pub fn keep_all(w: &mut Write, t: Tid) {
 /// A page of at most `n` commits from `from`, unfiltered.
 pub fn page(from: osis::CommitFrom, n: usize) -> osis::CommitQuery {
     osis::CommitQuery { from, limit: Some(n), ..Default::default() }
-}
-
-/// Every commit listed in `scope`, newest first (up to a page).
-pub fn listed(db: &Osis, scope: osis::Scope) -> Vec<osis::Commit> {
-    db.writes(&scope, &osis::CommitQuery::default()).unwrap().commits
 }
 
 /// `c`'s part on `k` of `t`, untyped; panics when it has none listed.

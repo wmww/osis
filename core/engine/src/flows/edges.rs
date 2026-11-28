@@ -1,7 +1,6 @@
 //! Edge writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
 //! removals and demotions carrying the target's rotation, may-grant grants and self-removals,
-//! the frontier, inbox delivery and acceptance
-//! (spec/sync-inbox.md §2, spec/crypto.md §5).
+//! the frontier (spec/crypto.md §5).
 
 use super::{Done, now_ts, put_edge, put_secrets};
 use crate::engine::{Engine, Tx};
@@ -416,7 +415,8 @@ impl Engine {
 
     /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
     /// as an admin of the target or by a may-grant. Gives the target (and a dependent holder) secrets of
-    /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
+    /// their own first where needed. Sends the holder a grant signal where `signal_grants` says so
+    /// (spec/sync-inbox.md §5).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         self.grant_with(target, holder, edge, History::All)
     }
@@ -546,8 +546,7 @@ impl Engine {
     /// The things a demotion of `holder` on `target` puts in question (spec/permissions.md §5.1):
     /// every thing the demoted authority gave write or role authority on. What a caller syncs
     /// first when it wants the removal to keep more (spec/permissions.md §5.3).
-    pub fn removal_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
-        let _ = new;
+    pub fn removal_scope(&self, target: &Tid, holder: &Tid) -> BTreeSet<Tid> {
         let scope = crate::apply::receipt::scope_of(&self.core, &[(Holder::Thing(*holder), *target)]);
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
     }

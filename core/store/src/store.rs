@@ -1097,12 +1097,6 @@ impl Transaction<'_> {
     pub fn get_local(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         self.cat_get(&[&[kind::LOCAL], key].concat())
     }
-    /// Keys of the local records under `prefix` held in memory (keys returned whole).
-    pub fn memory_local_keys(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        let p = [&[kind::LOCAL], prefix].concat();
-        self.st.s.read_prefix(&p);
-        self.mem.o.cat.range(p.clone()..).take_while(|(k, _)| k.starts_with(&p)).map(|(k, _)| k.get(1..).unwrap_or_default().to_vec()).collect()
-    }
 
     pub fn remove_local(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
         self.cat_remove(&[&[kind::LOCAL], key].concat(), shred)

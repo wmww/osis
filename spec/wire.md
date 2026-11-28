@@ -52,6 +52,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client's thing (§11.2) |
 | `MAX_PROOFS` | 256 proofs in one Prove or Proved (§11.2) |
 | `MAX_PROOF_COPIES` | 256 certificate copies in one Prove or Proved (§11.2) |
+| `MAX_FETCH_IDS` | 1024 commit IDs in one Want (§11.2) |
 | `MAX_RESUME_TAGS` | ⌊(`MAX_MESSAGE` − 64) / 34⌋ tags in one Resume (§11.2; a tag's encoding is 34 bytes) |
 
 ### Node policy
@@ -351,11 +352,11 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | 15 | redo target | `[scope] -> Opt(commit)` |
     | 16 | listing | `[address, query] -> [[commit*], more, complete]`, address `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2, tid, ak, commit id]` a fire's versions; query `[from, Opt(limit), [author*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`, from `[0]` newest, `[1]` oldest, `[2, position]` before, `[3, position]` after; kind 0 content, 1 revert, 2 role, 3 snapshot; at most what fits `max_reply`, `more` set when cut |
     | 17 | listed commit | `[address, commit id] -> Opt(commit)` |
-    | 18 | make link | `[tid, role, Opt(until), single_use] -> link text`; main only |
+    | 18 | make link | `[tid, role, admin, Opt(until), single_use] -> link text`, the link minted with admin `admin`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
     | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client's thing only the things it may read, `connected` the connections with one of them open |
-    | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind a holder the actor may not read |
+    | 22 | holders | `[tid] -> [[holder, kind, role, Opt(until), [through*]]*]`, kind 0 thing, 1 link, 2 key, 3 the public; nothing behind a holder the actor may not read |
     | 23 | locator | `[tid] -> link text`; main only |
     | 24 | node root | `[] -> tid`, the node root (spec/sync-set.md §1); main only |
     | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing; waits; main only |
@@ -379,7 +380,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | code | meaning | detail |
     |---|---|---|
     | 1 | unknown thing | `[tid]` |
-    | 2 | unknown thing | `[tid]` |
+    | 2 | unknown keys | `[tid]` |
     | 3 | permission | `[tid, role]` |
     | 4 | type | `[path, text]` |
     | 5 | too large | `[limit]` |

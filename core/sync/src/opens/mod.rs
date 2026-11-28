@@ -963,7 +963,7 @@ impl Opens {
 
     /// `wait_for` judged by who each peer may be on the rosters held here (`Engine::may_hold` of
     /// what its record names, spec/sync-set.md §3 To be waited for): the one rule every duty
-    /// reads (leave, a self-removal's drop, read's repairs, a pass with no source). `own`: a
+    /// reads (leave, a self-removal's drop, a pass with no source). `own`: a
     /// peer proving this node's own thing counts (a self-removal skips it, spec/sync-status.md
     /// §2). A failed read counts the peer.
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {

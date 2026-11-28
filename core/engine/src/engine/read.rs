@@ -209,7 +209,7 @@ impl Engine {
     }
 
     /// This node's role on `tid` now (spec/sync-set.md §2 Own things): its own things' effective
-    /// role by `tid`'s grants where the node syncs it or holds an offer of it, none elsewhere
+    /// role by `tid`'s grants where the node syncs it or redeems a link of it, none elsewhere
     /// (`rotation::role_here`).
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
         if !self.core.exists(tid) {

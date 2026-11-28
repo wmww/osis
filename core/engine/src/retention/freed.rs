@@ -200,8 +200,7 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
     for (t, b) in due {
         fs.extend(rows(tx, &key(&b, &t))?);
     }
-    let j = judge(tx, fs)?;
-    let _ = j;
+    judge(tx, fs)?;
     Ok(())
 }
 

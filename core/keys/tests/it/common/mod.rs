@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Shared fixtures: actors with explicit epochs, recipients.
 
 use osis_base::{Role, Tid};

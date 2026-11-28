@@ -109,7 +109,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
 }
 
 /// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
-/// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
+/// grants belong to the thing granted): the node syncs `a` or redeems a link of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
 /// thing whose grants count, by a held edge write. A grant of any other thing is held as some commit's certificate
 /// and gives the node nothing, whoever it names. The walk down from `a` through what it is

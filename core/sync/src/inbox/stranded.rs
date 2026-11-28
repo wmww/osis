@@ -3,10 +3,10 @@
 //!
 //! Status says where this node is stranded (`Status::strandings`: a read S heard out with no
 //! current read secret held, and what the report names). Per such S this part sends a Stranded
-//! message, naming the holder with its holder keys, to each connected peer that proved an
-//! account holding write or above on S's actor (`Engine::writer_of`); with none connected, it
+//! message, naming the holder with its holder keys, to each connected peer that proved a
+//! thing whose proven role on S's thing is write or above (`Engine::writer_of`); with none connected, it
 //! fires a stranded notice on S's thing (`Engine::fire_stranded`, a sealed fire its writers see
-//! later). Each once per peer's account, and the fire once, for each report key: the step's sync key and the holder's current `keys.0` commits, so a report goes
+//! later). Each once per peer's proven writer, and the fire once, for each report key: the step's sync key and the holder's current `keys.0` commits, so a report goes
 //! again when the node reaches a newer step or its holder's keys move. A peer counts as told on
 //! its Ok answer: one closed first, or answering otherwise (a store failure there), is told again
 //! at the next proof of a connection.
@@ -40,7 +40,7 @@ const ROWS: &[u8] = b"I/x/";
 /// Whom a report went to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum To {
-    /// A connected peer, by the account it proved holding write or above.
+    /// A connected peer, by the thing it proved holding write or above.
     Peer(Tid),
     /// A stranded notice fired on S's thing, naming this holder.
     Fire(Tid),

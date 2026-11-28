@@ -966,7 +966,7 @@ impl LocalPeer {
 
     /// A fresh node with an account of its own (`Peer::new` at peer `admin`'s time, seeded
     /// `seed`, `make_account`) whose account holds `t` and is granted read on it by peer
-    /// `admin` through the flow, given the grant's offer alone (a fire on the account's inbox):
+    /// `admin` through the flow, given the grant's signal alone (a fire on the account's inbox):
     /// it keeps what it is then given of `t` in any order, as content waits until `t` enters its
     /// node closure (spec/commits.md §4 Outside the node closure). Peer `admin` has imported the
     /// account's contact card (`Peer::import_contact`): it holds the account's card.
@@ -1125,8 +1125,7 @@ impl LocalPeer {
     /// parts (`Engine::certificate_parts`); a commit with neither is not sent. So a node is never
     /// given content of a thing no sync ID it syncs carries, which would wait there
     /// (spec/commits.md §4 Outside the node closure). Certificates go to every node: they stand
-    /// for the routes the harness does not play (contact cards, links, offers, a grant
-    /// under its holder's sync ID, pairing), and a node keeps of them only what it needs
+    /// for the routes the harness does not play (contact cards, links, pairing), and a node keeps of them only what it needs
     /// (spec/commits.md §5 What a held thing needs).
     pub fn packages_under(&mut self, from: usize, synced: &BTreeSet<osis_base::SyncId>) -> Result<Vec<Package>> {
         Ok(self.packages_hashed(from, synced)?.iter().map(|s| s.0.clone()).collect())

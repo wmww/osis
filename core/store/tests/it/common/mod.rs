@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Shared test setup: a device (backend + root storage) per backend kind.
 
 use osis_base::{Ak, BlobId, Tid};

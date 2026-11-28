@@ -614,7 +614,7 @@ fn demotion_frontier_spec_perm_5_1() {
     lp.advance(DAY);
     add_tag(&mut lp, 1, d, "x");
     lp.advance(DAY);
-    let scope = lp.peers[0].engine.removal_scope(&d, &pb, None);
+    let scope = lp.peers[0].engine.removal_scope(&d, &pb);
     assert!(scope.contains(&d));
     lp.peers[0].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
     lp.advance(DAY);

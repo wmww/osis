@@ -84,10 +84,6 @@ impl Held {
         self.records_read.read(t);
         self.created.get(t)
     }
-    /// A cursor over the things whose record comes to be held from now on.
-    pub fn records_feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.records_read.feed()
-    }
     /// Every thing whose record is held.
     pub fn things(&self) -> impl Iterator<Item = &Tid> {
         self.records_read.read_all();

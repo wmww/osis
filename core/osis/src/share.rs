@@ -169,47 +169,35 @@ fn bad(what: &str) -> impl Fn(osis_blob::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
 }
 
-/// A secret-bearing text form: checked by `$parse` when parsed (`parse` reads it), redacted in `Debug`.
-macro_rules! secret_text {
-    ($(#[$m:meta])* $n:ident, $inner:ty, $parse:expr) => {
-        $(#[$m])*
-        #[derive(Clone, PartialEq, Eq)]
-        pub struct $n(pub(crate) String);
-        impl $n {
-            // not every form is parsed back here (a contact card only by contact import)
-            #[allow(dead_code)]
-            pub(crate) fn parse(&self) -> Result<$inner> {
-                ($parse)(self.0.as_str())
-            }
-        }
-        impl std::str::FromStr for $n {
-            type Err = Error;
-            fn from_str(s: &str) -> Result<$n> {
-                let s = s.trim();
-                ($parse)(s)?;
-                Ok($n(s.to_string()))
-            }
-        }
-        impl std::fmt::Display for $n {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-        impl std::fmt::Debug for $n {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(concat!(stringify!($n), "(..)"))
-            }
-        }
-    };
+/// A link (`osis://link/...`) that `Osis::redeem` takes: a share link (`Osis::make_link`),
+/// which whoever holds this text can redeem, so hand it over as a secret; or a locator
+/// (`Osis::locator`), which names a thing and where to find it and grants nothing. Checked when
+/// parsed, redacted in `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Link(pub(crate) String);
+impl Link {
+    pub(crate) fn parse(&self) -> Result<osis_blob::Link> {
+        osis_blob::Link::from_text(&self.0).map_err(bad("link"))
+    }
 }
-
-
-secret_text!(
-    /// A link (`osis://link/...`) that `Osis::redeem` takes: a share link (`Osis::make_link`),
-    /// which whoever holds this text can redeem, so hand it over as a secret; or a locator
-    /// (`Osis::locator`), which names a thing and where to find it and grants nothing.
-    Link, osis_blob::Link, |s| osis_blob::Link::from_text(s).map_err(bad("link"))
-);
+impl std::str::FromStr for Link {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Link> {
+        let s = s.trim();
+        osis_blob::Link::from_text(s).map_err(bad("link"))?;
+        Ok(Link(s.to_string()))
+    }
+}
+impl std::fmt::Display for Link {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::fmt::Debug for Link {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Link(..)")
+    }
+}
 impl Link {
     /// The thing the link leads to.
     pub fn target(&self) -> Result<Tid> {

@@ -1,5 +1,4 @@
 //! Builders for hand-made held sets: commit-form fragments of single writes (crdt-model's). spec: none
-#![allow(dead_code)]
 use crdt_model::state::{Anchor, Content, Entry, SeqElem};
 use held_model::gen::{creations, CREATIONS, RECORDS};
 use held_model::*;
