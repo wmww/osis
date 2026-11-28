@@ -21,7 +21,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/sync-inbox.md: external signals, cards and sealed fires, deposits, promotion and clearing, grants from outside, stranded notices, contact cards, links.
 - spec/sync-streams.md: framing, clock and flow control, pushes, the node log and cursor, the stream, first sync.
 - spec/sync-status.md: sources and caught up, held elsewhere, status and waits.
-- spec/sync-hostile.md: bounds on hostile peers and the stated limits.
+- spec/sync-hostile.md: bounds on hostile peers and what they can still do.
 - spec/sync-transport.md: byte streams and addresses, QUIC, `peer://` and relays, LAN discovery, listeners, local and client sessions.
 
 ## Conventions

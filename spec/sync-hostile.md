@@ -1,5 +1,5 @@
 # Sync: hostile peers
-> Summary: Area 8: what a hostile peer can and cannot do to sync, the bounds on its input, and the stated limits.
+> Summary: Area 8: what a hostile peer can and cannot do to sync, the bounds on its input, and what a hostile peer or party can still do.
 
 **Principle:** a peer's word changes only what that peer holds; nothing it says is taken as identity, authorization or deletion, and every message costs bounded work.
 
@@ -23,7 +23,7 @@
 - A peer lying in its own log (hiding a cover) costs at most one logging again per change of ground (spec/sync-judgement.md §4).
 - A section a node cannot open or check, forged or left out of a copy, makes no blob a duplicate of another there, nor one lose to another as needed (spec/sync-compaction.md §1 Duplicates), stamped or not.
 
-## 2. Stated limits
+## 2. What a hostile peer can do
 - A node removed from an account still proves its node thing and claims its path through the account; a verifier not yet holding the removal counts the claim (spec/sync-opens.md §2).
 - A thing the public reads (spec/permissions.md §1) is read by every party that holds its sync ID or a unit carrying it, stores included: the public's claim key at the head is shown to anyone holding the sync ID. Once the public is removed, a party that held an epoch only by the public's claim is served up to that epoch's end, what that epoch reads.
 - A node keeping S unread shows that it keeps S to anyone holding S's public values (its filter goes to every connection, and it answers Head to anyone).
