@@ -113,11 +113,12 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
     let Some(room) = tx.core.memory_room else {
         return Ok(Some(crate::Ingested::Pending(*id, pending.unwrap_or(crate::Reason::Unexamined))));
     };
-    if new_parts_bound(tx, blob)? > room {
+    let need = new_parts_bound(tx, blob)?;
+    if need > room {
         if super::drop_pending(tx, id)? {
             super::keys::forget_unchecked(tx, id)?;
         }
-        return Ok(Some(crate::Ingested::TooLarge(*id)));
+        return Ok(Some(crate::Ingested::TooLarge(*id, need)));
     }
     tx.core.walks.trees_of(*id);
     Ok(None)

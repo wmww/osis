@@ -45,6 +45,8 @@ struct Table {
     pends: bool,
     /// Every body opens to a commit held here, bringing something new or not.
     held: Option<bool>,
+    /// Every body opens to an ephemeral commit refused for room, needing this much.
+    no_room: Option<u64>,
     /// Bodies that opened to a pending commit and were not kept.
     unkept: Vec<BlobId>,
     /// What opening a relay-only blob gives (none: it does not open).
@@ -70,6 +72,9 @@ impl Ground for Table {
         self.log.borrow_mut().push(("open", 0));
         self.opened.push(e.blob);
         self.opened_under.push((*s, e.blob));
+        if let Some(need) = self.no_room {
+            return Ok(Opening::NoRoom(need));
+        }
         Ok(match (self.pends, self.held) {
             (true, _) => Opening::Pends,
             (false, Some(gave)) => Opening::Held { gave },
@@ -2398,6 +2403,35 @@ fn a_join_left_in_pages_keeps_s_busy_spec_sync_status_1() {
     let r = pull_at(&mut p.a, p.now, Pull { follow: true, ..plain_pull(Some(c), vec![(s, None)], SMALL_REPLY) });
     assert!(!r.more && matches!(r.joins.as_slice(), [(_, Some(_))]), "the stream at its end, the join in pages");
     assert!(!p.a.streams.caught_up(C, &s), "S's join is left in pages");
+}
+
+// spec/sync-compaction.md §2 (Caps, at a node for what it reads: an entry refused for room is
+// fetched again once there is room), spec/sync-streams.md §4 (Full): b, reading S, opens a's
+// ephemeral entry to a commit refused for room. It keeps no entry of it, and once its memory cap
+// has the room the commit needs, S is pulled again from the start and the entry taken. Fails
+// with a refused entry logged as held, or with its room mark dropped for a reader.
+#[test]
+fn a_reader_fetches_an_entry_refused_for_room_once_room_comes_spec_sync_compaction_2() {
+    let s = sid(1);
+    let mut p = Pair::sharing(&[s]);
+    p.b.table.held = Some(true);
+    let d = p.a.log(s, 100);
+    p.run();
+    p.b.store.set_caps(&caps(&[("memory_bytes", 1_000)]));
+    p.b.table.no_room = Some(5_000);
+    let x = p.a.log_as(s, 120, Class::Ephemeral);
+    p.run();
+    assert_eq!(p.b.table.opened, [d, x]);
+    assert!(p.b.store.entry(&s, &x).unwrap().is_none(), "refused for room, held");
+    // what opening it again would give, once there is room: not before
+    p.b.table.no_room = None;
+    p.b.store.set_caps(&caps(&[("memory_bytes", 4_000)]));
+    p.run();
+    assert!(p.b.store.entry(&s, &x).unwrap().is_none(), "fetched again with too little room");
+    p.b.store.set_caps(&caps(&[("memory_bytes", 10_000)]));
+    p.run();
+    assert_eq!(p.b.table.opened, [d, x, x], "opened again once");
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "not fetched again with room");
 }
 
 // spec/sync-status.md §1 (every ephemeral event of S in its memory part listed): an ephemeral

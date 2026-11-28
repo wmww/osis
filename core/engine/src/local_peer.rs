@@ -174,7 +174,7 @@ impl Peer {
         self.discarded.retain(|d| d.bytes != bytes);
         let Ok(i) = r else { return };
         let id = match i {
-            Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x) => *x,
+            Ingested::Applied(x) | Ingested::Duplicate(x) | Ingested::Pending(x, _) | Ingested::Parked(x) | Ingested::TooLarge(x, _) => *x,
         };
         let kept = self.entries.entry(id).or_default();
         if !kept.iter().any(|d| d.bytes == bytes) {

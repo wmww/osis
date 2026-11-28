@@ -1315,6 +1315,12 @@ impl Streams {
                         return self.failed(Err(e));
                     }
                 }
+                // refused for room: not held, a room mark at each source whose place passes it
+                Ok(Opening::NoRoom(need)) => {
+                    if let Err(e) = ctx.store.refused_room(&s, bytes, need, &self.settling_at(s, conn)) {
+                        return self.failed(Err(e));
+                    }
+                }
                 Ok(Opening::Memory(n)) => {
                     let r = ctx.store.log(&s, e, Some(bytes.to_vec()), src).and_then(|_| ctx.store.uncharge(&s, &b)).and_then(|_| ctx.store.set_memory_charge(&b, n));
                     if let Err(e) = r {

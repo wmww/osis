@@ -97,7 +97,7 @@ fn eph_decoded_memory() {
         let ids: Vec<_> = lp.peers[b].engine.memory_commits().into_iter().map(|h| h.0).collect();
         let charged: u64 = ids.iter().map(|id| lp.peers[b].engine.memory_charge(id).unwrap()).sum();
         let left = room.saturating_sub(charged);
-        if matches!(lp.peers[b].engine.ingest_memory(&bl.encode(), left).unwrap(), osis_engine::Ingested::TooLarge(_)) {
+        if matches!(lp.peers[b].engine.ingest_memory(&bl.encode(), left).unwrap(), osis_engine::Ingested::TooLarge(..)) {
             refused += 1;
         }
     }

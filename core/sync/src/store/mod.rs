@@ -1211,6 +1211,18 @@ impl Store {
         }
     }
 
+    /// An ephemeral entry of read S, with `bytes`, refused for room: holding its commit may cost
+    /// `need`, more than S's memory cap leaves (spec/sync-compaction.md §2 Caps, at a node for
+    /// what it reads). Nothing of it is kept; S is full by its memory cap, a room mark at each of
+    /// `from` (the sources whose place passes the entry), so it is fetched again there once the
+    /// cap has `need` (`room_grew`; one past the whole cap never), as at a node keeping S unread
+    /// (spec/sync-streams.md §4 Full).
+    pub fn refused_room(&mut self, s: &SyncId, bytes: &[u8], need: u64, from: &[Source]) -> Result<()> {
+        let mut g = self.lock();
+        let expires = Prefix::parse(bytes).ok().and_then(|p| p.expiry());
+        g.wait_room(s, Cap::Memory, need, expires, from)
+    }
+
     /// A Deposit item (spec/sync-inbox.md §3), taken by one rule at every node holding its sync
     /// ID, whoever offers it (`from`: where its charge lives). Answers: 0 taken, or held or
     /// dropped already (nothing changes); 4 for a sync ID in the sync set whose head this node
@@ -1568,8 +1580,8 @@ impl Store {
         Ok(out)
     }
 
-    /// Whether S is full: kept unread, it refused an entry for room that has not grown since,
-    /// and some source's room mark of S stands (spec/sync-streams.md §4 Full).
+    /// Whether S is full: it refused an entry for room that has not grown since, and some
+    /// source's room mark of S stands (spec/sync-streams.md §4 Full).
     pub fn waits_room(&self, s: &SyncId) -> bool {
         self.lock().full(s)
     }
@@ -2066,9 +2078,8 @@ struct RoomNeed<'a>(&'a SyncId, Cap);
 
 /// Each of `ended` full no longer (spec/sync-streams.md §4 Full): its `R/` rows go in one
 /// transaction with each room mark of it becoming owed and a `N/` mark (`ANEW_SOME`, over none:
-/// another pulls from every source) while kept unread, so it is pulled from the start at each
-/// source whose place passed what it refused (`anew_feed`); S no longer kept unread loses its
-/// marks (a raise pulls it from every source). On a failure nothing changes and each key is
+/// another pulls from every source) while held, so it is pulled from the start at each source
+/// whose place passed what it refused (`anew_feed`); S no longer held loses its marks. On a failure nothing changes and each key is
 /// judged again.
 fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
     if ended.is_empty() {
@@ -2081,9 +2092,9 @@ fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
             t.remove_local(&room_key(&k.0, k.1), Shred::No)?;
         }
         for s in ended {
-            let unread = env.holding(s) == Some(Holding::Unread);
+            let held = env.holding(s).is_some();
             let srcs = source::with_row(t, s, ROOM_AT, b"", usize::MAX)?;
-            set_marks(t, s, &srcs, unread.then_some(rows::ROOM_OWED))?;
+            set_marks(t, s, &srcs, held.then_some(rows::ROOM_OWED))?;
             if mark_some(t, env, s)? {
                 anew.push(*s);
             }
@@ -2117,11 +2128,11 @@ fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
     Ok(())
 }
 
-/// In `t`: S kept unread is owed a pull from the start at the sources whose rows say so (`N/`
-/// `ANEW_SOME`, written over no mark: another covers it). Whether S is kept unread (it is pulled
-/// anew then, by this mark or the one standing).
+/// In `t`: S held is owed a pull from the start at the sources whose rows say so (`N/`
+/// `ANEW_SOME`, written over no mark: another covers it). Whether S is held (it is pulled anew
+/// then, by this mark or the one standing).
 fn mark_some(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId) -> Result<bool> {
-    if env.holding(s) != Some(Holding::Unread) {
+    if env.holding(s).is_none() {
         return Ok(false);
     }
     let mark = rows::anew_key(s);
@@ -2166,14 +2177,20 @@ fn judge_rooms(g: &mut Inner, fx: &mut Effects<(SyncId, Cap), bool>) -> Result<B
     Ok(ended)
 }
 
-/// Whether S is full by `cap` no longer (spec/sync-streams.md §4 Full): no longer kept unread, or
-/// the cap has room for one more entry of `need` bytes, the least it refused. Stamped reads only:
-/// S's holding, the need, the caps and what the cap counts.
+/// Whether S is full by `cap` no longer (spec/sync-streams.md §4 Full): the cap no longer counts
+/// S (S's memory cap counts it while held, the rest while kept unread: spec/sync-ids.md §6 Caps,
+/// spec/sync-compaction.md §2 Caps), or the cap has room for one more entry of `need` bytes, the
+/// least it refused. Stamped reads only: S's holding, the need, the caps and what the cap counts.
 fn room_fits(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap, need: u64) -> Result<bool> {
     env.mem.syncs.read(s);
     env.mem.stamps.read(&RoomNeed(s, cap));
     env.mem.stamps.read(&CAPS);
-    if env.holding(s) != Some(Holding::Unread) {
+    let counts = match env.holding(s) {
+        Some(Holding::Unread) => true,
+        Some(_) => cap == Cap::Memory,
+        None => false,
+    };
+    if !counts {
         return Ok(true);
     }
     let (entries, bytes) = room_now(t, env, s, cap)?;

@@ -96,8 +96,9 @@ pub enum Ingested {
     /// Kept as bytes: this build cannot interpret part of it (spec/versioning.md §2).
     Parked(CommitId),
     /// A memory commit not held nor kept waiting: its parts could cost more decoded than the
-    /// room given (`Engine::ingest_memory`), found before decoding them.
-    TooLarge(CommitId),
+    /// room given (`Engine::ingest_memory`), found before decoding them; with that bound, the
+    /// room it needs (`memory::new_parts_bound`).
+    TooLarge(CommitId, u64),
 }
 
 // one per examined commit, moved straight into a match

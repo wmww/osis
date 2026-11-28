@@ -88,6 +88,11 @@ pub enum Opening {
     /// kept, counted at that against S's memory cap (spec/sync-compaction.md §2 Caps), so the
     /// next one opened has the room left.
     Memory(u64),
+    /// It opened to an ephemeral commit refused for room: holding it may cost this much, more
+    /// than S's memory cap leaves (spec/sync-compaction.md §2 Caps). Not kept: S is full for it
+    /// at the sources that pass it, fetched again from them once the cap has that room
+    /// (`Store::refused_room`, spec/sync-streams.md §4 Full).
+    NoRoom(u64),
     /// It opened and is bad, or its bytes are not its ID's: asked again elsewhere.
     Bad,
 }
@@ -590,6 +595,7 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
     match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, bytes) {
         Ok(o) if crate::store::pends(engine, &e.blob, &o) => Ok(Opening::Pends),
         Ok(Opened::Commit(c, _)) if engine.holds_memory(&c) => Ok(Opening::Memory(engine.memory_charge(&c)?)),
+        Ok(Opened::Commit(_, osis_engine::Ingested::TooLarge(_, need))) => Ok(Opening::NoRoom(need)),
         Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
         // a certificate blob is kept as it came, counted as the own store's and charged to no
         // one, as a start's open of it does (spec/permissions.md §4 Logging certificates: one
