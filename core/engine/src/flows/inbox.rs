@@ -133,7 +133,8 @@ impl Engine {
             }
             // the inbox its fire is on, whose held history holds the fire's weak (`units::stubs_by`)
             let inbox = self.core.ix.commits.get(c).and_then(|m| m.view.aspects.iter().find(|a| a.ak.as_str() == GRANT_FIRE).map(|a| a.tid));
-            let follow = inbox.filter(|_| valid && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read));
+            // followed only where that history holds it: else no stub, and nothing to follow
+            let follow = inbox.filter(|i| valid && crate::engine::refs::kept::holds_history(&self.core, i) && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read));
             let fl = &mut self.core.followed_links;
             match (follow, fl.follows_signal(&sig.thing, &sig.sync_id, c)) {
                 (Some(inbox), false) => fl.follow_signal(sig.thing, sig.sync_id, *c, inbox),

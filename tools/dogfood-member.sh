@@ -74,7 +74,8 @@ create)
 	c=$(cat "$dir/chat")
 	o chat link "$c" > "$dir/link"
 	o link ls "$c" | awk '{ print $1 }' > "$dir/k"
-	o chat relay "$c" "$(cat "$host/account")" >/dev/null
+	# exit 6 until the host holds the channel (`accept`): nothing else holds it yet
+	o chat relay "$c" "$(cat "$host/account")" >/dev/null || [ $? -eq 6 ]
 	o --json chat read "$c" | cursor > "$dir/cursor"
 	daemon "$U-$name-$s" "$bin" "$dir" "$addr"
 	echo "$dir"

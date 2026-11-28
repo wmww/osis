@@ -238,6 +238,45 @@ fn a_signal_holds_its_stub_until_it_expires_spec_sync_inbox_5() {
     assert_eq!(w.engine(1).role_on(&t), None);
 }
 
+// spec/sync-inbox.md §5 (Grant signal: followed while held in the inbox's held history),
+// spec/data-model.md §8 Held history: Bob's inbox takes grant signals but its history holds no
+// targets, so a signal on it brings no stub and is not followed: Bob's node syncs nothing of T
+// and holds no role there. Once the inbox's setting holds its targets, the signal is followed and
+// T's stub held.
+#[test]
+fn a_signal_on_an_inbox_holding_no_targets_is_not_followed_spec_sync_inbox_5() {
+    let mut w = contacts();
+    let inbox = w.node(1).inbox.unwrap();
+    let setting = |holds: bool| {
+        let mut s = ct::RetentionSetting::default();
+        s.take_inbox_signals();
+        s.history_holds_targets = holds;
+        s
+    };
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(inbox, &ct::RETENTION, &setting(false)).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    let t = make(&mut w, 0, "hi");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.run();
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), None, "not followed");
+    assert!(!w.status(1).contains_key(&s), "nor synced");
+    assert_eq!(w.engine(1).role_on(&t), None);
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(inbox, &ct::RETENTION, &setting(true)).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Stub)), "followed: held as a stub");
+    assert_eq!(w.engine(1).role_on(&t), Some(Role::Read));
+}
+
 // spec/sync-inbox.md §5 (Grant signal: its peers are dial hints once the app accepts it),
 // spec/sync-hostile.md §1: Alice tells Bob of T naming her node; held alone the signal makes Bob's
 // node dial nothing (its peers are the sender's word); once Bob holds T by a strong his node dials

@@ -108,13 +108,15 @@ impl RetentionSetting {
     /// them: word of a grant from outside to the thing naming it, and its own reader's call for
     /// the keys it cannot read, each from parties that cannot write it, kept as long as an
     /// account's inbox keeps them. A grant stands on the thing granted whatever becomes of its
-    /// signal. An entry already here stays as it is.
+    /// signal. Its history holds its targets, so a held grant signal holds its thing's stub
+    /// (spec/sync-inbox.md §1, §5). An entry already here stays as it is.
     pub fn enable_inbox_signals(&mut self) {
         let mut x = osis_schema::core_types::RetentionSetting::default();
         x.take_inbox_signals();
         for (k, e) in &x.rules {
             self.rules.entry(k.clone()).or_insert(e.into());
         }
+        self.history_holds_targets = x.history_holds_targets;
     }
 }
 

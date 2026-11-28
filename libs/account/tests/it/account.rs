@@ -111,6 +111,37 @@ fn a_stranger_importing_a_card_grants_its_account_spec_sync_inbox_5() {
     assert!(bob.grants(t).unwrap().contains_key(&who));
 }
 
+// spec/sync-inbox.md §1, §5 (Grant signal), spec/sync-set.md §2 Holding a stub: an account's inbox
+// holds its grant signals' things as stubs. Told of a grant, a stranger holds its role before
+// holding the thing, reads it once it holds it, keeps the role when it lets it go, and reads it
+// again when it holds it again.
+#[test]
+fn a_told_grant_holds_its_stub_across_unhold_and_hold_spec_sync_inbox_5() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (alice, aa, _) = person(&net, 1, &c);
+    let (bob, ba, _) = person(&net, 2, &c);
+    let who = drive(&net, ba.realm().import_contact(&bob, &aa.realm().contact_card(&alice).unwrap())).unwrap();
+    let t = make(&bob, &ba, "for alice");
+    bob.grant(t, who, Role::Read, GrantOpts::default()).unwrap();
+    net.run();
+    assert_eq!(alice.role_on(t).unwrap(), Some(Role::Read), "told: the stub's role");
+    let hold = |on: bool| {
+        let mut w = alice.write();
+        let root = alice.node_root().unwrap();
+        if on { w.hold(root, t).unwrap() } else { w.unhold(root, t).unwrap() }
+        w.commit().unwrap();
+        net.run();
+    };
+    for again in [false, true] {
+        hold(true);
+        assert_eq!(alice.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("for alice"), "held (again {again})");
+        hold(false);
+        assert_eq!(alice.at(t, osis::core::NAME).get().unwrap(), None, "let go: no content");
+        assert_eq!(alice.role_on(t).unwrap(), Some(Role::Read), "let go: the stub's role");
+    }
+}
+
 // spec/permissions.md §7, §8 Minting: a link made with the account as admin is the account's:
 // another node of it lists and ends it, and a node leaving its own grant on the target leaves
 // the link to the account, which stays its admin.
