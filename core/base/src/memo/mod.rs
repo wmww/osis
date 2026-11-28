@@ -414,9 +414,11 @@ impl Stamps {
     }
 
     /// Every byte key starting with `p` is read (a scan): moved by a write of any such key
-    /// (`wrote_bytes`) from now on.
+    /// (`wrote_bytes`) from now on, if a memo or settle computing on this thread keeps the read.
     pub fn read_prefix(&self, p: &[u8]) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
+        // only a read this thread's computation keeps: a memo computing on another thread must
+        // not change this container's stamps
+        if computing() {
             let h = prefix_hash(p);
             lock(&self.0).prefixes.entry(p.len()).or_default().insert(h);
             record(&self.0, || Some(h));
@@ -1402,14 +1404,18 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         }
     }
 
-    /// `f` run and kept.
+    /// `f` run and kept, unless run inside a debug check (`costs::pausing`): what a check
+    /// computed would spare the measured code a run, so the counts would follow the check's
+    /// schedule.
     fn run<C, E>(ctx: &mut C, memo: &impl Fn(&C) -> &Self, k: &K, f: &impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         let _s = crate::costs::span(memo(ctx).name);
         let (value, deps) = recorded(|| f(ctx));
         // what a failure read is read by whoever asked, too
         depend(&deps);
         let value = value?;
-        memo(ctx).keep(k, &value, deps);
+        if !crate::costs::pausing() {
+            memo(ctx).keep(k, &value, deps);
+        }
         Ok(value)
     }
 
@@ -1785,6 +1791,43 @@ mod tests {
     fn costs_of<const N: usize>(names: [&str; N]) -> [u64; N] {
         let c = crate::costs::take();
         names.map(|name| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum())
+    }
+
+    // spec: none (internal: notes/engine.md, Stamps). A scan outside any computation on this
+    // thread registers no prefix while a memo computes on another: a later write under it
+    // stamps the key alone, as with nothing running elsewhere (a node's work is its own).
+    #[test]
+    fn another_threads_computation_registers_no_prefix_here() {
+        let s = Stamps::default();
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let g = gate.clone();
+        let other = std::thread::spawn(move || {
+            recorded_frame(|| {
+                g.wait();
+                g.wait();
+            });
+        });
+        gate.wait();
+        s.read_prefix(b"ab");
+        let before = WRITES_HERE.get();
+        s.wrote_bytes(b"abc", true);
+        let logged = WRITES_HERE.get() - before;
+        gate.wait();
+        other.join().unwrap();
+        assert_eq!(logged, 1, "the key's write alone");
+    }
+
+    // spec: none (internal: notes/test-harnesses.md, Debug checks). An answer computed inside a
+    // debug check (`costs::paused`) is not kept: the measured code's later ask runs it, so its
+    // counts never follow when a check ran.
+    #[test]
+    fn a_debug_checks_answer_spares_no_later_run() {
+        let m: Stamped<u8, u8> = Stamped::default();
+        let memo: Memo<u8, Option<u8>> = Memo::new("test memo");
+        crate::costs::take();
+        assert_eq!(crate::costs::paused(|| memo.get(&1, || m.get(&1).copied())), None);
+        assert_eq!(memo.get(&1, || m.get(&1).copied()), None);
+        assert_eq!(runs("test memo"), 1, "the measured ask ran it");
     }
 
     // spec: none (internal: notes/engine.md, Derived values). A read kept is 40 bytes: every

@@ -53,13 +53,17 @@ pub struct Effects<K, V> {
 /// the one kept, to find a read the function made without its stamp (a field in no container,
 /// the time read unstamped). Two schedules, by powers, as `Memo`'s comparison: a key whose
 /// container's log named another key of it, at its 1st, 4th, 16th, ... such `due` (a missed
-/// read that moves with a stamped one); every followed key at the 16th, 256th, ... `due` (one
-/// that moves alone).
+/// read that moves with a stamped one); every followed key at the 16th, 256th, ... `due` reading a
+/// change of a container followed (one that moves alone). Both count what was written, so a
+/// follow another thread's write ran, which reads no change, moves neither.
 #[cfg(debug_assertions)]
 #[derive(Clone, Default)]
 struct Checks {
-    /// `due` calls.
+    /// `due` calls that read a change of a container followed (`saw`): a function of what was
+    /// written to them, never of how often other threads' writes ran a follow.
     calls: u64,
+    /// The `due` running read a change or a stale cutoff row (`find_due`), or found a key due.
+    saw: bool,
     /// The keys (by `seq`) the last `due` gave to compare.
     keys: HashSet<u64, Ids>,
     /// The keys (by `seq`) the `due` running found to compare (`find_due`).
@@ -264,8 +268,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         #[cfg(debug_assertions)]
         if super::effect_checks() {
             let mut check = std::mem::take(&mut self.checks.found);
-            self.checks.calls += 1;
-            if self.checks.calls > 1 && at_power(self.checks.calls, 4) {
+            // a `due` reading no change (a follow only another thread's writes ran) moves no schedule
+            let saw = std::mem::take(&mut self.checks.saw) || !due.is_empty();
+            self.checks.calls += u64::from(saw);
+            if saw && self.checks.calls > 1 && at_power(self.checks.calls, 4) {
                 let given: HashSet<u64, Ids> = due.iter().chain(check.iter()).copied().collect();
                 let rest: Vec<u64> = self.followed.values().filter(|f| !given.contains(&f.seq) && !self.pending.contains(&f.seq) && f.value.is_some()).map(|f| f.seq).collect();
                 check.extend(rest);
@@ -298,6 +304,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
                 let stale = l.stale_keys();
                 if !stale.is_empty() {
                     maybe.extend(ix.whole.iter().cloned());
+                    #[cfg(debug_assertions)]
+                    {
+                        self.checks.saw |= full;
+                    }
                 }
                 for h in stale {
                     maybe.extend(ix.readers(h));
@@ -306,6 +316,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             let changes = lock(&ix.table).read_log(&mut ix.at);
             if changes.is_empty() {
                 continue;
+            }
+            #[cfg(debug_assertions)]
+            {
+                self.checks.saw |= full;
             }
             // any change moves what read it whole
             maybe.extend(ix.whole.iter().cloned());
@@ -1391,17 +1405,18 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). Debug builds with the comparison
     // on (`check_effects`): a settled value that read something unstamped (a plain cell) fails
-    // at a comparison once that moved alone, never while it holds.
+    // at a comparison once that moved alone (a key no follower read written beside it), never
+    // while it holds.
     #[cfg(debug_assertions)]
     #[test]
     fn a_read_without_its_stamp_fails_the_comparison() {
         super::super::check_effects(true);
-        let m: Stamped<u8, u8> = Stamped::default();
+        let m: std::cell::RefCell<Stamped<u8, u8>> = Default::default();
         let plain = std::cell::Cell::new(1u8);
         let mut e: Effects<u8, u8> = Effects::new("test effects");
         e.want(1);
         e.want(2);
-        let read = |k: u8| m.get(&k).copied().unwrap_or(0) + if k == 1 { plain.get() } else { 0 };
+        let read = |k: u8| m.borrow().get(&k).copied().unwrap_or(0) + if k == 1 { plain.get() } else { 0 };
         let settle = |e: &mut Effects<u8, u8>| {
             for k in e.due() {
                 e.settle(&k, || read(k));
@@ -1412,12 +1427,32 @@ mod tests {
         }
         plain.set(2);
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for _ in 0..300 {
+            for i in 0..300u16 {
+                m.borrow_mut().insert(9, i as u8);
                 settle(&mut e);
             }
         }));
         super::super::check_effects(false);
         let msg = caught.expect_err("the stale value is found").downcast::<String>().map(|s| *s).unwrap_or_default();
         assert!(msg.contains("test effects: 1 kept Some(1)") && msg.contains("unstamped"), "{msg}");
+    }
+
+    // spec: none (internal: notes/engine.md, Quiet). Debug builds with the comparison on: a
+    // `due` reading no change, as a follow only another thread's writes ran does, moves no
+    // comparison schedule, so which keys are compared (and what their settles leave) is a
+    // function of what was written, never of how often other threads ran the follow.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_due_reading_no_change_compares_nothing() {
+        super::super::check_effects(true);
+        let m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test effects");
+        e.want(1);
+        for k in e.due() {
+            e.settle(&k, || m.get(&k).copied().unwrap_or(0));
+        }
+        let given: Vec<Vec<u8>> = (0..300).map(|_| e.due()).filter(|d| !d.is_empty()).collect();
+        super::super::check_effects(false);
+        assert!(given.is_empty(), "dues with nothing written gave {given:?}");
     }
 }

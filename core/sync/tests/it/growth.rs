@@ -940,13 +940,13 @@ fn redeem_round(w: &mut World) {
 /// `settled` at 0 rounds, the same for every arm, built once per process), each round's set
 /// removals at most `removals` a node, and nothing listed for `flows::retake` beyond what a fresh
 /// node lists (an in-memory row owned by its actor's `secrets.0` state).
-fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
+fn grants_as_fresh(held: bool, redeem: bool, removals: usize) -> Vec<Work> {
     let (mut wf, fresh) = fixture_with("growth grants fresh", || {
         let mut w = world_of(0, 2, 2);
         let held = settled(&mut w);
         (w, held)
     });
-    let ([(mut wa, a), (mut wb, b)], _) = grant_rounds(held, redeem);
+    let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(held, redeem);
     // the redeem round's set removals: the link's seed thing's and K's strongs beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
@@ -956,6 +956,7 @@ fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
         let listed = wf.engine(i).retake_listed();
         assert_eq!((wa.engine(i).retake_listed(), wb.engine(i).retake_listed()), (listed, listed), "{who}: actors listed for retake, 1 and 10 rounds");
     }
+    work
 }
 
 // Releasing everything, its grant arm (spec/sync-set.md §3, spec/sync-inbox.md §5): a thing
@@ -976,23 +977,70 @@ fn granting_costs_read_what_the_grant_changed_spec_requirements_scale() {
     flat_work(&work, "held", &[0, 1, 2]);
 }
 
-// spec/requirements.md Scale, spec/sync-judgement.md §2: as the decline arm, read judges no more bodies per round as the
-// rounds' sync IDs add up, each still read at the grantee (stranded) while its fire is kept
-// (`flat_work`, judgements; the rows it reads: issues/many-sync-ids-cost.md).
+// spec: none (internal: notes/test-harnesses.md, Counts beside neighbours). By hand: the decline
+// arm's state and counts alone, during and after the module's default tests (`OSIS_NEIGHBOURS`
+// picks some) are the same.
+#[cfg(debug_assertions)]
 #[test]
-#[ignore = "by hand, alone: its counts move with the tests run beside it (issues/many-sync-ids-cost.md)"]
-fn declined_grants_cost_read_what_each_changed_spec_requirements_scale() {
-    let (_, work) = grant_rounds(false, false);
-    flat_work(&work, "declined", &[0, 2]);
+#[ignore = "by hand"]
+fn declined_grants_count_alike_beside_neighbours() {
+    macro_rules! named {
+        ($($f:ident),* $(,)?) => { [$((stringify!($f), $f as fn())),*] };
+    }
+    osis_base::costs::beside(
+        || {
+            // what each node holds, both worlds: every row's key and size
+            let (mut worlds, _) = grant_rounds(false, false);
+            let mut out = String::new();
+            for (w, _) in worlds.iter_mut() {
+                for i in 0..w.len() {
+                    for (d, r) in w.rows(i, "", None) {
+                        out += &format!("n{i} {d} {}{} {}\n", r.family, r.key, r.bytes);
+                    }
+                }
+            }
+            out
+        },
+        &named![
+            a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
+            a_dependent_make_keeps_no_blob_bytes_once_its_holds_part_is_covered_spec_sync_ids_5,
+            a_dependent_thing_leaving_goes_while_its_sync_id_stays_spec_sync_set_3,
+            a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
+            a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5,
+            a_node_restored_from_a_backup_is_counted_holding_nothing_it_lacks_spec_sync_streams_4,
+            a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
+            a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3,
+            a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6,
+            a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3,
+            a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6,
+            an_independent_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3,
+            card_rewrites_grow_nothing_spec_commits_5,
+            each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1,
+            expired_things_return_storage_to_a_fresh_nodes_spec_commits_5,
+            record_blobs_at_a_store_stay_flat_spec_sync_ids_6,
+            releasing_a_disputed_thing_returns_storage_to_a_fresh_worlds_spec_permissions_3,
+            releasing_a_purged_thing_returns_storage_to_a_fresh_worlds_spec_commits_5,
+            releasing_a_retained_copy_returns_storage_to_a_fresh_worlds_spec_permissions_3,
+            releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8,
+            releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3,
+            rotations_keep_keysets_flat_spec_commits_5,
+            several_writers_grow_nothing_spec_commits_5,
+            single_writer_replace_grows_nothing_spec_commits_5,
+        ],
+    );
 }
 
 // Its decline arm (spec/sync-set.md §4: nothing else makes a node hold a thing it is granted a
 // role on; spec/sync-inbox.md §5): as the grant arm, the grant never held from the grantee's
 // account: what its fire carried goes with the fire, and the stranded report it sent with its
-// sync ID being read.
+// sync ID being read. And spec/requirements.md Scale, spec/sync-judgement.md §2: read judges no
+// more bodies per round as the rounds' sync IDs add up, each still read at the grantee
+// (stranded) while its fire is kept (`flat_work`, judgements; the rows it reads:
+// issues/many-sync-ids-cost.md).
 #[test]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
-    grants_as_fresh(false, false, 4);
+    let work = grants_as_fresh(false, false, 4);
+    flat_work(&work, "declined", &[0, 2]);
 }
 
 // Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the

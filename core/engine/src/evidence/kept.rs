@@ -2,7 +2,7 @@
 //! last ask (`Engine::kept_evidence`): each held commit's copies (`held::copy_parts`), each read thing as a sync ID and each thing of its unit, followed per key
 //! (`memo::Effects`), so a change costs what it moved and never the held set. `held::derive` over
 //! the same inputs is the oracle (`Engine::check_evidence`; debug builds compare at the 1st, 2nd,
-//! 4th, ... follow).
+//! 4th, ... follow this thread's own writes owed, so other threads move no comparison).
 
 use super::held::{Ev, copy_parts};
 use crate::Engine;
@@ -46,6 +46,7 @@ pub(crate) struct Kept {
     quiet: Quiet,
     /// Commits whose copies were read (`held::copy_parts`) so far: what a count test reads.
     pub(crate) read: u64,
+    /// Follows this thread's own writes owed (`Quiet::holds_here`): the comparison's schedule.
     #[cfg(debug_assertions)]
     follows: u64,
 }
@@ -81,6 +82,9 @@ impl Engine {
         if k.feeds.is_some() && k.quiet.holds(k.idle()) {
             return Ok(k.ev.0.clone());
         }
+        // a follow only another thread's writes ran moves no schedule (`Quiet::holds_here`)
+        #[cfg(debug_assertions)]
+        let owed = !k.quiet.holds_here(k.idle());
         let _u = Unrecorded::start();
         let from = Quiet::begin();
         let mut k = std::mem::take(&mut self.core.evidence);
@@ -90,7 +94,7 @@ impl Engine {
         self.core.evidence = k;
         out?;
         #[cfg(debug_assertions)]
-        {
+        if owed {
             self.core.evidence.follows += 1;
             if self.core.evidence.follows.is_power_of_two() {
                 let differs = osis_base::costs::paused(|| self.kept_differs(&ev))?;
@@ -187,5 +191,29 @@ impl Engine {
         }
         let extra: Vec<Tid> = ev.sids().filter(|g| !read.contains(g)).collect();
         Ok((!extra.is_empty()).then(|| format!("kept sync IDs {extra:?} are not read")))
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::local_peer::LocalPeer;
+    use osis_base::WallMs;
+
+    // spec: none (internal: notes/engine.md, Quiet). The comparison's schedule counts the
+    // follows this thread's own writes owed: a follow another thread's write ran, which finds
+    // nothing, moves it not, so when the evidence is compared is a function of the node's history.
+    #[test]
+    fn another_threads_write_moves_no_comparison_schedule() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        e.kept_evidence().unwrap();
+        e.kept_evidence().unwrap();
+        let follows = e.core.evidence.follows;
+        for i in 0..3u8 {
+            std::thread::spawn(move || osis_base::memo::Stamps::default().wrote(&i, true)).join().unwrap();
+            e.kept_evidence().unwrap();
+        }
+        assert_eq!(e.core.evidence.follows, follows, "follows only other threads' writes ran");
     }
 }

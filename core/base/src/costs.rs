@@ -20,7 +20,12 @@ thread_local! {
     static NODE: Cell<Option<usize>> = const { Cell::new(None) };
     static CALLERS: RefCell<Vec<(&'static str, usize)>> = const { RefCell::new(Vec::new()) };
     static LABELS: RefCell<HashMap<(&'static str, Label), &'static str>> = RefCell::default();
+    /// Under `trail`: every count each `take` returned on this thread.
+    static TRAIL: RefCell<Option<Vec<Counted>>> = const { RefCell::new(None) };
 }
+
+/// Every phase's count at one `take`.
+pub type Counted = BTreeMap<&'static str, u64>;
 
 /// What a phase's split label adds to its name.
 #[derive(PartialEq, Eq, Hash)]
@@ -177,7 +182,75 @@ pub fn count_scoped(name: &'static str, n: u64) {
 /// recording on for this thread (and returns nothing).
 pub fn take() -> Vec<(&'static str, Duration, u64)> {
     ON.with(|on| on.set(true));
-    COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()).into_iter().map(|(k, (d, n))| (k, d, n)).collect())
+    let taken: Vec<_> = COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()).into_iter().map(|(k, (d, n))| (k, d, n)).collect());
+    TRAIL.with(|t| {
+        if let Some(t) = t.borrow_mut().as_mut() {
+            t.push(taken.iter().map(|(k, _, n)| (*k, *n)).collect());
+        }
+    });
+    taken
+}
+
+/// Runs `f` on this thread recording, and returns the counts of every `take` it made after its
+/// first, then what it left untaken: every counter a count test read and what it would have read
+/// next (what precedes its first `take`, its setup, it never measures).
+pub fn trail<T>(f: impl FnOnce() -> T) -> (T, Vec<Counted>) {
+    let was = TRAIL.with(|t| t.replace(Some(Vec::new())));
+    let out = f();
+    take();
+    let counts = TRAIL.with(|t| t.replace(was)).unwrap_or_default();
+    (out, counts.into_iter().skip(1).collect())
+}
+
+/// Tests, by hand (notes/test-harnesses.md, Counts beside neighbours): runs count test `target`
+/// on a fresh thread twice alone, then once while each of `neighbours` whose name holds a text of
+/// `OSIS_NEIGHBOURS` (texts joined by `,`; all when unset) runs on its own thread (a test's body;
+/// its panic ignored), then once after them; panics if either later run differs from the second
+/// alone in the state `target` returns (what its nodes hold, as text), or at the first `take`
+/// and counter that differs, with every counter differing there. A node's state and counts are
+/// functions of its own inputs: a difference shows process-wide state the neighbours change
+/// (during) or leave (after) deciding what a node does. The two alone must agree too, else the
+/// target is its own neighbour (its first run builds what later runs copy).
+#[allow(clippy::panic)]
+pub fn beside(target: fn() -> String, neighbours: &[(&str, fn())]) {
+    let only: Option<Vec<String>> = crate::testenv::str_var("OSIS_NEIGHBOURS").map(|v| v.split(',').map(str::to_string).collect());
+    let run = |f: fn() -> String| std::thread::spawn(move || trail(f)).join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+    let first = run(target);
+    let alone = run(target);
+    if let Some(d) = differs(&first, &alone) {
+        panic!("the target run twice alone differs: {d}");
+    }
+    let picked: Vec<_> = neighbours.iter().filter(|(n, _)| only.as_ref().is_none_or(|o| o.iter().any(|x| n.contains(x.as_str())))).collect();
+    let others: Vec<_> = picked.iter().map(|(n, f)| (*n, std::thread::spawn(*f))).collect();
+    let during = run(target);
+    for (name, h) in others {
+        eprintln!("beside: ran {name}{}", if h.join().is_ok() { "" } else { " (panicked)" });
+    }
+    let after = run(target);
+    let diffs: Vec<String> = [("during", &during), ("after", &after)].iter().filter_map(|(when, b)| differs(&alone, b).map(|d| format!("{when} its neighbours: {d}"))).collect();
+    if !diffs.is_empty() {
+        panic!("the target differs from it alone:\n{}", diffs.join("\n"));
+    }
+}
+
+/// How run `b` differs from run `a`: its state, else its first differing `take`.
+fn differs(a: &(String, Vec<Counted>), b: &(String, Vec<Counted>)) -> Option<String> {
+    if a.0 != b.0 {
+        let line = a.0.lines().zip(b.0.lines()).find(|(x, y)| x != y).map_or_else(|| "one is longer".to_string(), |(x, y)| format!("{x:?} then {y:?}"));
+        return Some(format!("state differs, first at {line}"));
+    }
+    first_diff(&a.1, &b.1)
+}
+
+/// The first `take` where `a` and `b` differ, naming every counter differing there.
+fn first_diff(a: &[Counted], b: &[Counted]) -> Option<String> {
+    if a.len() != b.len() {
+        return Some(format!("{} takes alone, {} after", a.len(), b.len()));
+    }
+    let (i, (x, y)) = a.iter().zip(b).enumerate().find(|(_, (x, y))| x != y)?;
+    let keys: std::collections::BTreeSet<_> = x.keys().chain(y.keys()).filter(|k| x.get(*k) != y.get(*k)).collect();
+    let lines: Vec<String> = keys.iter().map(|k| format!("  {k}: {} then {}", x.get(*k).copied().unwrap_or(0), y.get(*k).copied().unwrap_or(0))).collect();
+    Some(format!("take {i} of {}, first counter {:?}:\n{}", a.len(), keys.first()?, lines.join("\n")))
 }
 
 /// Runs `f` with this thread's recording off (debug checks: their work is not the measured code's).

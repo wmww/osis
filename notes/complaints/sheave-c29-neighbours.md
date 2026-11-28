@@ -1,0 +1,2 @@
+# sheave-c29-neighbours
+- The issue and brief said skips were ruled out ("`OSIS_QUIET_MISS=1` passes alone"), but a by-hand test passing compares only the counts its asserts read: under the miss the decline arm's counters did move (`sync: unit of`). It cost a bisect of neighbours and a timing theory before rechecking. A "ruled out" claim about counts should come from a run that diffs every counter (`costs::beside`, notes/test-harnesses.md, Counts beside neighbours), not from an assert passing.
