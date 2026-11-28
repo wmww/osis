@@ -958,17 +958,9 @@ fn grants_as_fresh(held: bool, redeem: bool, removals: usize) -> Vec<Work> {
     work
 }
 
-// Releasing everything, its grant arm (spec/sync-set.md §3, spec/sync-inbox.md §5): a thing
-// granted to another account, held there, written, the grantee removed and both sides letting it
-// go, leaves each node as a fresh world's once the inbox lifetime, the role keep and tombstones
-// have passed, at 1 and 10 rounds.
-#[test]
-fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
-    grants_as_fresh(true, false, 4);
-}
-
-// spec/requirements.md Scale, spec/sync-judgement.md §2: as the grant arm, read's work per round
-// does not grow with the rounds played (`flat_work`).
+// spec/requirements.md Scale, spec/sync-judgement.md §2: over the grant and redeem arm's grant
+// rounds alone (`grant_rounds(true, false)`), read's work per round does not grow with the rounds
+// played (`flat_work`).
 #[test]
 #[ignore = "issues/many-sync-ids-cost.md"]
 fn granting_costs_read_what_the_grant_changed_spec_requirements_scale() {
@@ -1004,10 +996,8 @@ fn declined_grants_count_alike_beside_neighbours() {
             a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
             a_dependent_make_keeps_no_blob_bytes_once_its_holds_part_is_covered_spec_sync_ids_5,
             a_dependent_thing_leaving_goes_while_its_sync_id_stays_spec_sync_set_3,
-            a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
             a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5,
             a_node_restored_from_a_backup_is_counted_holding_nothing_it_lacks_spec_sync_streams_4,
-            a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3,
             a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3,
             a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6,
             a_thing_another_node_makes_pulls_nothing_anew_spec_sync_judgement_3,
@@ -1016,6 +1006,7 @@ fn declined_grants_count_alike_beside_neighbours() {
             card_rewrites_grow_nothing_spec_commits_5,
             each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1,
             expired_things_return_storage_to_a_fresh_nodes_spec_commits_5,
+            granted_and_redeemed_things_return_storage_to_a_fresh_worlds_spec_sync_set_3,
             record_blobs_at_a_store_stay_flat_spec_sync_ids_6,
             releasing_a_disputed_thing_returns_storage_to_a_fresh_worlds_spec_permissions_3,
             releasing_a_purged_thing_returns_storage_to_a_fresh_worlds_spec_commits_5,
@@ -1030,9 +1021,9 @@ fn declined_grants_count_alike_beside_neighbours() {
 }
 
 // Its decline arm (spec/sync-set.md §4: nothing else makes a node hold a thing it is granted a
-// role on; spec/sync-inbox.md §5): as the grant arm, the grant never held from the grantee's
-// account: what its fire carried goes with the fire, and the stranded report it sent with its
-// sync ID being read. And spec/requirements.md Scale, spec/sync-judgement.md §2: read judges no
+// role on; spec/sync-inbox.md §5): as the grant and redeem arm's grant rounds, the grant never
+// held from the grantee's account: what its fire carried goes with the fire, and the stranded
+// report it sent with its sync ID being read. And spec/requirements.md Scale, spec/sync-judgement.md §2: read judges no
 // more bodies per round as the rounds' sync IDs add up, each still read at the grantee
 // (stranded) while its fire is kept (`flat_work`, judgements; the rows it reads:
 // issues/many-sync-ids-cost.md).
@@ -1042,11 +1033,14 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     flat_work(&work, "declined", &[0, 2]);
 }
 
-// Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
-// grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
-// seed thing goes with its end.
+// Releasing everything, its grant and redeem arm (spec/sync-set.md §3, §4, spec/sync-inbox.md §5):
+// the first round grants by a link, redeemed and ended (`redeem_round`: the link's seed thing goes
+// with its end); each later round a thing granted to another account, held there, written, the
+// grantee removed and both sides letting it go. Each node is as a fresh world's once the inbox
+// lifetime, the role keep and tombstones have passed, at 1 round (the redeem alone) and 10 (the
+// redeem and nine grants).
 #[test]
-fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
+fn granted_and_redeemed_things_return_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);
 }
 
