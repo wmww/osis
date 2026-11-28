@@ -133,7 +133,7 @@ fn list_caps_spec_wire_11_2() {
     use crate::limits::*;
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     type Case<'a> = (&'a str, usize, Option<(usize, usize)>, usize);
-    let cases: [Case; 12] = [
+    let cases: [Case; 11] = [
         ("delete", 3, None, MAX_DELETE_ITEMS),
         ("status", 2, None, MAX_DELETE_ITEMS),
         ("fetch reply", 2, None, MAX_FETCH_IDS),
@@ -144,7 +144,6 @@ fn list_caps_spec_wire_11_2() {
         ("members", 2, None, MAX_MEMBERS),
         ("prove", 2, None, MAX_PROOFS),
         ("prove", 3, None, MAX_PROOF_COPIES),
-        ("head reply", 2, None, MAX_HEAD_STEPS),
         ("resume", 3, None, MAX_RESUME_TAGS),
     ];
     for (name, pos, inner, cap) in cases {
@@ -155,6 +154,19 @@ fn list_caps_spec_wire_11_2() {
         // past the cap: refused as over it, or (Resume, whose cap fills a message) as too large
         assert_eq!(rejected(grown(m, pos, inner, cap + 1)).code(), Code::MALFORMED, "{name} past its cap");
     }
+    // a HeadReply at its cap fits a message; its decoder takes the cap's count, failing on a first
+    // step that does not parse (each step decodes four keys: a whole list of them is slow), and
+    // refuses one more by its count
+    let head = &ms["head reply"];
+    assert!(enc(grown(head, 2, None, MAX_HEAD_STEPS)).len() <= MAX_MESSAGE, "head reply at its cap");
+    let junk_first = |n: usize| {
+        let Value::List(mut items) = grown(head, 2, None, n) else { unreachable!() };
+        let Value::List(steps) = &mut items[2] else { unreachable!() };
+        steps[0] = Value::Int(0);
+        Value::List(items)
+    };
+    assert_eq!(rejected(junk_first(MAX_HEAD_STEPS)).error, Error::Malformed("step"), "head reply at its cap");
+    assert_eq!(rejected(junk_first(MAX_HEAD_STEPS + 1)).error, Error::Cap("head steps"), "head reply past its cap");
     // a Fetch names each blob ID once: its cap of distinct ones
     let fetch = |n: usize| Msg::Fetch { id: crate::limits::TOP_BIT | 1, max_reply: 32_768, ids: vec![(osis_base::SyncId([0x0a; 16]), (0..n).map(|i| { let mut b = [0u8; 32]; b[..8].copy_from_slice(&(i as u64).to_be_bytes()); osis_base::BlobId(b) }).collect())] };
     let at = fetch(MAX_FETCH_IDS).encode();
