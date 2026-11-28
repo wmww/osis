@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 1 of 100 seeds fails (45, a delivery storm); at small size: a stub the model holds that the node does not, a thing the model keeps unread that the node does not hold, entries waiting for a read secret, not parked.
+> Summary: the sync differential at full size: 1 of 100 seeds fails (45, a delivery storm); at small size: a stub the model holds that the node does not, a thing the model keeps unread that the node does not hold, entries waiting for a read secret, not parked, a live secrets index unlike the store opened afresh.
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -11,6 +11,7 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | A thing the model keeps unread that the node does not hold | none at full size; small size `OSIS_SYNC_START=109415603779` |
 | A delivery storm | 45 ("storm: past the cap of 15000 deliveries in one run") |
 | Entries waiting for a read secret, not parked | none at full size; small size `OSIS_SYNC_START=940149075780` |
+| A node's live secrets index differs from its store opened afresh (`check_index`: `Table("secrets", ..)`) | small size `OSIS_SYNC_START=2592891347` |
 
 Shrink from the seed with the property's shrinker: a replayed script does not shrink.
 
