@@ -59,6 +59,12 @@ pub(crate) fn valid_snapshot_held(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak)
     m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) && !m.missing(ai) && m.valid_at(ai))
 }
 
+/// The wall ms from which peers may delete a part's entries, its keep bound `keep` judged while
+/// held (spec/commits.md §5 Keep at least): `MAX_DRIFT` past it, at once for none (0).
+pub(crate) fn peer_delete_from(keep: u64) -> u64 {
+    if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) }
+}
+
 /// `Engine::part_keeps` of part `(tid, ak)` of `c` in `tx`: before which wall ms it leaves only
 /// by purge or expiry, a replacement dated ahead of the clock included (`at_clock`): from then
 /// any node may drop it as covered (spec/commits.md §5 Keep bounds).

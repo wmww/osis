@@ -652,11 +652,11 @@ impl Engine {
         let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));
         // a bound still ahead wakes the judgement when it passes
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| !self.core.time.reached(*k)));
-        // a dropped part's own bound as it dropped (`Dropped::peer_delete_from`), a held one's keep
-        // bound plus `MAX_DRIFT` (spec/commits.md §5 Keep at least)
+        // a dropped part's own bound as it dropped (`Dropped::peer_delete_from`), a held one's by
+        // its keep bound (`bounds::peer_delete_from`)
         let peer_delete_from = b.parts.iter().map(|ai| match m.dropped(*ai) {
             Some(d) => d.peer_delete_from,
-            None => keeps.get(*ai).filter(|k| **k > 0).map_or(0, |k| k.saturating_add(osis_base::format::MAX_DRIFT_MS)),
+            None => keeps.get(*ai).map_or(0, |k| crate::retention::bounds::peer_delete_from(*k)),
         }).max().unwrap_or(0);
         // a kept body is must-hold whatever covers it (spec/sync-judgement.md §2): its coverage,
         // which every later write of its aspects may move, is not judged
