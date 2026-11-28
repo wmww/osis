@@ -191,20 +191,17 @@ impl EpochInfo {
     }
 }
 
-/// The source of a reading-only secret: the unchecked commit and its author node.
+/// The source of a reading-only secret: the unchecked commit and its signer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unchecked {
     pub author: Tid,
     pub commit: CommitId,
 }
 
-/// The author recorded for a reading-only secret whose commit's author has no chain the node
-/// knows (throwaway identities share one budget).
-pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
-
 /// Most epochs held through reading-only secrets per role of one actor, and per author node
 /// (local policy: each costs a KEM or DH per open, claim and sealed fire, since wraps name no
-/// epoch).
+/// epoch). Authors whose chain the node does not hold share one author budget
+/// (`ActorEpochs::set_chainless`): throwaway identities gain nothing.
 pub const MAX_READING: usize = 256;
 pub const MAX_READING_PER_AUTHOR: usize = 64;
 
@@ -229,6 +226,10 @@ pub struct RoleEpochs {
     /// the view (`set_floors`), never stored. `None`: no floors (every other role, a record):
     /// every floor 0, the carry and boxing rules pass everything.
     floors: Option<Box<Floors>>,
+    /// The authors of reading-only sources whose chain this node does not hold, set on the view
+    /// (`ActorEpochs::set_chainless`), never stored: they share one author budget. Empty: every
+    /// author has its own.
+    chainless: BTreeSet<Tid>,
 }
 
 /// Floors as a node reads them (spec/crypto.md §4, Floors).
@@ -313,7 +314,7 @@ impl RoleEpochs {
             Some(i) if i.checked_roles().is_some() => return,
             Some(i) if i.secret.is_some() || i.roles.is_some() => {
                 i.roles.get_or_insert(roles);
-                add_source(&mut i.roles_reading, from);
+                i.roles_reading.insert(from);
                 return;
             }
             _ => {}
@@ -323,7 +324,7 @@ impl RoleEpochs {
         }
         let info = self.observe(e);
         info.roles = Some(roles);
-        add_source(&mut info.roles_reading, from);
+        info.roles_reading.insert(from);
     }
 
     /// `e`'s roles secret: derived from its secret when held (reading-only included), else as a
@@ -347,13 +348,13 @@ impl RoleEpochs {
 
     /// Records a secret known only from pending commit `from` (spec/crypto.md §4): reading-only.
     /// A new such epoch is refused once the role holds `MAX_READING` of them or `from`'s author
-    /// `MAX_READING_PER_AUTHOR` (authors whose chain the node does not know share
-    /// `UNKNOWN_AUTHOR`, one budget).
+    /// `MAX_READING_PER_AUTHOR` (the chainless authors one budget between them), each source
+    /// counted by its author as the view holds it now, whatever it held when the source came.
     pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32, from: Unchecked) {
         match self.map.get_mut(&e) {
             Some(i) if i.checked().is_some() => return,
             Some(i) if i.secret.is_some() => {
-                add_source(&mut i.reading, from);
+                i.reading.insert(from);
                 return;
             }
             _ => {}
@@ -363,13 +364,14 @@ impl RoleEpochs {
         }
         let info = self.observe(e);
         info.secret = Some(secret.into());
-        add_source(&mut info.reading, from);
+        info.reading.insert(from);
     }
 
     /// Whether a new epoch known only from `from` fits the reading-only bounds.
     fn reading_room(&self, from: &Unchecked) -> bool {
+        let budget = |a: &Tid| (!self.chainless.contains(a)).then_some(*a);
         let reading = self.map.values().filter(|i| i.is_reading_only());
-        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.sources().any(|u| u.author == from.author))));
+        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.sources().any(|u| budget(&u.author) == budget(&from.author)))));
         total < MAX_READING && mine < MAX_READING_PER_AUTHOR
     }
 
@@ -732,15 +734,6 @@ impl RoleEpochs {
     }
 }
 
-/// Adds `from` to a reading-only secret's sources: one source per pending commit, its author as
-/// first read (whether the author's chain was known then), so reading the commit again (its
-/// arrival, a re-read, the open's sweep) after the chain came gives the same sources.
-fn add_source(sources: &mut BTreeSet<Unchecked>, from: Unchecked) {
-    if !sources.iter().any(|u| u.commit == from.commit) {
-        sources.insert(from);
-    }
-}
-
 /// Drops `commit` from `from`: `None` when it was not there, else whether `from` is now empty.
 fn drop_source(from: &mut BTreeSet<Unchecked>, commit: &CommitId) -> Option<bool> {
     let n = from.len();
@@ -792,6 +785,19 @@ impl ActorEpochs {
     /// Whether any role's secret is held, reading-only ones included.
     pub fn holds_any(&self) -> bool {
         ROLES.iter().any(|r| self.role(*r).holds_any())
+    }
+
+    /// The authors of every reading-only source, all roles.
+    pub fn source_authors(&self) -> BTreeSet<Tid> {
+        ROLES.iter().flat_map(|r| self.role(*r).map.values().flat_map(EpochInfo::sources).map(|u| u.author)).collect()
+    }
+
+    /// Sets on the view the authors whose chain the node does not hold (`RoleEpochs::chainless`),
+    /// for a read of pending commits; set it empty before the view is kept.
+    pub fn set_chainless(&mut self, chainless: BTreeSet<Tid>) {
+        for r in ROLES {
+            self.role_mut(r).chainless = chainless.clone();
+        }
     }
 
     pub fn role_mut(&mut self, r: Role) -> &mut RoleEpochs {

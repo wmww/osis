@@ -267,7 +267,7 @@ fn planted(w: &mut World, n: u64) -> (Epoch, Secrets) {
 fn planted_epochs_never_base_a_rotation() {
     let mut w = World::new();
     let mut v = w.a2v.clone();
-    let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
+    let from = osis_keys::Unchecked { author: osis_base::Tid::from_bytes([9; 15]), commit: osis_base::CommitId([9; 32]) };
     // an unopenable box at the top (keyed to someone else): no entry at all
     let (top, mut s) = planted(&mut w, TOP);
     let k = s.boxes.keys().next().unwrap().clone();
@@ -367,7 +367,7 @@ fn pending_history_box_plants_nothing() {
     let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &osis_crypto::HistoryEntry { earlier: vec![(top, planted)], names: osis_keys::Names::default().to_value(), floor: 0, roles: Vec::new(), genesis: None }).unwrap();
     let mut s = Secrets::default();
     s.history.insert(history_key(Role::Read, &w.e0), ct);
-    let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
+    let from = osis_keys::Unchecked { author: osis_base::Tid::from_bytes([9; 15]), commit: osis_base::CommitId([9; 32]) };
     ingest(&w.a, &s, &Opener { holder: w.a2, epochs: &w.a2e }, &mut v, Some(from)).unwrap();
     assert!(v.read.is_reading_only(&top));
     assert!(!v.read.get(&w.e0).unwrap().supersedes.contains(&top));

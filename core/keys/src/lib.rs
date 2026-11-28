@@ -19,7 +19,7 @@ pub mod wrap;
 pub use covers::{Departure, GrantLog, GrantWrite, Holder, covers, pins, reseal_missing, reseal_needed, uncovered};
 pub use members::{Grant, Keysets, Seal, boxing_keyless, key_access, seal_keyset, stale};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_secrets, snapshot_keyed, unvouched, Unvouched};
-pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
+pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, Unchecked, is_newer, newest_of};
 pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};
 pub use error::Error;
 pub use open::{HistoryAlts, has_box, Opened, Opener, ingest, ingest_held, ingest_with, open_boxes, open_histories};

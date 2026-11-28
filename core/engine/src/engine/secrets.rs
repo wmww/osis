@@ -273,6 +273,14 @@ impl Core {
         for r in ROLES {
             clear_covered(epochs.role_mut(r), r);
         }
+        // a source's author whose chain is not held here shares one budget with every such author
+        // (a claimed grant earns nothing: its `roles.0` part is as unverified as the boxes),
+        // judged by what is held now, whatever was when each source came
+        if let Some(u) = unchecked {
+            let mut authors = epochs.source_authors();
+            authors.insert(u.author);
+            epochs.set_chainless(authors.into_iter().filter(|a| self.created(a).is_none()).collect());
+        }
         // only a holder with a box here opens anything: not O(actors known) per ingest
         let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder.0).filter(|t| t != actor).collect();
         // the public's boxes are open: every node reads them, holding nothing (spec/crypto.md §4
@@ -326,6 +334,7 @@ impl Core {
                 *epochs.role_mut(r) = kept;
             }
         }
+        epochs.set_chainless(Default::default());
         let held_any = epochs.holds_any();
         ((held_any && Some(&epochs) != before.as_ref()).then_some(epochs), untaken)
     }

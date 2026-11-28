@@ -353,22 +353,29 @@ fn reading_epochs_bounded_spec_crypto_4() {
     assert!(v.read.get(&e9).is_none() && v.read.is_reading_only(&e1));
 }
 
-// spec/crypto.md §4: authors whose chain the node does not know share one budget (throwaway
-// identities gain nothing).
+// spec/crypto.md §4: authors whose chain the node does not hold share one budget (throwaway
+// identities gain nothing); a source counts by its author as the view holds it now.
 #[test]
-fn unknown_authors_share_one_budget_spec_crypto_4() {
+fn chainless_authors_share_one_budget_spec_crypto_4() {
     let a = osis_base::Tid::from_bytes([1; 15]);
-    let unknown = |n: u8| osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([n; 32]) };
-    let mut v = ActorEpochs::default();
-    for n in 0..200u8 {
+    let by = |author: u8, n: u8| osis_keys::Unchecked { author: osis_base::Tid::from_bytes([author; 15]), commit: osis_base::CommitId([n; 32]) };
+    let add = |v: &mut ActorEpochs, from: osis_keys::Unchecked, n: u8| {
         let s = Secret32::from_bytes([n; 32]);
-        v.read.set_reading_secret(osis_crypto::Epoch::derive(&a, Role::Read, 1, &s).unwrap(), s, unknown(n));
+        v.read.set_reading_secret(osis_crypto::Epoch::derive(&a, Role::Read, 1, &s).unwrap(), s, from);
+    };
+    let mut v = ActorEpochs::default();
+    v.set_chainless([2, 3].map(|b| osis_base::Tid::from_bytes([b; 15])).into());
+    for n in 0..100u8 {
+        add(&mut v, by(2 + n % 2, n), n);
     }
     assert_eq!(v.read.held_newest_first().len(), osis_keys::MAX_READING_PER_AUTHOR);
     // a known author still has its own
-    let s = Secret32::from_bytes([0xaa; 32]);
-    v.read.set_reading_secret(osis_crypto::Epoch::derive(&a, Role::Read, 1, &s).unwrap(), s, from(7));
+    add(&mut v, by(7, 0xaa), 0xaa);
     assert_eq!(v.read.held_newest_first().len(), osis_keys::MAX_READING_PER_AUTHOR + 1);
+    // 2's chain comes: its sources count as its own, and 3 has room again
+    v.set_chainless([osis_base::Tid::from_bytes([3; 15])].into());
+    add(&mut v, by(3, 0xbb), 0xbb);
+    assert_eq!(v.read.held_newest_first().len(), osis_keys::MAX_READING_PER_AUTHOR + 2);
 }
 
 // spec/crypto.md §4, spec/permissions.md §2: a history key may hold several live entries (an

@@ -953,10 +953,7 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
         if (s.boxes.is_empty() && s.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
             continue;
         }
-        // an author whose chain is not known here shares one budget with every such author (a
-        // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
-        let author = if tx.core.created(&blob.header.signer).is_some() { blob.header.signer } else { osis_keys::UNKNOWN_AUTHOR };
-        out.push((a, s, osis_keys::Unchecked { author, commit: *id }));
+        out.push((a, s, osis_keys::Unchecked { author: blob.header.signer, commit: *id }));
     }
     Ok(out)
 }
@@ -1162,14 +1159,14 @@ mod tests {
     }
 
     /// Floods the grantee (peer 1) with `per` bogus pending commits from each throwaway author
-    /// (peers 2..): each boxes it a fresh read secret of `t` at a fresh epoch, built past the
+    /// (peers `authors`): each boxes it a fresh read secret of `t` at a fresh epoch, built past the
     /// writer rules. Returns how many it delivered.
-    fn flood(lp: &mut LocalPeer, t: Tid, per: usize) -> usize {
+    fn flood(lp: &mut LocalPeer, t: Tid, authors: std::ops::Range<usize>, per: usize) -> usize {
         let b = lp.peers[1].engine.tid();
         let keys = osis_keys::HolderKeys::from_keys(&lp.peers[1].engine.get_typed(&b, &ct::KEYS).unwrap().unwrap()).unwrap();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut sent = 0;
-        for x in 2..lp.peers.len() {
+        for x in authors {
             for i in 0..per {
                 let mut held = ActorEpochs::default();
                 held.sync.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
@@ -1433,11 +1430,36 @@ mod tests {
     #[test]
     fn bogus_flood_bounded_by_caps_spec_crypto_4() {
         let (mut lp, t) = grantee_world(5);
-        let sent = flood(&mut lp, t, 30);
+        let n = lp.peers.len();
+        let sent = flood(&mut lp, t, 2..n, 30);
         assert!(sent > osis_keys::MAX_READING_PER_AUTHOR);
         let n = candidates(&lp, &t);
         assert_eq!(n, osis_keys::MAX_READING_PER_AUTHOR, "throwaway authors share one budget");
         assert!(n <= osis_keys::MAX_READING);
+    }
+
+    // spec/crypto.md §4 (Reading-only secrets), notes/engine-roles.md Ingestion: which author
+    // budget a reading-only source counts in is a function of what is held, not of arrival order.
+    // Author X's bogus commits fill the chainless pool while X's chain is unknown; once X's chain
+    // is held they are X's own, and chainless author Y has the pool, as when X's chain came first.
+    #[test]
+    fn author_budget_follows_held_chain_spec_crypto_4() {
+        let per = osis_keys::MAX_READING_PER_AUTHOR + 4;
+        let run = |chain_first: bool| {
+            let (mut lp, t) = grantee_world(4);
+            if chain_first {
+                lp.sync(2, 1).unwrap();
+            }
+            flood(&mut lp, t, 2..3, per);
+            if !chain_first {
+                lp.sync(2, 1).unwrap();
+            }
+            flood(&mut lp, t, 3..4, per);
+            candidates(&lp, &t)
+        };
+        let (late, early) = (run(false), run(true));
+        assert_eq!(early, 2 * osis_keys::MAX_READING_PER_AUTHOR, "X's own budget and the chainless pool");
+        assert_eq!(late, early, "the chain's arrival order changes nothing");
     }
 
     // spec/crypto.md §4, spec/permissions.md §2: with the unknown-author pool full, a genuine
@@ -1449,7 +1471,8 @@ mod tests {
         let b = lp.peers[1].engine.tid();
         let grant = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let g = *lp.peers[0].engine.grant(&t, &b, &grant).unwrap().commits.last().unwrap();
-        flood(&mut lp, t, 40);
+        let n = lp.peers.len();
+        flood(&mut lp, t, 2..n, 40);
         let before = candidates(&lp, &t);
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
         // the grant's commit reaches the grantee before its fire
