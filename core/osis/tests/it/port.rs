@@ -435,6 +435,38 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     assert!(!b.disconnect_node(&w.addr).unwrap());
 }
 
+// spec/sync-set.md §5: the node thing always syncs here: never sourced at another node, even
+// one connected.
+#[test]
+fn the_node_thing_is_never_sourced_away_spec_sync_set_5() {
+    let w = world(Some(Role::Write));
+    let (b, _) = node(&w.net, 2, &w.c);
+    ready(b.connect_node(&login(&w))).unwrap();
+    assert!(matches!(ready(b.unit_source(b.node(), UnitSource::Node(w.addr.clone()))), Err(Error::Invalid(m)) if m.contains("node thing")));
+    assert!(b.unit_sources().is_empty());
+}
+
+// spec/sync-set.md §5 (a write on a sourced thing): a thing B made in its own `g`, then read at
+// another node, is still carried by a sync unit that syncs here: split, a write on it is refused.
+#[test]
+fn a_write_on_a_split_thing_is_refused_spec_sync_set_5() {
+    let w = world(Some(Role::Write));
+    let (b, _) = node(&w.net, 2, &w.c);
+    ready(b.connect_node(&login(&w))).unwrap();
+    let t = {
+        let mut x = b.write();
+        let g = x.create_held().unwrap();
+        let t = x.create(g, None).unwrap();
+        x.hold(g, t).unwrap();
+        x.commit().unwrap();
+        t
+    };
+    ready(b.unit_source(t, UnitSource::Node(w.addr.clone()))).unwrap();
+    let mut x = b.write();
+    x.at(t, v()).set(&Value::Int(6)).unwrap();
+    assert!(matches!(x.commit(), Err(Error::Invalid(m)) if m.contains("also carried by")));
+}
+
 // notes/client-port.md, Moving: sync unit sources outlive the process; until the node is
 // connected again, the sync unit's calls fail `Network`, never this node's copy.
 #[test]

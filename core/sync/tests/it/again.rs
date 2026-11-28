@@ -98,6 +98,40 @@ fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement
     assert_eq!(encryptions(&mut w, &c), before + 1, "logged again once after the restart");
 }
 
+// spec/sync-judgement.md §3 (Agreement of grounds): node 1 deletes two bodies while node 0 is off; by
+// the time node 0 is back and sees the deletes, one expires within `MAX_DRIFT` and is not
+// logged again, the other is, once.
+#[test]
+fn a_body_expiring_within_max_drift_is_not_logged_again_spec_sync_judgement_3() {
+    use osis_base::format::MAX_DRIFT_MS;
+    let (mut w, t, s, _) = setup();
+    grant_reader(&mut w, t);
+    w.run();
+    let now = w.now().0;
+    let [soon, late] = [3, 10].map(|k| {
+        let ak = Ak::new(if k == 3 { "u:soon.0" } else { "u:late.0" }).unwrap();
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &ak, &Value::Str("x".into())).unwrap().expires(t, &ak, osis_base::Time(now + k * MAX_DRIFT_MS)).unwrap();
+            e.commit(m).unwrap().unwrap()
+        })
+    });
+    w.run();
+    for c in [soon, late] {
+        assert!(!at_store(&mut w, &s, &c).is_empty(), "node 1 holds {c:?}");
+    }
+    let before = [soon, late].map(|c| encryptions(&mut w, &c));
+    w.power_off(0);
+    for c in [soon, late] {
+        store_deletes(&mut w, &s, &c);
+    }
+    w.advance(5 * MAX_DRIFT_MS / 2);
+    w.power_on(0);
+    w.run();
+    assert_eq!(encryptions(&mut w, &soon), before[0], "not logged again");
+    assert_eq!(encryptions(&mut w, &late), before[1] + 1, "logged again once");
+}
+
 // spec/sync-judgement.md §4 (a restart is no change of ground; Once the head moves): node 0 logged its write again once
 // past node 1's delete, node 1 deleted that too, and node 0 restarted: the restart allows nothing,
 // and S's head moving there afterwards (a reader removed) allows exactly one more.

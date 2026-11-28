@@ -83,6 +83,50 @@ fn a_dial_address_is_dialed_spec_sync_opens_1() {
     assert_eq!(b.status().unwrap().connected, 0);
 }
 
+// spec/sync-set.md §2 (Not carried): a write of a strong to a thing nothing here carries is no
+// error; it is reported at once, naming both. A strong to a held thing is not.
+#[test]
+fn a_strong_nothing_carries_is_reported_spec_sync_set_2() {
+    let db = db(1);
+    let (x, held) = {
+        let mut w = db.write();
+        let x = w.create_held().unwrap();
+        let held = w.create_held().unwrap();
+        w.commit().unwrap();
+        (x, held)
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _d = db.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
+    let never = osis::Tid::from_bytes([7; 15]);
+    let mut w = db.write();
+    w.hold(x, never).unwrap();
+    w.hold(x, held).unwrap();
+    w.commit().unwrap().unwrap();
+    db.settle();
+    let told: Vec<_> = rx.try_iter().filter_map(|d| match d {
+        osis::Diagnostic::NotCarried { thing, target, .. } => Some((thing, target)),
+        _ => None,
+    }).collect();
+    assert_eq!(told, vec![(x, never)]);
+}
+
+// spec/sync-status.md §3: a wait on a thing that never arrives runs on, and status lists
+// nothing for it meanwhile.
+#[test]
+fn a_wait_on_a_thing_never_arrived_runs_on_unlisted_spec_sync_status_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 6, &c);
+    let never = osis::Tid::from_bytes([7; 15]);
+    let mut f = std::pin::pin!(a.wait_synced(osis::SyncScope::Thing(never)));
+    for _ in 0..3 {
+        assert!(f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        net.run();
+        c.advance(60_000);
+    }
+    assert!(!a.status().unwrap().units.contains_key(&never));
+}
+
 // spec: none (notes/sync-driver.md, Connection diagnostics: for a log, `osis serve`, `diag
 // --follow`): a node reports each connection up and closed, at both ends, and each failed dial
 // with its address and why.

@@ -584,6 +584,24 @@ pub(crate) fn followable(core: &Core, k: &Tid) -> bool {
 mod tests {
     use super::*;
 
+    // spec/sync-ids.md §3 (Head): of two tips at one depth (two admins stepping at once) the head
+    // is the lower step ID, whichever of them was recorded; a deeper step beats both.
+    #[test]
+    fn equal_depth_tips_take_the_lowest_step_id_spec_sync_ids_3() {
+        let g = osis_crypto::Secret32::from_bytes([1; 32]);
+        let s0 = osis_blob::genesis(&g);
+        let d = role_key(RoleKey::Delete, &g);
+        let [a, b] = [[1; 32], [2; 32]].map(|k| osis_blob::register(&s0, &d, s0.keys, k).unwrap());
+        let of = |ss: &[&Step]| head_of(&ss.iter().map(|s| (s.id(), (*s).clone())).collect());
+        let low = a.id().min(b.id());
+        assert_eq!(of(&[&s0, &a, &b]), Some(low));
+        assert_eq!(of(&[&s0, &b, &a]), Some(low));
+        let high = if low == a.id() { &b } else { &a };
+        let c = osis_blob::register(high, &d, s0.keys, [3; 32]).unwrap();
+        assert_eq!(of(&[&s0, &a, &b, &c]), Some(c.id()), "deeper");
+        assert_eq!(recorded_path(&[&s0, &a, &b].iter().map(|s| (s.id(), (*s).clone())).collect()).unwrap().steps.last().map(Step::id), Some(low));
+    }
+
     // spec/sync-inbox.md §5 (Grant signal), spec/sync-hostile.md (a forged signal names a sync ID
     // that gives nothing): two held grant signals name X, one by X's own sync ID, the other by
     // another (a forger's: anyone holding the holder's card may fire one). X is followed under

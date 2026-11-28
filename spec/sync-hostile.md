@@ -19,7 +19,7 @@
 - A claim costs its finder one X25519 DH per claim key it tests and one decapsulation per claim its key finds; a block costs a store one signature check, once, when its head is bound to it.
 - A thing's sync ID is taken only by the owner rule (spec/sync-ids.md §4): no peer's word names one.
 - A node keeping S unread drops its copy only when a Register verified on its path moves its head (a head a peer names, a stream or a box moves nothing).
-- A peer that drops what it pulls cannot keep a node from idle: lacking counts only what a source pulls.
+- A peer that drops what it pulls cannot keep S from heard out: lacking counts only what a source pulls.
 - A peer lying in its own log (hiding a cover) costs at most one logging again per change of ground (spec/sync-judgement.md §4).
 - A section a node cannot open or check, forged or left out of a copy, makes no blob a duplicate of another there, nor one lose to another as needed (spec/sync-compaction.md §1 Duplicates), stamped or not.
 

@@ -352,6 +352,23 @@ fn refused_for_now_backs_off_spec_sync_inbox_3() {
     assert_eq!(last[3].3, second);
 }
 
+// spec/sync-opens.md §1 (Keep or close: a deposit to it may land): while one is out or backed
+// off for now the connection is kept; one taken, or refused (14) until the next filter, keeps
+// nothing.
+#[test]
+fn a_deposit_that_may_land_keeps_its_connection_spec_sync_opens_1() {
+    for (code, may) in [(Code::RATE_LIMITED, true), (Code::DECLINED, false), (Code::OK, false)] {
+        let mut t = T::new();
+        t.deposit(sync_id(100), 1, fire(tid(0)));
+        assert!(!t.offers.may_land(conn(2)), "not connected");
+        t.connect(conn(2), &[tid(0)]);
+        let (c, id, ..) = t.deposits_sent()[0];
+        assert!(t.offers.may_land(c), "out");
+        t.reply(c, id, T::shared(code));
+        assert_eq!(t.offers.may_land(c), may, "answered {code:?}");
+    }
+}
+
 // spec/sync-inbox.md §3 (14): a refused item is sent again where signing again changes the
 // signature (the deposit key moved), else not on that connection until the receiver's next
 // filter arrives.

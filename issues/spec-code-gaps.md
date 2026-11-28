@@ -35,17 +35,9 @@ Judgement in brackets. Line numbers drift; grep the quoted words.
 
 ## spec/sync-ids.md, spec/sync-judgement.md, spec/sync-inbox.md
 - sync-ids §6 Register "in its sync set": code takes Registers for a sync ID left and waiting to stop (`path.rs` checks only `Unread`). [Small; decide which, likely the spec: S is kept while it waits.]
-- sync-judgement §3 "a body expiring within `MAX_DRIFT` is not logged again after a delete" (`read/judge.rs`): no test. [Small test.]
 - Code only: a Deposit item at a stopped store is answered 4 (`store/mod.rs`, path filtered by `unheld`); a stamped entry pulled there 1, an ephemeral one without bytes 2. [Small: state the codes, or answer 14.]
-- sync-ids §3 head tie-break by lowest step ID: no direct test. [Small test.]
 
 ## spec/sync-opens.md, sync-set.md, sync-status.md, sync-streams.md, sync-transport.md
-- sync-status §3 per-node idle ("no request, fill or Hello outstanding on any connection"): unbuilt; sync-opens §1 "not idle while it waits" depends on it. [Small: build it or drop both clauses; it is API.]
-- sync-status §3 a wait on a thing that never arrives names it unknown: no unknown state (`SyncState`). [Small: delete the clause or add the state.]
-- sync-status §3 code only: `wait_synced` fails `Stranded`, stated in notes/api-design.md alone. [Small: one spec sentence.]
-- sync-status §3 status lists lacking counts and pass waits; `osis::UnitSync` shows a state and a `not_taking` count. [Unsure which view the spec means.]
-- sync-set §2 Not carried warning at write, §5 a write on a sourced thing refused, §5 the node thing never sourced away: code in `osis/src/write.rs`, `sources.rs`, no test. [Small tests.]
-- sync-opens §1 Keep or close, "a deposit to it may land": `may_land`, no test. [Small test.]
 - Code only: an out-of-order Digest or Members closes the connection (`opens/mod.rs`). [Small: state it in sync-opens §3.]
 - Code only: a dialer closes when its Prove is answered by anything but Proved (`session.rs`). [Unsure whether stated.]
 
