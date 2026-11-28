@@ -134,7 +134,7 @@ fn authority_checked_before_signing_spec_perm_1() {
         a.engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
     a.know(&[b.engine.tid()]).unwrap();
-    a.engine.grant(&ta, &b.engine.tid(), &crate::common::edge(osis_base::Role::Read)).unwrap();
+    a.engine.grant(&ta, &b.engine.tid(), &crate::common::grant(osis_base::Role::Read)).unwrap();
     b.engine.hold(osis_base::Strong(ta)).unwrap();
     for id in a.engine.commit_ids() {
         let pk = a.engine.package(&id).unwrap().unwrap();

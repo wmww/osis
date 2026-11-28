@@ -15,7 +15,7 @@
 //! ones too.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{commit_ids, edge, independent_thing, held_by, newest_read, openable, synced};
+use super::tests::{commit_ids, grant, independent_thing, held_by, newest_read, openable, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -62,16 +62,16 @@ fn shape(d: usize) -> Shape {
         let mut xs: Vec<Tid> = (0..d).map(|_| independent_thing(&mut lp, B)).collect();
         lp.sync_all().unwrap();
         let xd = *xs.last().unwrap();
-        lp.peers[B].engine.grant(&xd, &w, &edge(Role::Write)).unwrap();
-        lp.peers[B].engine.grant(&xd, &r, &edge(Role::Read)).unwrap();
+        lp.peers[B].engine.grant(&xd, &w, &grant(Role::Write)).unwrap();
+        lp.peers[B].engine.grant(&xd, &r, &grant(Role::Read)).unwrap();
         for i in (0..d - 1).rev() {
-            lp.peers[B].engine.grant(&xs[i], &xs[i + 1], &edge(Role::Write)).unwrap();
+            lp.peers[B].engine.grant(&xs[i], &xs[i + 1], &grant(Role::Write)).unwrap();
             // each holder refers to what it holds: W and R find the chain by references
             lp.refer(B, xs[i + 1], xs[i]);
         }
         lp.sync_all().unwrap();
         let g = independent_thing(&mut lp, A);
-        lp.peers[A].engine.grant(&g, &xs[0], &edge(Role::Write)).unwrap();
+        lp.peers[A].engine.grant(&g, &xs[0], &grant(Role::Write)).unwrap();
         lp.refer(B, xs[0], g);
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[W].engine.core.role_now(&w, &g), Some(Role::Write));
@@ -429,7 +429,7 @@ fn reader_removal_stays_below_spec_crypto_4() {
     let before: BTreeSet<CommitId> = s.lp.peers[A].engine.core.ix.held.commits_on(&xd).iter().map(|c| c.id).collect();
     let rm = removed(&mut s, R, Carry::Honest);
     // (A may hold the removal commit's `keys.0` part: Xd's keyset on a chain)
-    assert!(s.lp.peers[A].engine.core.ix.held.edge_commit(&rm.rm).is_none(), "A holds R's removal");
+    assert!(s.lp.peers[A].engine.core.ix.held.grant_commit(&rm.rm).is_none(), "A holds R's removal");
     assert_eq!(s.lp.peers[A].engine.core.role_now(&r, &xd), Some(Role::Read), "A learns R left Xd");
     let now: BTreeSet<CommitId> = s.lp.peers[A].engine.core.ix.held.commits_on(&xd).iter().map(|c| c.id).collect();
     assert_eq!(now, before, "A learns a grant write of Xd");
@@ -444,10 +444,10 @@ fn route_shape() -> (LocalPeer, Tid, Tid, Tid) {
         let s = independent_thing(&mut lp, 2);
         let m = independent_thing(&mut lp, 1);
         lp.sync_all().unwrap();
-        lp.grant_through(1, m, s, &edge(Role::Write));
+        lp.grant_through(1, m, s, &grant(Role::Write));
         let a = independent_thing(&mut lp, 0);
         lp.sync_all().unwrap();
-        lp.grant_through(0, a, m, &edge(Role::Read));
+        lp.grant_through(0, a, m, &grant(Role::Read));
         lp.sync_all().unwrap();
         assert!(held_by(&lp, 2, &[a]).contains(&(a, Role::Read, newest_read(&lp, 0, a).unwrap())), "f reads A through M");
         (lp, (a, m, s))
@@ -472,7 +472,7 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
             let held = tx.core.epochs(&m).unwrap();
             let holders = super::recipients(tx, &me, &m, &[(s, None)])?;
             let mut mu = Mutation::new();
-            crate::flows::edges::removal(tx, &mut mu, m, s)?;
+            crate::flows::grants::removal(tx, &mut mu, m, s)?;
             let rot = super::rotation_into(tx, &mut mu, m, &[Role::Read, Role::Write].into(), &held, &holders, super::Departs::Holder)?;
             mu.unchecked();
             tx.core.skip_writer_rules = true;
@@ -509,7 +509,7 @@ fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
     let mut known = held_by(&s.lp, W, &s.all());
     s.lp.advance(1000);
     let before = commit_ids(&mut s.lp, B);
-    s.lp.peers[B].engine.demote(&xd, &Demotion { holder: w, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    s.lp.peers[B].engine.demote(&xd, &Demotion { holder: w, new: Some(grant(Role::Read)), retain: None }).unwrap();
     let rm = *commit_ids(&mut s.lp, B).difference(&before).next().unwrap();
     s.lp.peers[B].engine.ensure_rotated(&s.xs[1]).unwrap();
     let before = commit_ids(&mut s.lp, B);
@@ -554,7 +554,7 @@ fn newcomer(s: &mut Shape, from: usize, t: Tid, seed: u64, order: Option<&mut su
     s.lp.peers.push(crate::local_peer::Peer::new(seed, now).unwrap());
     s.lp.sync(x, from).unwrap();
     let xt = s.lp.peers[x].engine.tid();
-    s.lp.peers[from].engine.grant(&t, &xt, &edge(Role::Read)).unwrap();
+    s.lp.peers[from].engine.grant(&t, &xt, &grant(Role::Read)).unwrap();
     let mut pks = s.lp.packages_to(from, x).unwrap();
     if let Some(rng) = order {
         for k in (1..pks.len()).rev() {
@@ -693,7 +693,7 @@ fn own_demotion_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
 // `roles.0` part (a node may hold a commit's parts at different times) does not hold the
 // keysets (W's removal unknown there), and does once the rest arrives.
 #[test]
-fn own_demotion_keyset_held_only_with_its_own_edge_writes_spec_crypto_4() {
+fn own_demotion_keyset_held_only_with_its_own_grant_writes_spec_crypto_4() {
     let (mut s, rm) = w_removed_from_x1();
     let x1 = s.x1();
     let (r, e, _) = s.lp.peers[B].engine.core.keysets_of(&x1).find(|x| x.0 == Role::Write && x.2.since.is_some_and(|p| p.commit == rm)).unwrap();
@@ -710,7 +710,7 @@ fn own_demotion_keyset_held_only_with_its_own_edge_writes_spec_crypto_4() {
         }
     }
     assert!(s.lp.peers[c].engine.core.ix.keysets.contains_key(&(x1, r, e)), "its body noted");
-    assert!(s.lp.peers[c].engine.core.ix.held.edge_commit(&rm).is_none(), "the removal's grant writes held");
+    assert!(s.lp.peers[c].engine.core.ix.held.grant_commit(&rm).is_none(), "the removal's grant writes held");
     assert!(s.lp.peers[c].engine.core.keyset(&x1, r, &e).is_none(), "held without the removal");
     for pk in s.lp.packages_for(B, c).unwrap().into_iter().filter(|p| p.id == rm) {
         s.lp.peers[c].receive(&pk.bytes, pk.blobs).unwrap();

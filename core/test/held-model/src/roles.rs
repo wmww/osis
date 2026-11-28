@@ -8,7 +8,7 @@ use crate::types::*;
 use roles_model::paths::{self, Id, Kind, Names, Rules, View};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A hop's edge: (holder, target).
+/// A hop's grant: (holder, target).
 pub type Hop = (NodeId, ThingId);
 
 /// The creation records known: mint admins.
@@ -48,26 +48,26 @@ impl World {
         }
         v
     }
-    /// The edges the path `signer` states for a part on `thing` uses (spec/permissions.md §1
+    /// The grants the path `signer` states for a part on `thing` uses (spec/permissions.md §1
     /// Path, Hops, the key hop left out), and which of them are record grants; `None` where its
     /// members name a thing twice or its marks are invalid. `holder`: the part's holder, for an
     /// grant write (a path ending at it is a self-removal's).
     pub fn hops(&self, signer: NodeId, path: &Path, thing: ThingId, holder: Option<NodeId>) -> Option<Vec<(Hop, bool)>> {
         let names = Interned::new(self.links.keys().copied().chain(self.links.values().filter_map(|l| l.mint_admin())).chain([signer, thing]).chain(path.things.iter().copied()).chain(holder));
-        let mut w = paths::World::new(&self.record_edges(&names));
+        let mut w = paths::World::new(&self.record_grants(&names));
         let things: Vec<paths::Thing> = path.things.iter().map(|&t| names.thing(t)).collect();
         let kind = holder.map_or(Kind::Content, |h| Kind::set(names.thing(h), roles_model::Role::None));
         let i = w.push_marked(names.thing(signer), 0, &things, names.thing(thing), kind, &path.direct);
         w.well(i).then(|| w.hops(i).iter().map(|&e| ((names.id(e.0), names.id(e.1)), w.is_record(e))).collect())
     }
-    /// The edges of the path `c` states for each thing it writes, that thing its last member: its
+    /// The grants of the path `c` states for each thing it writes, that thing its last member: its
     /// grant writes on one come after its others (spec/permissions.md §5.1 step 1).
     pub fn stated(&self, c: &Commit) -> BTreeSet<Hop> {
         let empty = Path::default();
         let things: BTreeSet<ThingId> = c.parts.iter().map(|p| p.thing).collect();
         things.into_iter().flat_map(|t| self.hops(c.signer, c.paths.get(&t).unwrap_or(&empty), t, None).unwrap_or_default()).map(|x| x.0).collect()
     }
-    fn record_edges(&self, names: &Interned) -> Vec<paths::Edge> {
+    fn record_grants(&self, names: &Interned) -> Vec<paths::Grant> {
         self.links.iter().filter_map(|(&t, l)| Some((names.thing(l.mint_admin()?), names.thing(t)))).collect()
     }
 }
@@ -141,7 +141,7 @@ pub struct Timeline {
     rights: BTreeMap<Id, paths::Right>,
     names: Interned,
     ids: BTreeMap<Of, Vec<Id>>,
-    writes: BTreeMap<Id, EdgeWrite>,
+    writes: BTreeMap<Id, GrantWrite>,
     probes: BTreeMap<ThingId, Vec<(Id, Path)>>,
 }
 
@@ -151,8 +151,8 @@ impl Timeline {
     /// The world of `j`'s commits, judged.
     pub fn judge(world: World, j: &Joined) -> Timeline {
         let commits = || j.live.iter().copied();
-        let edges = |c: &Commit| c.parts.iter().filter_map(|p| match &p.body {
-            Body::Held(Delta::Edge(e)) => Some(*e),
+        let grants = |c: &Commit| c.parts.iter().filter_map(|p| match &p.body {
+            Body::Held(Delta::Grant(e)) => Some(*e),
             _ => None,
         }).collect::<Vec<_>>();
         let names = Interned::new(
@@ -162,13 +162,13 @@ impl Timeline {
                 let purge = c.purge.iter().map(|i| match *i {
                     PurgeItem::Commit { thing, .. } | PurgeItem::Aspect { thing, .. } | PurgeItem::Author { thing, .. } => thing,
                 });
-                [c.signer, c.author].into_iter().chain(parts).chain(paths).chain(purge).chain(edges(c).into_iter().map(|e| e.holder)).collect::<Vec<_>>()
+                [c.signer, c.author].into_iter().chain(parts).chain(paths).chain(purge).chain(grants(c).into_iter().map(|e| e.holder)).collect::<Vec<_>>()
             })),
         );
         let until = |u: u64| u.saturating_mul(MS);
-        let times: Vec<u64> = commits().map(|c| c.ts).chain(commits().flat_map(|c| edges(c)).filter_map(|e| e.until).map(until)).chain([u64::MAX]).collect::<BTreeSet<_>>().into_iter().collect();
+        let times: Vec<u64> = commits().map(|c| c.ts).chain(commits().flat_map(|c| grants(c)).filter_map(|e| e.until).map(until)).chain([u64::MAX]).collect::<BTreeSet<_>>().into_iter().collect();
         let time = |t: u64| times.binary_search(&t).expect("a listed time") as u32 + 1;
-        let mut tl = Timeline { w: paths::World::new(&world.record_edges(&names)), world, rd: Default::default(), rights: BTreeMap::new(), names, ids: BTreeMap::new(), writes: BTreeMap::new(), probes: BTreeMap::new() };
+        let mut tl = Timeline { w: paths::World::new(&world.record_grants(&names)), world, rd: Default::default(), rights: BTreeMap::new(), names, ids: BTreeMap::new(), writes: BTreeMap::new(), probes: BTreeMap::new() };
 
         // each commit as joined (a waiting or thrown part is not received), else as held, in id
         // order: world ids are given by the order pushed, and keys tie on `ts` and signer by id
@@ -177,7 +177,7 @@ impl Timeline {
         sorted.sort_by_key(|c| c.id);
         let by_id: BTreeMap<CommitId, &Commit> = sorted.iter().map(|c| (c.id, *c)).collect();
         // the grant writes a commit holds, by part
-        let cuts = |c: CommitId| -> Vec<usize> { by_id.get(&c).filter(|x| x.is_role()).into_iter().flat_map(|x| x.parts.iter().enumerate()).filter(|(_, p)| matches!(p.body, Body::Held(Delta::Edge(_)))).map(|x| x.0).collect() };
+        let cuts = |c: CommitId| -> Vec<usize> { by_id.get(&c).filter(|x| x.is_role()).into_iter().flat_map(|x| x.parts.iter().enumerate()).filter(|(_, p)| matches!(p.body, Body::Held(Delta::Grant(_)))).map(|x| x.0).collect() };
         // each commit's world parts, in the walk's order within the commit, and the thing each is on
         let mut plan: Vec<(&Commit, Vec<Of>)> = Vec::new();
         let mut on: Vec<paths::Thing> = Vec::new();
@@ -201,7 +201,7 @@ impl Timeline {
                     Of::Part(_, i) => {
                         let p = &c.parts[i];
                         let kinds = match &p.body {
-                            Body::Held(Delta::Edge(e)) if c.is_role() => {
+                            Body::Held(Delta::Grant(e)) if c.is_role() => {
                                 // one leaf per thing: an entry names its commit's parts on that thing
                                 let mut frontier: BTreeMap<paths::Thing, paths::Set> = BTreeMap::new();
                                 for x in c.frontier.iter().flatten().flat_map(|&x| all(&tl, x)) {
@@ -209,7 +209,7 @@ impl Timeline {
                                 }
                                 // a removal carrying no frontier is a finalize, where it is no self-removal (the world reads that)
                                 let removal = e.role.is_none() || e.until == Some(0);
-                                vec![Kind::Edge { holder: tl.names.thing(e.holder), role: role(e.role), until: e.until.map(|u| time(until(u))), frontier, may_grant: e.may_grant, finalize: removal && c.frontier.is_none() }]
+                                vec![Kind::Grant { holder: tl.names.thing(e.holder), role: role(e.role), until: e.until.map(|u| time(until(u))), frontier, may_grant: e.may_grant, finalize: removal && c.frontier.is_none() }]
                             }
                             Body::Held(Delta::Addenda(es)) if c.kind == CommitKind::Content && p.aspect == Aspect::ADDENDA && !j.void.contains(&c.id) => {
                                 let mut ks = Vec::new();
@@ -242,12 +242,12 @@ impl Timeline {
                 let members: Vec<ThingId> = [c.signer].into_iter().chain(path.things.iter().copied()).chain([thing]).collect();
                 let author = members.iter().position(|&m| m == c.author);
                 for kind in kinds {
-                    let edge = matches!(kind, Kind::Edge { .. });
+                    let grant = matches!(kind, Kind::Grant { .. });
                     let i = tl.w.push_marked(signer, ts, &things, tl.names.thing(thing), kind, &path.direct);
                     assert!(tl.ids[&of].contains(&i), "a world part where it was planned");
                     ids.push(i);
                     if let Some(p) = part {
-                        if let (true, Body::Held(Delta::Edge(e))) = (edge, &p.body) {
+                        if let (true, Body::Held(Delta::Grant(e))) = (grant, &p.body) {
                             tl.writes.insert(i, *e);
                         }
                         let x = &mut tl.w.commits[i];
@@ -260,12 +260,12 @@ impl Timeline {
                             PurgeBy::Writer => paths::PurgeBy::Writer,
                         };
                     }
-                    if let (Some(ix), false) = (author, edge) {
+                    if let (Some(ix), false) = (author, grant) {
                         tl.w.authored(i, ix.min(path.things.len() + 1));
                     }
                     // held: a part of an applied commit; a delta whose path leaves its commit's
                     // purge author out holds nothing (§6)
-                    if joined && (edge || author.is_some()) {
+                    if joined && (grant || author.is_some()) {
                         held.insert(i);
                     }
                 }
@@ -299,27 +299,27 @@ impl Timeline {
     /// each with its thing and how many parts it is in the world (an addendum is one per cut its
     /// entries are against, `cuts` giving a commit's).
     fn plan(&self, c: &Commit, void: bool, cuts: &dyn Fn(CommitId) -> usize) -> Vec<(Of, ThingId, usize)> {
-        let mut edges: Vec<(bool, ThingId, NodeId, usize)> = Vec::new();
+        let mut grants: Vec<(bool, ThingId, NodeId, usize)> = Vec::new();
         let mut rest: Vec<(Of, ThingId, usize)> = Vec::new();
         let stated = self.world.stated(c);
         for (i, p) in c.parts.iter().enumerate() {
             match &p.body {
-                Body::Held(Delta::Edge(e)) if c.is_role() => edges.push((stated.contains(&(e.holder, p.thing)), p.thing, e.holder, i)),
+                Body::Held(Delta::Grant(e)) if c.is_role() => grants.push((stated.contains(&(e.holder, p.thing)), p.thing, e.holder, i)),
                 // a role commit's part with no body held names no holder: nothing to walk
                 _ if c.is_role() && p.aspect == Aspect::ROLES => {}
                 Body::Held(Delta::Addenda(es)) if c.kind == CommitKind::Content && p.aspect == Aspect::ADDENDA && !void => rest.push((Of::Part(c.id, i), p.thing, es.iter().map(|(r, _)| cuts(*r)).sum::<usize>().max(1))),
                 _ => rest.push((Of::Part(c.id, i), p.thing, 1)),
             }
         }
-        edges.sort();
+        grants.sort();
         let requests: BTreeSet<(ThingId, bool)> = c.purge.iter().map(|it| match *it {
             PurgeItem::Commit { thing, aspect, .. } | PurgeItem::Aspect { thing, aspect } | PurgeItem::Author { thing, aspect, .. } => (thing, aspect == Aspect::CREATED),
         }).collect();
-        edges.into_iter().map(|e| (Of::Part(c.id, e.3), e.1, 1)).chain(rest).chain(requests.into_iter().map(|(t, d)| (Of::Request(c.id, t, d), t, 1))).collect()
+        grants.into_iter().map(|e| (Of::Part(c.id, e.3), e.1, 1)).chain(rest).chain(requests.into_iter().map(|(t, d)| (Of::Request(c.id, t, d), t, 1))).collect()
     }
 
-    /// Every path `me` could state for `t` whose edges each give write or above in the reading's
-    /// final state at `end`: the simple paths over standing edges, every hop its direct grant (a
+    /// Every path `me` could state for `t` whose grants each give write or above in the reading's
+    /// final state at `end`: the simple paths over standing grants, every hop its direct grant (a
     /// hop the world would read as a descent is marked). A writer's choice, no judging rule: each
     /// is judged as stated (`judge`'s probes).
     fn my_paths(&self, rd: &paths::Reading, me: NodeId, t: ThingId, end: u32) -> Vec<Path> {
@@ -402,9 +402,9 @@ impl Timeline {
     }
 
     /// The roster of `thing` in the walk's final state: each holder's grant in force (its record
-    /// edge reads as a standing admin grant), whatever its `until`.
-    pub fn roster(&self, thing: ThingId) -> BTreeMap<NodeId, EdgeWrite> {
-        let mut out: BTreeMap<NodeId, EdgeWrite> = self.world.mint_admin(thing).into_iter().map(|a| (a, EdgeWrite::role(a, Some(Role::Admin)))).collect();
+    /// grant reads as a standing admin grant), whatever its `until`.
+    pub fn roster(&self, thing: ThingId) -> BTreeMap<NodeId, GrantWrite> {
+        let mut out: BTreeMap<NodeId, GrantWrite> = self.world.mint_admin(thing).into_iter().map(|a| (a, GrantWrite::role(a, Some(Role::Admin)))).collect();
         for (e, h) in self.rd.hist.iter().filter(|(e, _)| !paths::is_key(e.0) && self.names.id(e.1) == thing) {
             let holder = self.names.id(e.0);
             match h.last().and_then(|(k, _)| self.writes.get(&k.2)) {

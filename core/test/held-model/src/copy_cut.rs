@@ -50,7 +50,7 @@ pub enum Ak {
 pub const ROLE_CLASS: [Ak; 4] = [Ak::Roles, Ak::Secrets, Ak::Keys, Ak::Sync];
 
 #[derive(Clone, Copy, Debug)]
-pub struct Edge {
+pub struct Grant {
     pub holder: Id,
     pub role: Option<Role>,
     pub may_grant: bool,
@@ -68,7 +68,7 @@ pub struct BoxAt {
 
 #[derive(Clone, Debug)]
 pub enum Delta {
-    Roles(Vec<Edge>),
+    Roles(Vec<Grant>),
     Secrets(Vec<BoxAt>),
     /// A keyset of `epoch` (listing every earlier epoch).
     Keys { keyset: u32 },
@@ -88,7 +88,7 @@ impl Delta {
     }
 }
 
-/// A commit writing one thing, along `hops` (its stated path's edges, (holder, target); empty for
+/// A commit writing one thing, along `hops` (its stated path's grants, (holder, target); empty for
 /// a thing minted with a key writing itself).
 #[derive(Clone, Debug)]
 pub struct Commit {
@@ -132,7 +132,7 @@ impl World {
         self.commits.iter().find(|x| x.id == c).expect("commit")
     }
 
-    fn record_edge(&self, h: Id, y: Id) -> bool {
+    fn record_grant(&self, h: Id, y: Id) -> bool {
         self.records.get(&y) == Some(&h)
     }
 
@@ -141,7 +141,7 @@ impl World {
     fn evidence_of(&self, c: &Commit) -> Vec<(Cid, Ak)> {
         let mut out = Vec::new();
         for &(h, y) in &c.hops {
-            if self.record_edge(h, y) {
+            if self.record_grant(h, y) {
                 continue;
             }
             for d in self.commits.iter().filter(|d| d.thing == y) {
@@ -259,8 +259,8 @@ pub struct Seen {
 struct Judge<'a> {
     w: &'a World,
     held: &'a Held,
-    /// held grant writes in key order: (key, thing, signer, edges applied)
-    walk: Vec<((u32, Cid), Id, Vec<(Edge, bool)>)>,
+    /// held grant writes in key order: (key, thing, signer, grants applied)
+    walk: Vec<((u32, Cid), Id, Vec<(Grant, bool)>)>,
     roles: BTreeMap<Cid, V>,
 }
 
@@ -296,7 +296,7 @@ impl<'a> Judge<'a> {
 
     /// A hop is unjudgeable while no held grant write sets it and it is no record grant.
     fn pending(&self, h: Id, y: Id) -> bool {
-        if self.w.record_edge(h, y) {
+        if self.w.record_grant(h, y) {
             return false;
         }
         !self.w.commits.iter().any(|c| {
@@ -483,7 +483,7 @@ pub fn world(seed: u64) -> World {
                         boxes.push(rd(o, t.a_epoch, t.keyset[&o]));
                     }
                 }
-                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), Delta::Secrets(boxes)]);
+                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Grant { holder: g, role: Some(role), may_grant: mg }]), Delta::Secrets(boxes)]);
                 if sr == Role::Admin || !t.a.contains_key(&g) {
                     t.a.insert(g, (role, mg));
                 }
@@ -506,7 +506,7 @@ pub fn world(seed: u64) -> World {
                     continue;
                 }
                 let g = r.pick(&others);
-                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Edge { holder: g, role: None, may_grant: false }])]);
+                push(&mut w, s, A, vec![(s, A)], vec![Delta::Roles(vec![Grant { holder: g, role: None, may_grant: false }])]);
                 t.a.remove(&g);
             }
             6 => {
@@ -544,7 +544,7 @@ pub fn world(seed: u64) -> World {
                 if r.chance(15) {
                     boxes.push(rd(if g == T { H } else { T }, t.x_epoch, 0));
                 }
-                push(&mut w, s, X, vec![(s, X)], vec![Delta::Roles(vec![Edge { holder: g, role: Some(Role::Read), may_grant: mg }]), Delta::Secrets(boxes)]);
+                push(&mut w, s, X, vec![(s, X)], vec![Delta::Roles(vec![Grant { holder: g, role: Some(Role::Read), may_grant: mg }]), Delta::Secrets(boxes)]);
                 t.x.insert(g, (Role::Read, mg));
             }
             _ => {

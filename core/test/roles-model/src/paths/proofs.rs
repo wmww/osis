@@ -23,8 +23,8 @@
 //! - `receipt`: a proof proves nothing taking its copies in would not (the reading after receiving
 //!   them, sides recorded as on any receipt).
 //! - `own` (liveness): with no copies the proof is the verifier's own reading.
-//! - `fresh` (liveness): a verifier holding no grant write on the claimed edge proves a member by
-//!   honest copies (every grant write on that edge, evidence closed) wherever its reading of
+//! - `fresh` (liveness): a verifier holding no grant write on the claimed grant proves a member by
+//!   honest copies (every grant write on that grant, evidence closed) wherever its reading of
 //!   everything would, unless they undo a lowering its own reading applies; `waits`: then it does
 //!   once it holds what its own evidence brings.
 //! - `j-path`: the proven role never trusts a peer above the role its claimed path gives it on S.
@@ -91,14 +91,14 @@ impl ProofWorld {
 fn write(w: &mut World, signer: Thing, ts: u32, holder: Thing, role: Role, received: &dyn Fn(Id) -> bool) -> Id {
     let lowers = role < Role::Admin && holder != signer;
     let f = if lowers { w.through((holder, A), |i| received(i)) } else { vec![] };
-    w.edge(signer, ts, &[], A, holder, role, &f)
+    w.grant(signer, ts, &[], A, holder, role, &f)
 }
 
 /// The setup: N1 (A's mint admin) grants N2 admin and N3 `r3` at 1.
 fn setup(r3: Role) -> World {
     let mut w = World::new(&[(N1, A)]);
-    w.edge(N1, 1, &[], A, N2, Role::Admin, &[]);
-    w.edge(N1, 1, &[], A, N3, r3, &[]);
+    w.grant(N1, 1, &[], A, N2, Role::Admin, &[]);
+    w.grant(N1, 1, &[], A, N3, r3, &[]);
     w
 }
 
@@ -248,7 +248,7 @@ pub fn proof_reading(w: &World, rules: &Rules, pr: ProofRules, held: &Set, trust
 }
 
 /// The lowerings (grant writes giving below admin at their `ts`, spec/permissions.md §5.1) V's own
-/// reading applies that a reading `rd` undoes: does not apply, with the edge above what the
+/// reading applies that a reading `rd` undoes: does not apply, with the grant above what the
 /// lowering set (not one an earlier lowering made idle).
 pub fn undone(w: &World, own: &Reading, rd: &Reading) -> Vec<Id> {
     own.applied
@@ -256,7 +256,7 @@ pub fn undone(w: &World, own: &Reading, rd: &Reading) -> Vec<Id> {
         .copied()
         .filter(|&i| w.lowers(i).is_some())
         .filter(|&i| {
-            let (Some(e), Kind::Edge { role, .. }) = (w.sets(i), &w.commits[i].kind) else { return false };
+            let (Some(e), Kind::Grant { role, .. }) = (w.sets(i), &w.commits[i].kind) else { return false };
             !rd.applied.contains(&i) && rd.role(e.0, e.1) > *role
         })
         .collect()
@@ -326,9 +326,9 @@ pub fn proof_check(m: &ProofWorld, pr: ProofRules, st: &mut ProofStats, rng: &mu
         // fresh: V holds no write on (P, A); honest copies (every write on it, closed) prove
         // where the reading of everything does, unless they undo a lowering V's own reading
         // applies; then (waits) once V holds what its own evidence brings, they do
-        let on_edge: Set = (0..w.commits.len()).filter(|&i| w.sets(i) == Some((p, A))).collect();
-        if p != N1 && on_edge.is_disjoint(&held) {
-            let honest: Set = evidence(w, &on_edge, &all).difference(&held).copied().collect();
+        let on_grant: Set = (0..w.commits.len()).filter(|&i| w.sets(i) == Some((p, A))).collect();
+        if p != N1 && on_grant.is_disjoint(&held) {
+            let honest: Set = evidence(w, &on_grant, &all).difference(&held).copied().collect();
             let got = proven(w, &rules, pr, &held, &trust, &own, p, &honest);
             let want = path_role(&everything, p);
             let rd = proof_reading(w, &rules, pr, &held, &trust, &honest);
@@ -388,7 +388,7 @@ pub fn proof_trace(m: &ProofWorld) -> String {
         .iter()
         .enumerate()
         .map(|(i, c)| match &c.kind {
-            Kind::Edge { holder, role, frontier, .. } => format!("{i}: {} sets {holder} {role:?} at {} listing {:?}", c.signer, c.ts, frontier.values().flatten().collect::<Vec<_>>()),
+            Kind::Grant { holder, role, frontier, .. } => format!("{i}: {} sets {holder} {role:?} at {} listing {:?}", c.signer, c.ts, frontier.values().flatten().collect::<Vec<_>>()),
             k => format!("{i}: {k:?}"),
         })
         .collect();
@@ -406,7 +406,7 @@ mod tests {
 
     // spec: sync-opens.md §2 Connection proofs
     #[test]
-    fn a_mint_admin_proves_its_account_by_the_record_edge() {
+    fn a_mint_admin_proves_its_account_by_the_record_grant() {
         let w = setup(Admin);
         let held: Set = (0..2).collect();
         let rd = own(&w, &held, &Set::new());
@@ -464,10 +464,10 @@ mod tests {
     #[test]
     fn honest_copies_are_judged_with_the_sides_their_receipt_records() {
         let mut w = setup(Role::Read);
-        w.edge(N2, 5, &[], A, N1, Role::Read, &[0, 1]);
-        let rm = w.edge(N1, 4, &[], A, N3, Gone, &[]);
-        w.edge(N1, 2, &[], A, N2, Admin, &[]);
-        w.edge(N2, 4, &[], A, N1, Role::Read, &[0, 1, 3, 4]);
+        w.grant(N2, 5, &[], A, N1, Role::Read, &[0, 1]);
+        let rm = w.grant(N1, 4, &[], A, N3, Gone, &[]);
+        w.grant(N1, 2, &[], A, N2, Admin, &[]);
+        w.grant(N2, 4, &[], A, N1, Role::Read, &[0, 1, 3, 4]);
         let held: Set = [0, 2, 4, 5].into();
         let trust = trust_of(&w, &Rules::fixed(), &[[4].into(), [0].into(), [2, 5].into()]);
         let rd = own(&w, &held, &trust);

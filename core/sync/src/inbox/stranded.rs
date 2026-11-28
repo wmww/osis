@@ -313,8 +313,8 @@ mod tests {
         lp.peers[0].commit(mu).unwrap();
         lp.peers[0].engine.make_independent(&g).unwrap();
         lp.hold(g);
-        let edge = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&g, &m, &edge).unwrap();
+        let grant = osis_schema::core_types::Grant { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&g, &m, &grant).unwrap();
         lp.sync_all().unwrap();
         lp.peers[0].engine.rotate_leaving_out(&g, &[osis_base::Role::Read], &[m]).unwrap().unwrap();
         lp.sync(0, 1).unwrap();

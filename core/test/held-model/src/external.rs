@@ -41,8 +41,8 @@ fn content(id: CommitId, author: NodeId, ts: u64, aspect: Aspect, body: Delta) -
     Commit { id, signer: author, author: author, paths: Default::default(), ts, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
-fn edge(id: CommitId, author: NodeId, ts: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
-    let part = Part { thing: THING, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(EdgeWrite::role(holder, role))), stripped: Default::default(), replaces: None, keys: Default::default() };
+fn grant(id: CommitId, author: NodeId, ts: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
+    let part = Part { thing: THING, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Grant(GrantWrite::role(holder, role))), stripped: Default::default(), replaces: None, keys: Default::default() };
     Commit { id, signer: author, author: author, paths: Default::default(), ts, expires: None, kind: CommitKind::Role, parts: vec![part], purge: vec![], frontier, undoes: None, own_cover: false, boxes: vec![] }
 }
 
@@ -63,8 +63,8 @@ pub fn setting(id: CommitId, author: NodeId, ts: u64, named: &[Aspect], default:
 pub fn world(seed: u64) -> World {
     let mut r = Rng::new(seed ^ 0xE47);
     let mut base = creations();
-    base.push(edge(FIRST - 2, ADMIN, hour(0), ADMIN2, Some(Role::Admin), None));
-    base.push(edge(FIRST - 1, ADMIN, hour(0), WRITER, Some(Role::Write), None));
+    base.push(grant(FIRST - 2, ADMIN, hour(0), ADMIN2, Some(Role::Admin), None));
+    base.push(grant(FIRST - 1, ADMIN, hour(0), WRITER, Some(Role::Write), None));
     let n = 2 + r.below(5) as usize;
     let mut events: Vec<Commit> = Vec::new();
     while events.len() < n {
@@ -83,14 +83,14 @@ pub fn world(seed: u64) -> World {
             6 => {
                 // the writer's removal, listing some of its fires so far
                 let fires: Vec<CommitId> = events.iter().filter(|c| c.signer == WRITER && c.parts[0].aspect == EXT && r.chance(50)).map(|c| c.id).collect();
-                events.push(edge(id, r.pick(&[ADMIN, ADMIN2]), ts, WRITER, None, Some(fires)));
+                events.push(grant(id, r.pick(&[ADMIN, ADMIN2]), ts, WRITER, None, Some(fires)));
             }
             _ => {
                 // the admins remove each other about the same time (the second may not fit)
                 let (a, b) = if r.chance(50) { (ADMIN, ADMIN2) } else { (ADMIN2, ADMIN) };
-                events.push(edge(id, a, ts, b, None, Some(vec![])));
+                events.push(grant(id, a, ts, b, None, Some(vec![])));
                 if events.len() < n {
-                    events.push(edge(id + 1, b, ts + r.below(2) * HOUR * MS, a, None, Some(vec![])));
+                    events.push(grant(id + 1, b, ts + r.below(2) * HOUR * MS, a, None, Some(vec![])));
                 }
             }
         }
@@ -104,11 +104,11 @@ pub fn world(seed: u64) -> World {
 /// stands, and so which setting is current, differs by the held set.
 pub fn dispute() -> World {
     let mut base = creations();
-    base.push(edge(FIRST - 2, ADMIN, hour(0), ADMIN2, Some(Role::Admin), None));
-    base.push(edge(FIRST - 1, ADMIN, hour(0), WRITER, Some(Role::Write), None));
+    base.push(grant(FIRST - 2, ADMIN, hour(0), ADMIN2, Some(Role::Admin), None));
+    base.push(grant(FIRST - 1, ADMIN, hour(0), WRITER, Some(Role::Write), None));
     let events = vec![
-        edge(FIRST, ADMIN, hour(5), ADMIN2, None, Some(vec![])),
-        edge(FIRST + 1, ADMIN2, hour(5), ADMIN, None, Some(vec![])),
+        grant(FIRST, ADMIN, hour(5), ADMIN2, None, Some(vec![])),
+        grant(FIRST + 1, ADMIN2, hour(5), ADMIN, None, Some(vec![])),
         setting(FIRST + 2, ADMIN, hour(6), &[EXT], false),
         setting(FIRST + 3, ADMIN2, hour(7), &[], true),
         setting(FIRST + 4, ADMIN, hour(8), &[OTHER], false),

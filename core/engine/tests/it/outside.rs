@@ -39,7 +39,7 @@ fn base_n(n: usize) -> ((LocalPeer, Tid), Vec<Tid>) {
     let mut m = Mutation::new();
     let x = e0.new_thing(&mut m, ps[0]);
     e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let d1 = lp.peers[1].engine.node_root().unwrap();
     let mut m = Mutation::new();
     strong_m(&mut m, d1, x);
@@ -79,7 +79,7 @@ fn a_minting_before_its_authors_grant_waits_whole_across_a_pass_end_spec_commits
     for same_pass in [false, true] {
         let ((mut lp, x), ps) = base_n(3);
         let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-        lp.peers[0].engine.grant(&x, &ps[2], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&x, &ps[2], &crate::flows::grant_of(osis_base::Role::Write)).unwrap();
         let grant: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
         lp.hold_at(2, x);
         lp.sync(0, 2).unwrap();
@@ -168,10 +168,10 @@ fn a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4()
     let w = e0.new_thing(&mut m, ps[0]);
     m.set(w, &reg, &Value::Str("w".into())).unwrap();
     e0.commit(m).unwrap();
-    e0.grant(&w, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&w, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let mut wc: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == w))).collect();
     let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    lp.peers[0].engine.grant(&x, &ps[2], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&x, &ps[2], &crate::flows::grant_of(osis_base::Role::Write)).unwrap();
     let grant: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     lp.hold_at(2, x);
     lp.hold_at(2, w);
@@ -273,7 +273,7 @@ fn waiting_on_w(expiring: bool, aside: bool) -> (LocalPeer, Tid, Tid, CommitId, 
     let w = e0.new_thing(&mut m, ps[0]);
     m.set(w, &ct::RETENTION, &crate::common::test_setting()).unwrap();
     e0.commit(m).unwrap();
-    e0.grant(&w, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&w, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     for c in lp.peers[0].engine.commit_ids() {
         give(&mut lp, &c);
     }

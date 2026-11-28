@@ -366,7 +366,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     // what stands as an own replace: a plain durable commit's whole delta (`Indexes::own_replaces`)
     let own = !snap && crate::retention::snapshot::may_replace_whole(h, &ak);
     let mut whole = false;
-    // edge and creation aspects reach perm instead
+    // grant and creation aspects reach perm instead
     let perm = validity::perm_ak(ak.as_str());
     if !v && !snap && perm {
         return Ok(());
@@ -626,7 +626,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     super::keys::after_join(tx, &h, &parts.whole, &valid, pend)?;
     let flipped = rejudged(tx, held_changed)?;
     let changed = j.changed;
-    let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect() } else { BTreeSet::new() };
+    let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| validity::grant_ak(a.ak.as_str())).map(|a| a.tid).collect() } else { BTreeSet::new() };
     // a roster change may end this node's read access (spec/permissions.md §3): the drop is a
     // value of the state (`Engine::lost_due`); an own self-removal, made here or at a sibling,
     // drops what it lost once sync is done waiting
@@ -802,7 +802,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
-    let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    let grants = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::grant_ak(a.ak.as_str())));
     // a late role-class part may change what perm reads of the commit: its grant writes or the
     // role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
@@ -817,7 +817,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             validity::note_cards(tx.core, &h, &meta.view, id, &held);
         }
     }
-    if edges && meta.view.frontier.is_some() {
+    if grants && meta.view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, id);
     }
     let (held, n) = with_held(tx, &h, id, &parts)?;
@@ -857,8 +857,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if meta.origin == Origin::Remote && h.kind.is_role() {
         crate::sync::held::note_arrival(tx, id, &h)?;
     }
-    if edges {
-        let rosters: BTreeSet<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+    if grants {
+        let rosters: BTreeSet<Tid> = h.aspects.iter().filter(|a| validity::grant_ak(a.ak.as_str())).map(|a| a.tid).collect();
         crate::sync::held::wait_if_own(tx, id, &rosters)?;
         for thing in rosters {
             tx.core.events.queue(Event::Roster { thing });

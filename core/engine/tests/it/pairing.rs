@@ -153,7 +153,7 @@ fn a_node_that_may_rotate_rotates_before_writing_after_its_account_leaves_spec_c
     let n0 = lp.peers[0].engine.tid();
     let t = crate::flows::thing_of(&mut lp, 2, b.thing);
     for h in [a, n0] {
-        lp.peers[2].engine.grant(&t, &h, &crate::flows::edge_of(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&t, &h, &crate::flows::grant_of(Role::Write)).unwrap();
     }
     lp.sync_all().unwrap();
     let before = lp.peers[0].engine.epochs(&t).unwrap().role(Role::Read).current();

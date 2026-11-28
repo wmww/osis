@@ -7,7 +7,7 @@ use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
-use crate::common::edge;
+use crate::common::grant;
 
 fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Option<CommitId> {
     lp.advance(7);
@@ -31,8 +31,8 @@ fn history() -> (LocalPeer, Tid, Ak) {
     m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), day)).unwrap();
     lp.peers[0].commit(m).unwrap();
     let (w, a) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &w, &grant(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&t, &a, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     put(&mut lp, 0, t, &x, "a", 1);
     put(&mut lp, 1, t, &x, "b", 2);
@@ -49,7 +49,7 @@ fn history() -> (LocalPeer, Tid, Ak) {
 fn further(lp: &mut LocalPeer, t: Tid, x: &Ak) -> Vec<Option<CommitId>> {
     let mut ids = vec![put(lp, 0, t, x, "e", 5), put(lp, 2, t, x, "a", 6)];
     let w = lp.peers[1].engine.tid();
-    ids.extend(lp.peers[2].engine.grant(&t, &w, &edge(Role::Read)).unwrap().commits.into_iter().map(Some));
+    ids.extend(lp.peers[2].engine.grant(&t, &w, &grant(Role::Read)).unwrap().commits.into_iter().map(Some));
     lp.sync_all().unwrap();
     if let Some(c) = ids[0] {
         ids.push(lp.peers[0].engine.revert(&c).unwrap());

@@ -88,8 +88,8 @@ fn v(x: &str) -> Option<Value> {
 fn chainless_part_waits_alone_spec_commits_4() {
     let hs = histories();
     let (content, three) = (&hs[0], &hs[2]);
-    let edge = content.base + 1;
-    let (got, pending) = reads(content, &[edge]);
+    let grant = content.base + 1;
+    let (got, pending) = reads(content, &[grant]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "G applied, H's part waits in its pending copy");
     let (got, pending) = reads(content, &[]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "the chain held: 1 only reads H, its write there judged invalid");
@@ -120,11 +120,11 @@ fn role_part_applies_spec_commits_4() {
     let role = &hs[1];
     let g = role.things[0];
     let roster = |p: &mut Peer| seen(role, p).into_iter().find(|(k, _)| *k == format!("thing {g}")).unwrap().1;
-    let edge = role.base + 1;
+    let grant = role.base + 1;
     let before: Vec<usize> = (0..role.packs.len() - 1).collect();
-    let mut was = deliver(role, &before.iter().filter(|i| **i != edge).map(|i| (*i, None)).collect::<Vec<_>>());
+    let mut was = deliver(role, &before.iter().filter(|i| **i != grant).map(|i| (*i, None)).collect::<Vec<_>>());
     let was = roster(&mut was);
-    let order = in_order(role, &[edge]);
+    let order = in_order(role, &[grant]);
     let mut applied = deliver(role, &order);
     let applied = roster(&mut applied);
     assert_ne!(applied, was, "the G part applies");

@@ -5,7 +5,7 @@ use osis_engine::Mutation;
 use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
 use osis_schema::core_types as ct;
-use crate::common::{T0, edge};
+use crate::common::{T0, grant};
 
 fn reg() -> Ak {
     Ak::new("x:a.0").unwrap()
@@ -21,7 +21,7 @@ fn world() -> (LocalPeer, Tid) {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &grant(Role::Write)).unwrap();
         for pk in &lp.packages_for(0, 1).unwrap() {
             lp.deliver(1, pk).unwrap();
         }

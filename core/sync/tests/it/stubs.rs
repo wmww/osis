@@ -6,7 +6,7 @@
 //! redeeming a locator of U, the referrer, so whatever it holds of the rest it found by U.
 
 use crate::harness::history::value_ak;
-use crate::harness::{World, edge};
+use crate::harness::{World, grant};
 use osis_base::{Ak, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::sync::Holding;
@@ -42,9 +42,9 @@ fn refer(w: &mut World, from: Tid, r: Value) {
     });
 }
 
-fn grant(w: &mut World, on: Tid, to: Tid, role: Option<Role>) {
+fn set_role(w: &mut World, on: Tid, to: Tid, role: Option<Role>) {
     match role {
-        Some(r) => drop(w.write(0, |e| e.grant(&on, &to, &edge(r))).unwrap()),
+        Some(r) => drop(w.write(0, |e| e.grant(&on, &to, &grant(r))).unwrap()),
         None => drop(w.write(0, |e| e.demote(&on, &osis_engine::flows::Demotion { holder: to, new: None, retain: None })).unwrap()),
     }
 }
@@ -63,7 +63,7 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
 fn redeemed(arrange: impl FnOnce(&mut World, Tid)) -> (World, Tid) {
     let mut w = crate::harness::contacts();
     let u = make(&mut w, "u");
-    grant(&mut w, u, Tid::PUBLIC, Some(Role::Read));
+    set_role(&mut w, u, Tid::PUBLIC, Some(Role::Read));
     arrange(&mut w, u);
     w.run();
     let link = w.locator(0, u).expect("U is public");
@@ -80,7 +80,7 @@ fn a_public_thing_referenced_is_read_by_the_referrers_reader_spec_sync_set_2() {
     let mut x = Tid::PUBLIC;
     let (mut w, _) = redeemed(|w, u| {
         x = make(w, "x");
-        grant(w, x, Tid::PUBLIC, Some(Role::Read));
+        set_role(w, x, Tid::PUBLIC, Some(Role::Read));
         refer(w, u, Value::Strong(x));
     });
     assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x".into())));
@@ -101,15 +101,15 @@ fn a_two_hop_chain_is_read_by_its_holders_stub_and_ends_at_its_removal_spec_sync
     let (mut w, u) = redeemed(|w, u| {
         x = make(w, "x1");
         r = make(w, "r");
-        grant(w, x, r, Some(Role::Read));
-        grant(w, r, u, Some(Role::Read));
+        set_role(w, x, r, Some(Role::Read));
+        set_role(w, r, u, Some(Role::Read));
         refer(w, u, Value::Strong(x));
     });
     assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x1".into())), "node 1 reads X through R");
     assert_eq!(holding(&mut w, 1, &r), Some(Holding::Stub), "R held as a stub");
     assert!(!w.engine(1).left_closure().contains_key(&r), "R's stub stays, U's unit carrying it");
     assert_eq!(reads(&mut w, 1, &r), None, "none of R's content");
-    grant(&mut w, r, u, None);
+    set_role(&mut w, r, u, None);
     set(&mut w, x, "x2");
     w.run();
     assert_ne!(reads(&mut w, 1, &x), Some(Value::Str("x2".into())), "nothing of X written since");
@@ -129,9 +129,9 @@ fn a_three_hop_chain_is_read_by_its_far_holders_stub_spec_sync_set_2() {
         x = make(w, "x");
         let r1 = make(w, "r1");
         r2 = make(w, "r2");
-        grant(w, x, r1, Some(Role::Read));
-        grant(w, r1, r2, Some(Role::Read));
-        grant(w, r2, u, Some(Role::Read));
+        set_role(w, x, r1, Some(Role::Read));
+        set_role(w, r1, r2, Some(Role::Read));
+        set_role(w, r2, u, Some(Role::Read));
         refer(w, u, Value::Strong(x));
     });
     assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x".into())), "node 1 reads X through R1 and R2");
@@ -148,9 +148,9 @@ fn a_holder_on_no_chain_is_no_stub_spec_sync_set_2() {
     let (mut w, _) = redeemed(|w, u| {
         x = make(w, "x");
         h = make(w, "h");
-        grant(w, x, u, Some(Role::Read));
-        grant(w, x, h, Some(Role::Sync));
-        grant(w, h, u, Some(Role::Read));
+        set_role(w, x, u, Some(Role::Read));
+        set_role(w, x, h, Some(Role::Sync));
+        set_role(w, h, u, Some(Role::Read));
         refer(w, u, Value::Strong(x));
     });
     assert_eq!(reads(&mut w, 1, &x), Some(Value::Str("x".into())), "node 1 reads X");
@@ -167,14 +167,14 @@ fn a_weak_brings_a_stub_kept_current_spec_sync_set_2() {
     let (mut w, _) = redeemed(|w, u| {
         x = make(w, "x");
         z = make(w, "z");
-        grant(w, x, u, Some(Role::Read));
-        grant(w, x, z, Some(Role::Write));
+        set_role(w, x, u, Some(Role::Read));
+        set_role(w, x, z, Some(Role::Write));
         refer(w, u, Value::Weak(x));
     });
     assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "X held as a stub");
     assert!(w.engine(1).roster(&x).contains_key(&z), "its role entries");
     assert_eq!(reads(&mut w, 1, &x), None, "none of its content");
-    grant(&mut w, x, z, None);
+    set_role(&mut w, x, z, None);
     w.run();
     assert!(!w.engine(1).roster(&x).contains_key(&z), "X's removal of Z reached node 1");
     assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "still a stub");
@@ -199,7 +199,7 @@ fn a_weak_in_held_history_brings_a_stub_spec_data_model_8() {
     let mut x = Tid::PUBLIC;
     let (mut w, u) = redeemed(|w, u| {
         x = make(w, "x");
-        grant(w, x, u, Some(Role::Read));
+        set_role(w, x, u, Some(Role::Read));
         put(w, u, setting(true));
         refer(w, u, Value::Weak(x));
         refer(w, u, Value::Str("no reference".into()));
@@ -219,7 +219,7 @@ fn a_reference_at_sync_keeps_the_thing_unread_spec_sync_set_2() {
     let mut x = Tid::PUBLIC;
     let (mut w, _) = redeemed(|w, u| {
         x = make(w, "x");
-        grant(w, x, u, Some(Role::Sync));
+        set_role(w, x, u, Some(Role::Sync));
         refer(w, u, Value::Strong(x));
     });
     assert_eq!(holding(&mut w, 1, &x), Some(Holding::Unread), "X kept unread");
@@ -235,7 +235,7 @@ fn an_unsignalled_grant_holds_nothing_spec_sync_set_2() {
     let mut x = Tid::PUBLIC;
     let (mut w, _) = redeemed(|w, _| x = make(w, "x"));
     let b = w.node(1).account.expect("an account");
-    grant(&mut w, x, b, Some(Role::Read));
+    set_role(&mut w, x, b, Some(Role::Read));
     w.write(1, |e| e.hold(osis_base::Strong(x))).unwrap();
     w.run();
     assert_eq!(reads(&mut w, 1, &x), None, "nothing of X");
@@ -254,9 +254,9 @@ fn a_chain_hop_only_evidence_shows_is_no_chain_spec_sync_set_2() {
     let mut w = crate::harness::contacts();
     let a = w.node(1).account.expect("an account");
     let h0 = make(&mut w, "h0");
-    let tell = |w: &mut World, t: Tid, to: Tid, r: Role| w.write(0, |e| e.grant(&t, &to, &edge(r)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
+    let tell = |w: &mut World, t: Tid, to: Tid, r: Role| w.write(0, |e| e.grant(&t, &to, &grant(r)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
     tell(&mut w, h0, a, Role::Sync);
-    grant(&mut w, h0, Tid::PUBLIC, Some(Role::Read));
+    set_role(&mut w, h0, Tid::PUBLIC, Some(Role::Read));
     let made_in = |w: &mut World, v: &str| {
         w.write(0, |e| {
             let mut m = Mutation::new();
@@ -269,7 +269,7 @@ fn a_chain_hop_only_evidence_shows_is_no_chain_spec_sync_set_2() {
     };
     let (h2, x) = (made_in(&mut w, "h2"), made_in(&mut w, "x"));
     tell(&mut w, x, a, Role::Sync);
-    grant(&mut w, x, h2, Some(Role::Sync));
+    set_role(&mut w, x, h2, Some(Role::Sync));
     w.run();
     assert_eq!(holding(&mut w, 1, &x), Some(Holding::Stub), "X a stub, by its signal");
     assert_eq!(holding(&mut w, 1, &h2), None, "nothing of H2");

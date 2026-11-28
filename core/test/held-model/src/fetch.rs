@@ -5,7 +5,7 @@
 //! A part or commit that cannot be judged is discarded (`act`); before that, boxes opening with
 //! the node's own key are read: reading-only keys, sourced from the commit, that open further
 //! sync IDs. They go when the commit's last part applies (a valid grant's key stays) or it is judged
-//! bad. Parts are re-fetched when a record or edge arrives, modelled as whole passes over the
+//! bad. Parts are re-fetched when a record or grant arrives, modelled as whole passes over the
 //! entries until nothing changes: a pass refetches only what is not held.
 
 use crate::model::{act, evaluate};
@@ -105,7 +105,7 @@ pub fn settle(lib: &Library, order: &mut dyn FnMut(&mut Vec<(SyncId, CommitId)>)
             held = act(&held, &o, None);
             settle_reading(&held, &o, &mut reading, id);
         }
-        // every held fate carried out (records and edges changed: discards wake)
+        // every held fate carried out (records and grants changed: discards wake)
         let o = evaluate(&held);
         held = act(&held, &o, None);
         for id in reading.keys().copied().collect::<Vec<_>>() {

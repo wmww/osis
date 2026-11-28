@@ -172,7 +172,7 @@ fn may_hold(core: &Core, a: &Tid) -> bool {
 pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
     may_hold(core, a) || {
         let chain = core.record_chain(a).filter_map(|s| s.thing());
-        let holders = core.edge_holders(a).into_iter().map(|(m, _)| m).filter(|m| core.role_now(m, a).is_some());
+        let holders = core.grant_holders(a).into_iter().map(|(m, _)| m).filter(|m| core.role_now(m, a).is_some());
         chain.chain(holders).any(|k| contested(core, &k))
     }
 }
@@ -196,7 +196,7 @@ fn over_held(core: &Core, a: &Tid) -> bool {
 }
 
 /// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
-/// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
+/// walked with every grant's time ahead and every finalize undone (it counts as the `until` it
 /// finalizes, spec/permissions.md §2), a role giving what it holds is there. A removal saying
 /// its own retain is written with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
@@ -224,9 +224,9 @@ fn ours(core: &Core, m: &Tid) -> bool {
     *m == core.tid() || core.link_keys.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
-/// Whether an edge of holder `h` that ended or lowered was one of the node's ways: `h` is an own
+/// Whether a grant of holder `h` that ended or lowered was one of the node's ways: `h` is an own
 /// thing, or one an own thing reads by the grants held. Read without `grants_count`: a holder is
-/// found from the thing its edge names up, so once that edge ended nothing finds it, its own
+/// found from the thing its grant names up, so once that grant ended nothing finds it, its own
 /// secrets go, and the loss it brings would be seen by no rule that asks whether it still counts.
 fn was_ours(core: &Core, h: &Tid) -> bool {
     let own = own_things(core);
@@ -335,7 +335,7 @@ fn judge(core: &Core, cands: Vec<Tid>) -> Vec<Tid> {
 }
 
 /// This node's own self-removals (`departures_with_own`) from `a` or from an actor holding a role
-/// on it, transitively over the edges (`edge_holders`: a destroyed actor it left before the destruction
+/// on it, transitively over the grants (`grant_holders`: a destroyed actor it left before the destruction
 /// included): what made it lose `a` (a node that left a holder actor loses what that actor reads).
 fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>> {
     let mut out = BTreeSet::new();
@@ -343,7 +343,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
     let mut work = vec![*a];
     while let Some(t) = work.pop() {
         out.extend(super::departures_with_own(tx, &t)?.into_iter().filter_map(|(_, c)| c));
-        for (m, _) in tx.core.edge_holders(&t) {
+        for (m, _) in tx.core.grant_holders(&t) {
             if seen.insert(m) {
                 work.push(m);
             }
@@ -353,11 +353,11 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
 }
 
 /// Whether `k` is a thing where a held single-use redemption granting one of ours stands void
-/// only because an applied redemption by the same signer removed the signer's edge first, with
-/// no explicit write on that edge since: a link race the sharer has not finalized
+/// only because an applied redemption by the same signer removed the signer's grant first, with
+/// no explicit write on that grant since: a link race the sharer has not finalized
 /// (spec/permissions.md §3, §7). The finalization may drop the competing redemption and make
 /// ours stand, so until it arrives the loser keeps the secrets (and with them follows the
-/// sync IDs) it would get back. A redemption is a commit removing its signer's own edge on `k`
+/// sync IDs) it would get back. A redemption is a commit removing its signer's own grant on `k`
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines().get(k) else { return false };
@@ -365,13 +365,13 @@ fn contested(core: &Core, k: &Tid) -> bool {
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::RoleCommit| {
         let signer = osis_base::Holder::Thing(mc.signer);
-        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == signer && o.edge.is_none())?;
-        mc.ops.iter().any(|o| o.target == *k && o.holder != signer && o.edge.is_some()).then_some(j)
+        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == signer && o.grant.is_none())?;
+        mc.ops.iter().any(|o| o.target == *k && o.holder != signer && o.grant.is_some()).then_some(j)
     };
     let reds: Vec<_> = core.on_thing(k).filter_map(|c| tl.role_commit(&c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
         tl.lowered_unaudited(&mc.signer, k)
-            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && o.holder.thing().is_some_and(|h| ours(core, &h)) && !tl.is_applied(&op(mc, i)))
+            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.grant.is_some() && o.holder.thing().is_some_and(|h| ours(core, &h)) && !tl.is_applied(&op(mc, i)))
             && reds.iter().any(|(w, jw)| w.signer == mc.signer && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }
@@ -380,7 +380,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
 #[derive(Clone, Copy)]
 struct Way {
     /// The grant had key access as it last stood for keys, its holder is not destroyed, and it
-    /// is alive (an edge, a record grant included, from a holder that is itself kept) or ended by
+    /// is alive (a grant, a record grant included, from a holder that is itself kept) or ended by
     /// a removal saying retain or by its `until` passing on a grant written to retain.
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
@@ -410,7 +410,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
             w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (retain, end, _))| (h, Way { retain: retain && keyed(&h, end), end })));
         }
         // the roster now at read or above (a grant of sync reads nothing to keep), its record
-        // edge included while it stands
+        // grant included while it stands
         w.extend(core.current_holders(a).into_iter().filter(|(_, r, _)| *r >= Role::Read).map(|(h, _, _)| (h, Way { retain: !skip.contains(&(*a, h)), end: None })));
     }
     out
@@ -419,7 +419,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Retain), each
 /// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, reads
 /// H, keeps H, or holds H's secrets not dropped in this judging) and the way through H is one that keeps; a holder already recorded goes
-/// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
+/// only on the timeline's word: the grant's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
     let me = core.tid();
@@ -579,13 +579,13 @@ pub enum LostScope<'a> {
 }
 
 /// The actors whose roles reach `a` (`reaches`): `a`, its record chain, and the holders of an
-/// edge on any of them, transitively: where a role commit that took `a` from
+/// grant on any of them, transitively: where a role commit that took `a` from
 /// this node was written.
 fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
     let mut seen = BTreeSet::from([*a]);
     let mut work = vec![*a];
     while let Some(t) = work.pop() {
-        let up = core.record_chain(&t).filter_map(|s| s.thing()).chain(core.edge_holders(&t).into_iter().map(|(m, _)| m));
+        let up = core.record_chain(&t).filter_map(|s| s.thing()).chain(core.grant_holders(&t).into_iter().map(|(m, _)| m));
         for m in up.collect::<Vec<_>>() {
             if seen.insert(m) {
                 work.push(m);
@@ -596,7 +596,7 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
-/// lost read access): an edge of it, a held link key, a thing it reads or the public (every
+/// lost read access): a grant of it, a held link key, a thing it reads or the public (every
 /// party's, so this node's too: spec/permissions.md §1) ended or lowered on an actor whose roles
 /// reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
 /// its role commits show it a role on `a` (`role_here`: they show what it may hold).
@@ -605,7 +605,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
-    // an edge of ours or the public's ended, or lowered (to sync: it stays alive) on an actor
+    // a grant of ours or the public's ended, or lowered (to sync: it stays alive) on an actor
     // reaching `a`
     stale || role_here(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| *h == Tid::PUBLIC || was_ours(core, h))))
 }
@@ -914,7 +914,7 @@ pub(crate) fn explain_due(tx: &mut Tx<'_>, a: &Tid) -> Result<String> {
         (true, _) => "; DUE (sync drops it once a complete pass after the cause ends: `lost_passed`)".to_string(),
         (false, true) => "; not due: lost by an until alone, left to sync (`lost_timed`)".to_string(),
         (false, false) if !over => "; not due: its roles cover every secret held".to_string(),
-        (false, false) if !seen => "; not due: nothing held says it lost it (no ended or lowered edge of ours reaching it, no role shown)".to_string(),
+        (false, false) if !seen => "; not due: nothing held says it lost it (no ended or lowered grant of ours reaching it, no role shown)".to_string(),
         (false, false) if !lost => "; not due: kept (above)".to_string(),
         (false, false) => "; not due: an own self-removal behind it waits for sync (`removal_done`)".to_string(),
     });

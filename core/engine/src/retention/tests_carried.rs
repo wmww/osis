@@ -105,10 +105,10 @@ fn a_wider_fact_never_covers_spec_commits_5() {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
         for (i, role) in [(1, Role::Write), (2, Role::Read), (3, Role::Write)] {
             let who = me(&lp, i);
-            lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap();
+            lp.peers[0].engine.grant(&t, &who, &grant(role)).unwrap();
         }
         lp.sync_all().unwrap();
         lp.advance(60_000);
@@ -408,10 +408,10 @@ fn written_as_x(lp: &mut LocalPeer, t: Tid) -> (Tid, CommitId, CommitId) {
     let x = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(x);
-    let edge = ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
+    let grant = ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
     let w = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&x, &w, &edge).unwrap();
-    lp.peers[0].engine.grant(&t, &x, &edge).unwrap();
+    lp.peers[0].engine.grant(&x, &w, &grant).unwrap();
+    lp.peers[0].engine.grant(&t, &x, &grant).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let mut m = Mutation::new();

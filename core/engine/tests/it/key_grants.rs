@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Key grants (spec/permissions.md §1 Key grant, Key hop; §2 Key grants; spec/wire.md §4 field
 //! 1): a key granted on a thing signs as it, the header naming the key in its second form, and
-//! the walk rests what it signs on that grant as on any edge.
+//! the walk rests what it signs on that grant as on any grant.
 
 use crate::common::*;
-use crate::flows::{edge_of, people, spread, thing_of};
+use crate::flows::{grant_of, people, spread, thing_of};
 use osis_base::{Role, SignKey, Tid};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -30,9 +30,9 @@ fn write_as(lp: &mut LocalPeer, t: Tid, v: &str) -> osis_base::CommitId {
 fn granted() -> (LocalPeer, Tid, SignKey) {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     let k = key_of(&lp, 1);
-    lp.peers[0].engine.grant_key(&t, &k, Some(&edge_of(Role::Write))).unwrap();
+    lp.peers[0].engine.grant_key(&t, &k, Some(&grant_of(Role::Write))).unwrap();
     lp.advance(1000);
     spread(&mut lp);
     (lp, t, k)
@@ -85,9 +85,9 @@ fn a_keys_removed_grant_holds_up_only_what_its_remover_received_spec_permissions
 fn a_key_granted_read_writes_nothing_spec_permissions_1() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     let k = key_of(&lp, 1);
-    lp.peers[0].engine.grant_key(&t, &k, Some(&edge_of(Role::Read))).unwrap();
+    lp.peers[0].engine.grant_key(&t, &k, Some(&grant_of(Role::Read))).unwrap();
     lp.advance(1000);
     spread(&mut lp);
     // a read grant: the key signs as T, but what it writes there needs write (a writer past
@@ -108,10 +108,10 @@ fn a_key_granted_read_writes_nothing_spec_permissions_1() {
 fn only_an_admin_grants_a_key_spec_permissions_2() {
     let (mut lp, t, k) = granted();
     let other = SignKey([9; 32]);
-    let e = lp.peers[1].engine.grant_key(&t, &other, Some(&edge_of(Role::Read)));
+    let e = lp.peers[1].engine.grant_key(&t, &other, Some(&grant_of(Role::Read)));
     assert!(matches!(e, Err(osis_engine::Error::Permission { .. })), "{e:?}");
     // a key's grant carries nothing a key cannot hold
-    let e = lp.peers[0].engine.grant_key(&t, &k, Some(&osis_schema::core_types::Grant { floor: Some(1), ..edge_of(Role::Read) }));
+    let e = lp.peers[0].engine.grant_key(&t, &k, Some(&osis_schema::core_types::Grant { floor: Some(1), ..grant_of(Role::Read) }));
     assert!(matches!(e, Err(osis_engine::Error::Misuse(_))), "{e:?}");
 }
 
@@ -122,7 +122,7 @@ fn only_an_admin_grants_a_key_spec_permissions_2() {
 fn a_header_naming_a_key_it_was_not_signed_by_is_refused_spec_wire_4() {
     let (mut lp, t, k) = granted();
     let admin_key = SignKey([7; 32]);
-    lp.peers[0].engine.grant_key(&t, &admin_key, Some(&edge_of(Role::Admin))).unwrap();
+    lp.peers[0].engine.grant_key(&t, &admin_key, Some(&grant_of(Role::Admin))).unwrap();
     lp.advance(1000);
     spread(&mut lp);
     let c = write_as(&mut lp, t, "by key");
@@ -142,12 +142,12 @@ fn a_header_naming_a_key_it_was_not_signed_by_is_refused_spec_wire_4() {
 fn a_key_grant_holding_a_floor_grants_nothing_spec_data_model_9() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     lp.advance(1000);
     spread(&mut lp);
     let k = key_of(&lp, 1);
     let mut m = Mutation::new();
-    let e = osis_schema::core_types::Grant { floor: Some(1), ..edge_of(Role::Write) };
+    let e = osis_schema::core_types::Grant { floor: Some(1), ..grant_of(Role::Write) };
     m.op(t, &osis_schema::core_types::SIGNERS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k.to_value())], op: osis_crdt::Op::Put(osis_schema::Codec::to_value(&e)) }).unwrap();
     let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -169,9 +169,9 @@ fn a_key_hops_grant_is_evidence_of_what_the_key_signs_spec_permissions_4() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     let d = thing_of(&mut lp, 0, t);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     let k = key_of(&lp, 1);
-    let grant = lp.peers[0].engine.grant_key(&t, &k, Some(&edge_of(Role::Write))).unwrap().commits[0];
+    let grant = lp.peers[0].engine.grant_key(&t, &k, Some(&grant_of(Role::Write))).unwrap().commits[0];
     lp.advance(1000);
     spread(&mut lp);
     let mut m = Mutation::new();

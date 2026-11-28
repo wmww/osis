@@ -476,9 +476,9 @@ fn a_fork_settles_with_each_sides_card_spec_sync_inbox_1() {
     lp.peers[2].commit(m).unwrap();
     lp.peers[2].engine.make_independent(&t).unwrap();
     lp.hold(t);
-    let edge = crate::flows::edge_of;
+    let grant = crate::flows::grant_of;
     for (p, r) in [(a, Role::Admin), (b, Role::Admin), (ps[3], Role::Write), (ps[4], Role::Write)] {
-        lp.peers[2].engine.grant(&t, &p, &edge(r)).unwrap();
+        lp.peers[2].engine.grant(&t, &p, &grant(r)).unwrap();
     }
     let mut m = Mutation::new();
     let child = lp.peers[2].engine.new_thing(&mut m, t);
@@ -507,7 +507,7 @@ fn a_fork_settles_with_each_sides_card_spec_sync_inbox_1() {
     // write keyset after that
     lp.advance(10_000);
     lp.peers[0].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
-    lp.peers[1].engine.grant(&t, &ps[5], &edge(Role::Write)).unwrap();
+    lp.peers[1].engine.grant(&t, &ps[5], &grant(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1000);
     lp.peers[5].engine.rotate_leaving_out(&t, &[Role::Write], &[]).unwrap().unwrap();
@@ -540,7 +540,7 @@ fn a_demoted_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
     lp.hold(t);
     let i1 = thing(&mut lp, 0, c, true);
     lp.peers[0].engine.set_inbox(t, i1).unwrap();
-    let g = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.grant(&t, &d, &crate::flows::edge_of(Role::Admin)).unwrap()));
+    let g = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.grant(&t, &d, &crate::flows::grant_of(Role::Admin)).unwrap()));
     let mut m = Mutation::new();
     let host = lp.peers[0].engine.new_thing(&mut m, t);
     lp.peers[0].commit(m).unwrap();
@@ -552,7 +552,7 @@ fn a_demoted_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
     let mut keys = lp.peers[1].engine.holder_keys(&t).unwrap();
     let mut was = lp.peers[1].copy().unwrap();
     lp.advance(1000);
-    let dm = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: d, new: Some(crate::flows::edge_of(Role::Write)), retain: None }).unwrap()));
+    let dm = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: d, new: Some(crate::flows::grant_of(Role::Write)), retain: None }).unwrap()));
     settle(&mut lp);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write), "premise: D demoted");
     // D's own move of the inbox, signed against the keys it held as admin, stamped after its

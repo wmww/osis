@@ -8,8 +8,8 @@ use Role::{Admin, None as Gone, Write};
 /// A with H (mint), X and B paired by H at 1.
 fn paired() -> (World, Id, Id) {
     let mut w = account();
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let gx = w.grant(H, 1, &[], A, X, Admin, &[]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
     (w, gx, gb)
 }
 
@@ -33,7 +33,7 @@ fn a_write_the_remover_or_a_writer_received_shows_a_later_one_does_not() {
     let witnessed = w.content(X, 4, &[A], T1);
     let unseen = w.content(X, 4, &[A, ORG], T2);
     let backdated = w.content(X, 5, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[listed]);
     let ad = w.addendum(B, 7, &[A], T1, r, &[witnessed]);
     let after = w.content(X, 8, &[A], T1);
     let honest = w.content(B, 8, &[A, ORG], T2);
@@ -50,9 +50,9 @@ fn a_write_the_remover_or_a_writer_received_shows_a_later_one_does_not() {
 #[test]
 fn a_write_on_a_cut_path_never_shows_by_another_path_its_signer_holds() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let cut = w.content(X, 8, &[A], T1);
     let other = w.content(X, 8, &[A2], T1);
     let never = w.content(X, 8, &[ORG], T1);
@@ -61,7 +61,7 @@ fn a_write_on_a_cut_path_never_shows_by_another_path_its_signer_holds() {
     assert_eq!(rd.valid, Set::from([other]));
     assert!(![cut, never, twice].iter().any(|i| rd.shows(*i)));
     // K removes X from A2: that path's own removal judges the writes through it
-    let r2 = w.edge(K, 9, &[], A2, X, Gone, &[other]);
+    let r2 = w.grant(K, 9, &[], A2, X, Gone, &[other]);
     let back = w.content(X, 7, &[A2], T1);
     let late = w.content(X, 10, &[A2], T1);
     let rd = design(&w, &[r, r2]);
@@ -72,10 +72,10 @@ fn a_write_on_a_cut_path_never_shows_by_another_path_its_signer_holds() {
 #[test]
 fn a_made_up_key_holds_nothing_where_the_removal_is_trusted() {
     let (mut w, gx, _) = paired();
-    let gz = w.edge(X, 2, &[], A, Z, Admin, &[]);
-    let rz = w.edge(Z, 3, &[], A, H, Gone, &[gx]);
+    let gz = w.grant(X, 2, &[], A, Z, Admin, &[]);
+    let rz = w.grant(Z, 3, &[], A, H, Gone, &[gx]);
     let zc = w.content(Z, 4, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let hc = w.content(H, 8, &[A], T1);
     // the walk alone sides with the earlier stamp: the thief's
     let plain = design(&w, &[]);
@@ -94,7 +94,7 @@ fn a_made_up_key_holds_nothing_where_the_removal_is_trusted() {
 #[test]
 fn a_removal_logged_only_where_the_node_wrote_leaves_a_window() {
     let (mut w, gx, _) = paired();
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let first = w.content(X, 8, &[A, ORG], T2);
     // T2's unit at a source that never held A: X's write and the grant riding with it
     let source = Set::from([first, gx]);
@@ -109,9 +109,9 @@ fn a_removal_logged_only_where_the_node_wrote_leaves_a_window() {
 /// X shares T1 with A2; K writes; H, who does not sync T1, removes X.
 fn shared_by_x() -> (World, Id, Id, Id, Id) {
     let (mut w, ..) = paired();
-    let gs = w.edge(X, 2, &[A], T1, A2, Write, &[]);
+    let gs = w.grant(X, 2, &[A], T1, A2, Write, &[]);
     let kc = w.content(K, 3, &[A2], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let later = w.content(K, 8, &[A2], T1);
     (w, gs, kc, r, later)
 }
@@ -119,9 +119,9 @@ fn shared_by_x() -> (World, Id, Id, Id, Id) {
 /// B shares T1 with A2, X removes A2 again, K writes on; H, who does not sync T1, removes X.
 fn unshared_by_x() -> (World, Id, Id, Id) {
     let (mut w, ..) = paired();
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let out = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let out = w.grant(X, 3, &[A], T1, A2, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let kc = w.content(K, 8, &[A2], T1);
     (w, out, r, kc)
 }
@@ -157,10 +157,10 @@ fn a_removal_the_removed_party_made_stands_only_where_listed() {
 /// N5 again.
 fn collateral() -> (World, Id, Id, Id) {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
     let week = w.content(N5, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    w.grant(H, 8, &[], A, N5, Admin, &[]);
     let after = w.content(N5, 9, &[A], T1);
     (w, week, r, after)
 }
@@ -186,9 +186,9 @@ fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
 #[test]
 fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     let (mut w, ..) = paired();
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(X, 2, &[A], T1, A2, Write, &[]);
-    w.edge(B, 7, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    w.grant(X, 2, &[A], T1, A2, Write, &[]);
+    w.grant(B, 7, &[A], T1, A2, Write, &[]);
     let early = w.content(K, 4, &[A2], T1);
     assert!(!design(&w, &[r]).shows(early));
     assert!(with(&w, &[r], |x| x.regrant = Regrant::FirstByRight).valid.contains(&early));
@@ -200,11 +200,11 @@ fn a_backdated_grant_moves_a_current_holders_first_point_back() {
 #[ignore = "notes/path-model-findings.md: a re-granted writer's addendum vouches for nothing"]
 fn repro_a_re_granted_writers_addendum_vouches() {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
     let xc = w.content(X, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let ad = w.addendum(N5, 7, &[A], T1, r, &[xc]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    w.grant(H, 8, &[], A, N5, Admin, &[]);
     let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstByRight);
     assert!(rd.valid.contains(&ad));
     assert!(rd.valid.contains(&xc), "N5 received X's write before the removal");
@@ -216,9 +216,9 @@ fn repro_a_re_granted_writers_addendum_vouches() {
 /// removal logged there and the evidence.
 fn reader_of_t1() -> (World, View, Id) {
     let (mut w, ..) = paired();
-    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
+    let g5 = w.grant(X, 2, &[], A, N5, Admin, &[]);
     let c = w.content(N5, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[g5]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[g5]);
     w.content(N5, 8, &[A], T1);
     let all = View::all(&w).held;
     let unit: Set = all.iter().copied().filter(|&i| w.commits[i].on == T1 || i == r).collect();
@@ -249,8 +249,8 @@ fn a_reader_with_the_leaves_of_its_evidence_reads_as_a_member() {
 /// X backdates its removal of H (keeping itself and B); H removes X.
 fn fight() -> (World, Id, Id) {
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     (w, rx, r)
 }
 
@@ -280,14 +280,14 @@ fn a_switch_takes() {
 #[ignore = "notes/path-model-findings.md: a node paired after a backdated fight takes the walk's side and is no member at itself"]
 fn repro_a_node_paired_after_a_fight_is_a_member_at_itself() {
     let (mut w, _, _) = fight();
-    w.edge(H, 8, &[], A, N6, Admin, &[]);
+    w.grant(H, 8, &[], A, N6, Admin, &[]);
     assert_eq!(design(&w, &[]).role(N6, A), Admin);
 }
 
 #[test]
 fn a_node_paired_with_its_pairers_trust_entries_is_a_member_at_itself() {
     let (mut w, _, r) = fight();
-    w.edge(H, 8, &[], A, N6, Admin, &[]);
+    w.grant(H, 8, &[], A, N6, Admin, &[]);
     let c = w.content(N6, 9, &[A], T1);
     let rd = design(&w, &[r]);
     assert!(rd.role(N6, A) == Admin && rd.valid.contains(&c));
@@ -298,10 +298,10 @@ fn a_node_paired_with_its_pairers_trust_entries_is_a_member_at_itself() {
 #[ignore = "notes/path-model-findings.md: a frontier listing everything received blesses the thief's removal of the remover"]
 fn repro_a_removal_listing_all_it_received_applies() {
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
     let f = w.through((X, A), |_| true);
     assert_eq!(f, vec![rx]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &f);
+    let r = w.grant(H, 6, &[], A, X, Gone, &f);
     let rd = design(&w, &[r]);
     assert!(rd.void.is_empty() && rd.role(X, A) == Gone, "{rd:?}");
 }
@@ -316,7 +316,7 @@ fn a_removal_leaving_out_the_removals_it_contests_applies() {
 /// X's removal of H lists nothing, its own grant included (X holds admin by H's grant).
 fn self_voiding() -> (World, Id, Id) {
     let (mut w, _, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[]);
     (w, gb, rx)
 }
 
@@ -340,9 +340,9 @@ fn nothing_raises_a_dispute_over_a_removal_that_voids_itself() {
 #[test]
 fn two_nodes_removing_each_other_never_leave_no_admin() {
     let mut w = account();
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let rh = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let rx = w.edge(X, 6, &[], A, H, Gone, &[gx]);
+    let gx = w.grant(H, 1, &[], A, X, Admin, &[]);
+    let rh = w.grant(H, 6, &[], A, X, Gone, &[]);
+    let rx = w.grant(X, 6, &[], A, H, Gone, &[gx]);
     let admins = |rd: &Reading| rd.roles.iter().filter(|(e, r)| e.1 == A && **r == Admin).count();
     for held in 0..8u32 {
         for trust in 0..4u32 {
@@ -366,9 +366,9 @@ fn two_nodes_removing_each_other_never_leave_no_admin() {
 /// for it itself.
 fn own_addendum() -> (World, Id, Id) {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let back = w.content(X, 4, &[A], T1);
     w.addendum(X, 7, &[A2], T1, r, &[back]);
     (w, r, back)
@@ -455,10 +455,10 @@ fn fixed_but(w: &World, trust: &[Id], f: impl Fn(&mut Rules)) -> Reading {
 #[test]
 fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
     let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.grant(X, 2, &[], A, N5, Gone, &[g5]);
+    let junk = w.grant(N5, 3, &[], A, H, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out]);
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.contains(&out) && !rd.shows(junk) && rd.role(N5, A) == Gone && rd.void.is_empty());
 }
@@ -473,11 +473,11 @@ fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
 #[test]
 fn a_removal_the_remover_did_not_hold_is_undone() {
     let (mut w, gx, gb) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let down = w.edge(N5, 2, &[], A, B, Gone, &[gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[gx]);
-    let gz = w.edge(N5, 7, &[], A, Z, Admin, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out5 = w.grant(X, 3, &[], A, N5, Gone, &[g5]);
+    let down = w.grant(N5, 2, &[], A, B, Gone, &[gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[gx]);
+    let gz = w.grant(N5, 7, &[], A, Z, Admin, &[]);
     for (t, b) in [(&[][..], Admin), (&[r], Gone)] {
         let rd = fixed(&w, t);
         assert!(!rd.applied.contains(&out5) && rd.applied.contains(&gz) && rd.applied.contains(&down) == (b == Gone), "{t:?}: {rd:?}");
@@ -490,10 +490,10 @@ fn a_removal_the_remover_did_not_hold_is_undone() {
 #[test]
 fn a_lowering_the_removed_node_made_before_stays_made_only_where_listed() {
     let (mut w, _, gb) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.grant(X, 2, &[], A, N5, Gone, &[g5]);
+    let down = w.grant(X, 3, &[], A, B, Write, &[gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out]);
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.contains(&out) && !rd.applied.contains(&down) && rd.role(N5, A) == Gone && rd.role(B, A) == Admin);
 }
@@ -505,11 +505,11 @@ fn a_lowering_the_removed_node_made_before_stays_made_only_where_listed() {
 #[test]
 fn a_re_granted_writers_later_addendum_vouches() {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
     let xc = w.content(X, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.addendum(N5, 7, &[A], T1, r, &[xc]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    w.grant(H, 8, &[], A, N5, Admin, &[]);
     assert!(!fixed(&w, &[r]).valid.contains(&xc));
     w.addendum(N5, 9, &[A], T1, r, &[xc]);
     assert!(fixed(&w, &[r]).valid.contains(&xc));
@@ -518,31 +518,31 @@ fn a_re_granted_writers_later_addendum_vouches() {
 // ---- Nothing is exempt (finding 15) ----
 
 /// X backdates a grant of admin to a key it made up, Z, and Z a grant of admin to H (H is admin
-/// already): Z's grant sets an edge of H's removal's path, so X's grant of Z is what "such a write's
+/// already): Z's grant sets a grant of H's removal's path, so X's grant of Z is what "such a write's
 /// own path rests on", put in question by nothing, and Z stays admin wherever H's removal is
 /// trusted under the control exempting a removal's chain (`exempt_chain`, finding 15). Nothing is
-/// exempt: X's grant of Z is an unlisted write through the removed edge.
+/// exempt: X's grant of Z is an unlisted write through the removed grant.
 #[test]
 fn a_made_up_key_regranting_the_remover_holds_nothing() {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, Z, Admin, &[]);
-    w.edge(Z, 3, &[], A, H, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(X, 2, &[], A, Z, Admin, &[]);
+    w.grant(Z, 3, &[], A, H, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let zc = w.content(Z, 8, &[A], T1);
     let rd = fixed(&w, &[r]);
     assert!(rd.role(Z, A) == Gone && !rd.valid.contains(&zc), "{rd:?}");
 }
 
-/// X backdates a grant of admin until 7 to H, the remover: it sets an edge of H's removal's path,
-/// so the removal never puts it in question. H's edge is then timed, so the removal (naming no
+/// X backdates a grant of admin until 7 to H, the remover: it sets a grant of H's removal's path,
+/// so the removal never puts it in question. H's grant is then timed, so the removal (naming no
 /// other admin) is refused and, trusted, void: X keeps A and H loses it at 7 (finding 15, under
 /// `exempt_chain`). Nothing is exempt: the timed grant falls like any unlisted write.
 #[test]
 fn a_backdated_timed_grant_to_the_remover_changes_nothing() {
     let (mut w, ..) = paired();
-    let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
+    let tg = w.grant(X, 2, &[], A, H, Admin, &[]);
     w.set_until(tg, 7);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && rd.role(X, A) == Gone && rd.role(H, A) == Admin, "{rd:?}");
 }
@@ -550,14 +550,14 @@ fn a_backdated_timed_grant_to_the_remover_changes_nothing() {
 // ---- A removal is judged in the world its list makes (notes/write-path-design.md §1) ----
 
 /// Finding 15's two worlds: nothing is exempt, so the thief's grant of a made-up key and its
-/// timed grant to the remover are unlisted writes through the removed edge, dropped like any.
+/// timed grant to the remover are unlisted writes through the removed grant, dropped like any.
 /// Control: the grants the removal's path rests on, read from the held writes, exempt.
 #[test]
-fn nothing_through_the_removed_edge_is_exempt() {
+fn nothing_through_the_removed_grant_is_exempt() {
     let (mut w, ..) = paired();
-    let gz = w.edge(X, 2, &[], A, Z, Admin, &[]);
-    let zh = w.edge(Z, 3, &[], A, H, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let gz = w.grant(X, 2, &[], A, Z, Admin, &[]);
+    let zh = w.grant(Z, 3, &[], A, H, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let zc = w.content(Z, 8, &[A], T1);
     let rd = fixed(&w, &[r]);
     assert!(rd.role(Z, A) == Gone && !rd.valid.contains(&zc) && !rd.shows(gz) && !rd.shows(zh) && rd.void.is_empty());
@@ -567,9 +567,9 @@ fn nothing_through_the_removed_edge_is_exempt() {
     assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).role(Z, A) == Admin);
 
     let (mut w, ..) = paired();
-    let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
+    let tg = w.grant(X, 2, &[], A, H, Admin, &[]);
     w.set_until(tg, 7);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(tg) && rd.role(X, A) == Gone && rd.role(H, A) == Admin);
     // exempt, the timed grant stays and H's admin ends at 7
@@ -603,10 +603,10 @@ fn a_removal_whose_drops_take_its_own_standing_is_void() {
 #[test]
 fn a_removal_whose_author_falls_later_keeps_its_verdict() {
     let (mut w, _, gb) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
-    let bg = w.edge(B, 3, &[A], T1, A2, Write, &[]);
-    let out = w.edge(N5, 4, &[], A, B, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
+    let bg = w.grant(B, 3, &[A], T1, A2, Write, &[]);
+    let out = w.grant(N5, 4, &[], A, B, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&out) && !rd.applied.contains(&bg) && rd.role(B, A) == Gone && rd.role(N5, A) == Gone && rd.stray.is_empty(), "{rd:?}");
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
@@ -618,31 +618,31 @@ fn a_removal_whose_author_falls_later_keeps_its_verdict() {
 /// entry as absent: the remover leaves such a write out (it contests it). The thief's removal
 /// of the remover; of the remover's granter M, listing nothing; and an honest removal of M
 /// (listing M's grant of H), which stays made when listed and is undone when left out: so the
-/// remover leaves out by effect, never by the edge lowered.
+/// remover leaves out by effect, never by the grant lowered.
 #[test]
 fn a_list_keeping_what_unmakes_its_removal_voids_it() {
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let listed = w.edge(H, 6, &[], A, X, Gone, &[rx]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let listed = w.grant(H, 6, &[], A, X, Gone, &[rx]);
     assert!(fixed(&w, &[listed]).void.contains(&listed));
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(rx) && (rd.role(H, A), rd.role(X, A), rd.role(B, A)) == (Admin, Gone, Admin));
 
     for honest in [false, true] {
         let mut w = minted_by(M);
-        let gh = w.edge(M, 0, &[], A, H, Admin, &[]);
-        let gx = w.edge(M, 0, &[], A, X, Admin, &[]);
+        let gh = w.grant(M, 0, &[], A, H, Admin, &[]);
+        let gx = w.grant(M, 0, &[], A, X, Admin, &[]);
         let list = if honest { vec![gx, gh] } else { vec![gx] };
-        let rm = w.edge(X, 3, &[], A, M, Gone, &list);
+        let rm = w.grant(X, 3, &[], A, M, Gone, &list);
         let mut w2 = w.clone();
-        let listed = w.edge(H, 6, &[], A, X, Gone, &[rm]);
+        let listed = w.grant(H, 6, &[], A, X, Gone, &[rm]);
         let rd = fixed(&w, &[listed]);
         assert_eq!(rd.void.contains(&listed), !honest);
         assert!(!honest || (rd.role(M, A) == Gone && rd.role(X, A) == Gone && rd.role(H, A) == Admin));
-        let left = w2.edge(H, 6, &[], A, X, Gone, &[]);
+        let left = w2.grant(H, 6, &[], A, X, Gone, &[]);
         let rd = fixed(&w2, &[left]);
         assert!(rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone && rd.role(M, A) == Admin);
     }
@@ -657,13 +657,13 @@ fn a_list_keeping_what_unmakes_its_removal_voids_it() {
 #[test]
 fn a_remover_keeps_what_it_received_first() {
     let (mut w, gx, gb) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let down = w.edge(X, 2, &[], A, H, Write, &[gx, gb, g5]);
-    let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
-    let out = w.edge(X, 4, &[], A, N5, Gone, &[g5]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let down = w.grant(X, 2, &[], A, H, Write, &[gx, gb, g5]);
+    let junk = w.grant(N5, 3, &[], A, H, Admin, &[]);
+    let out = w.grant(X, 4, &[], A, N5, Gone, &[g5]);
     let world = |list: &[Id]| {
         let mut w = w.clone();
-        let r = w.edge(H, 6, &[], A, X, Gone, list);
+        let r = w.grant(H, 6, &[], A, X, Gone, list);
         (fixed(&w, &[r]), r)
     };
     let (rd, r) = world(&[down, out]);
@@ -680,18 +680,18 @@ fn a_remover_keeps_what_it_received_first() {
 #[test]
 fn the_other_findings_read_the_same_with_nothing_exempt() {
     let (mut w, _, gb) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    let junk = w.edge(N5, 3, &[], A, H, Admin, &[]);
-    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.grant(X, 2, &[], A, N5, Gone, &[g5]);
+    let junk = w.grant(N5, 3, &[], A, H, Admin, &[]);
+    let down = w.grant(X, 3, &[], A, B, Write, &[gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out]);
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.contains(&out) && !rd.applied.contains(&down) && !rd.shows(junk) && rd.role(N5, A) == Gone && rd.role(B, A) == Admin);
 
     let (mut w, _, gb) = paired();
-    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[down]);
-    let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
+    let down = w.grant(X, 3, &[], A, B, Write, &[gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[down]);
+    let leave = w.grant(X, 2, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(!rd.applied.contains(&leave) && rd.applied.contains(&down) && rd.role(B, A) == Write);
 }
@@ -699,24 +699,24 @@ fn the_other_findings_read_the_same_with_nothing_exempt() {
 // ---- Descent, self-removal by path end, `until` ----
 
 /// X writes D1 (a dependent of T1) stating [A]: by descent its hops are (X, A), (A, T1),
-/// (T1, D1). H's removal of X cuts it unless listed; a lowering of the descent edge (T1, D1)
-/// audits the writes through it like any edge.
+/// (T1, D1). H's removal of X cuts it unless listed; a lowering of the descent grant (T1, D1)
+/// audits the writes through it like any grant.
 #[test]
-fn a_write_by_descent_is_judged_along_the_record_edges() {
+fn a_write_by_descent_is_judged_along_the_record_grants() {
     let (mut w, ..) = paired();
     let listed = w.content(X, 3, &[A], D1);
     let unlisted = w.content(X, 4, &[A], D1);
     assert_eq!(w.hops(listed), &[(X, A), (A, T1), (T1, D1)]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[listed]);
     let rd = fixed(&w, &[r]);
     assert!(rd.valid.contains(&listed) && !rd.valid.contains(&unlisted));
     // the record grant T1 -> D1 lowered by an admin of T1 (explicitly, listing nothing): B's
     // write through it before falls, H's grant on D1 by another path stands
     let (mut w, ..) = paired();
     let bc = w.content(B, 3, &[A], D1);
-    let g = w.edge(H, 3, &[A, T1], D1, A2, Write, &[]);
+    let g = w.grant(H, 3, &[A, T1], D1, A2, Write, &[]);
     let kc = w.content(K, 4, &[A2], D1);
-    let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
+    let low = w.grant(H, 5, &[A], D1, T1, Gone, &[]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&low) && !rd.valid.contains(&bc));
     // H's grant states [A, T1] and so rests on (T1, D1) too: it falls with it, and K's write
@@ -729,19 +729,19 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
 #[test]
 fn a_self_removal_by_path_end_audits_nothing() {
     let (mut w, ..) = paired();
-    let g5 = w.edge(B, 2, &[], A, N5, Admin, &[]);
-    let leave = w.edge(B, 3, &[], A, B, Gone, &[]);
+    let g5 = w.grant(B, 2, &[], A, N5, Admin, &[]);
+    let leave = w.grant(B, 3, &[], A, B, Gone, &[]);
     assert!(w.leave(leave) && w.hops(leave).is_empty());
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&leave) && rd.applied.contains(&g5) && rd.role(B, A) == Gone);
     let (mut w, ..) = paired();
-    let g5 = w.edge(B, 2, &[], A, N5, Admin, &[]);
-    w.edge(H, 3, &[], A, B, Gone, &[]);
+    let g5 = w.grant(B, 2, &[], A, N5, Admin, &[]);
+    w.grant(H, 3, &[], A, B, Gone, &[]);
     assert!(!fixed(&w, &[]).applied.contains(&g5));
     let mut w = account();
-    w.edge(H, 1, &[A], T1, A2, Write, &[]);
+    w.grant(H, 1, &[A], T1, A2, Write, &[]);
     let before = w.content(K, 2, &[A2], T1);
-    let out = w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
+    let out = w.grant(K, 3, &[A2], T1, A2, Gone, &[]);
     let after = w.content(K, 4, &[A2], T1);
     assert!(w.leave(out) && w.hops(out) == [(K, A2)]);
     let rd = fixed(&w, &[]);
@@ -753,8 +753,8 @@ fn a_self_removal_by_path_end_audits_nothing() {
 #[test]
 fn a_self_removal_raises_nothing() {
     let mut w = account();
-    w.edge(H, 1, &[A], T1, A2, Write, &[]);
-    let up = w.edge(K, 2, &[A2], T1, A2, Admin, &[]);
+    w.grant(H, 1, &[A], T1, A2, Write, &[]);
+    let up = w.grant(K, 2, &[A2], T1, A2, Admin, &[]);
     assert!(w.leave(up) && !fixed(&w, &[]).applied.contains(&up));
 }
 
@@ -765,10 +765,10 @@ fn a_self_removal_raises_nothing() {
 fn a_backdated_leave_shields_nothing_from_the_removal() {
     let (mut w, ..) = paired();
     let listed = w.content(X, 3, &[A], T1);
-    let gz = w.edge(X, 4, &[], A, Z, Admin, &[]);
+    let gz = w.grant(X, 4, &[], A, Z, Admin, &[]);
     let back = w.content(X, 4, &[A], T1);
-    let leave = w.edge(X, 5, &[], A, X, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
+    let leave = w.grant(X, 5, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[listed]);
     // with the leave put in question (finding 14) it is dropped; without, it stands and R still
     // audits against the grant as restored
     for in_q in [true, false] {
@@ -778,19 +778,19 @@ fn a_backdated_leave_shields_nothing_from_the_removal() {
     }
 }
 
-/// An `until` passing audits nothing; the next explicit write on that edge audits against the
+/// An `until` passing audits nothing; the next explicit write on that grant audits against the
 /// grant as restored: B, admin until 5, grants N5 at 3; N5 stands past 5; H's removal of B at 7
 /// listing nothing drops it.
 #[test]
 fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
     w.set_until(gb, 5);
-    let g5 = w.edge(B, 3, &[], A, N5, Admin, &[]);
+    let g5 = w.grant(B, 3, &[], A, N5, Admin, &[]);
     let bc = w.content(B, 6, &[A], T1);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&g5) && rd.role(N5, A) == Admin && !rd.valid.contains(&bc));
-    w.edge(H, 7, &[], A, B, Gone, &[]);
+    w.grant(H, 7, &[], A, B, Gone, &[]);
     assert!(!fixed(&w, &[]).applied.contains(&g5));
 }
 
@@ -802,10 +802,10 @@ fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
 #[test]
 fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
     let (mut w, _, gb) = paired();
-    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-    let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
-    let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
+    let down = w.grant(X, 3, &[], A, B, Write, &[gb]);
+    let g5 = w.grant(X, 3, &[], A, N5, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[down, g5]);
+    let leave = w.grant(X, 2, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(!rd.applied.contains(&leave) && rd.applied.is_superset(&Set::from([down, g5])));
     assert_eq!((rd.role(B, A), rd.role(N5, A)), (Write, Admin));
@@ -892,11 +892,11 @@ fn small_family_holds_large() {
 #[test]
 fn a_dead_grant_moves_no_may_grant_grantees_first_point_back() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let dead = w.edge(X, 6, &[A], T1, Z, Write, &[]);
-    let inv = w.edge(X, 7, &[A2], T1, Z, Write, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
+    w.grant(H, 1, &[A], T1, A2, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    let dead = w.grant(X, 6, &[A], T1, Z, Write, &[]);
+    let inv = w.grant(X, 7, &[A2], T1, Z, Write, &[]);
     let c = w.content(Z, 7, &[], T1);
     assert!(w.key(r) < w.key(dead) && w.pos(c) < w.key(inv));
     let x = Rules::fixed();
@@ -931,10 +931,10 @@ fn one_reading(w: &World) -> Reading {
 #[test]
 fn two_lowerings_unapplying_each_other_settle_on_the_earlier() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let lb = w.edge(B, 3, &[], A, H, Gone, &[gb]);
-    let l5 = w.edge(N5, 4, &[], A, H, Gone, &[g5]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let lb = w.grant(B, 3, &[], A, H, Gone, &[gb]);
+    let l5 = w.grant(N5, 4, &[], A, H, Gone, &[g5]);
     let rd = one_reading(&w);
     assert!(rd.applied.contains(&lb) && !rd.applied.contains(&l5) && rd.dropped == Set::from([g5]) && rd.voided.is_empty());
 }
@@ -947,12 +947,12 @@ fn two_lowerings_unapplying_each_other_settle_on_the_earlier() {
 #[test]
 fn a_lowering_dropped_later_keeps_its_drops() {
     let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     let gb = 0;
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let d = w.edge(H, 2, &[], A, N5, Gone, &[]);
-    let lb = w.edge(B, 3, &[], A, H, Gone, &[gb, g5]);
-    let l5 = w.edge(N5, 4, &[], A, B, Gone, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let d = w.grant(H, 2, &[], A, N5, Gone, &[]);
+    let lb = w.grant(B, 3, &[], A, H, Gone, &[gb, g5]);
+    let l5 = w.grant(N5, 4, &[], A, B, Gone, &[]);
     let rd = one_reading(&w);
     assert!(rd.applied.contains(&l5) && rd.dropped == Set::from([d, lb]) && rd.stray == Set::from([d]) && rd.voided.is_empty(), "{rd:?}");
     assert_eq!((rd.role(H, A), rd.role(B, A), rd.role(N5, A)), (Admin, Gone, Admin));
@@ -968,11 +968,11 @@ fn a_lowering_dropped_later_keeps_its_drops() {
 #[test]
 fn a_void_write_has_no_effect() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(B, 2, &[], A, Z, Admin, &[]);
-    let zh = w.edge(Z, 3, &[], A, H, Gone, &[gb]);
-    let zb = w.edge(Z, 4, &[], A, B, Gone, &[]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, N5, Admin, &[]);
+    w.grant(B, 2, &[], A, Z, Admin, &[]);
+    let zh = w.grant(Z, 3, &[], A, H, Gone, &[gb]);
+    let zb = w.grant(Z, 4, &[], A, B, Gone, &[]);
     let rd = one_reading(&w);
     assert!(rd.voided == Set::from([zb]) && rd.applied.contains(&zh) && rd.role(H, A) == Gone && rd.role(N5, A) == Gone);
     assert_eq!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, zb), (true, true));
@@ -985,11 +985,11 @@ fn a_void_write_has_no_effect() {
 #[test]
 fn a_lowering_dropping_the_grant_it_rests_on_is_void() {
     let mut w = account();
-    let gb = w.edge(H, 3, &[], A, B, Admin, &[]);
-    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
-    let again = w.edge(N6, 5, &[], A, B, Admin, &[g6]);
-    let l6 = w.edge(N6, 5, &[], A, H, Gone, &[g6, again]);
-    let lb = w.edge(B, 6, &[], A, N6, Gone, &[]);
+    let gb = w.grant(H, 3, &[], A, B, Admin, &[]);
+    let g6 = w.grant(H, 3, &[], A, N6, Admin, &[]);
+    let again = w.grant(N6, 5, &[], A, B, Admin, &[g6]);
+    let l6 = w.grant(N6, 5, &[], A, H, Gone, &[g6, again]);
+    let lb = w.grant(B, 6, &[], A, N6, Gone, &[]);
     let rd = one_reading(&w);
     assert!(rd.voided == Set::from([lb]) && rd.applied.contains(&l6) && rd.dropped == Set::from([gb]), "{rd:?}");
     assert_eq!((rd.role(H, A), rd.role(N6, A), rd.role(B, A)), (Gone, Admin, Admin));
@@ -1002,10 +1002,10 @@ fn a_lowering_dropping_the_grant_it_rests_on_is_void() {
 #[test]
 fn an_earlier_void_write_has_no_effect() {
     let mut w = account();
-    let g1 = w.edge(H, 2, &[], A, B, Admin, &[]);
-    w.edge(H, 10, &[], A, B, Admin, &[]);
-    let early = w.edge(B, 9, &[], A, H, Gone, &[]);
-    let late = w.edge(B, 10, &[], A, H, Gone, &[g1]);
+    let g1 = w.grant(H, 2, &[], A, B, Admin, &[]);
+    w.grant(H, 10, &[], A, B, Admin, &[]);
+    let early = w.grant(B, 9, &[], A, H, Gone, &[]);
+    let late = w.grant(B, 10, &[], A, H, Gone, &[g1]);
     let rd = one_reading(&w);
     assert!(rd.voided == Set::from([early]) && rd.applied.contains(&late) && rd.role(H, A) == Gone);
     assert_eq!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, early), (true, true));
@@ -1020,13 +1020,13 @@ fn an_earlier_void_write_has_no_effect() {
 #[test]
 fn small_world_830267_judged_once() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
-    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
-    let n6 = w.edge(N5, 3, &[], A, N6, Admin, &[gb, g5]);
-    let b5 = w.edge(B, 4, &[], A, N5, Gone, &[g6, gb]);
-    let h = w.edge(N6, 4, &[], A, H, Gone, &[g5, n6]);
-    let b = w.edge(N6, 8, &[], A, B, Gone, &[]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    let g5 = w.grant(H, 3, &[], A, N5, Admin, &[]);
+    let g6 = w.grant(H, 3, &[], A, N6, Admin, &[]);
+    let n6 = w.grant(N5, 3, &[], A, N6, Admin, &[gb, g5]);
+    let b5 = w.grant(B, 4, &[], A, N5, Gone, &[g6, gb]);
+    let h = w.grant(N6, 4, &[], A, H, Gone, &[g5, n6]);
+    let b = w.grant(N6, 8, &[], A, B, Gone, &[]);
     let rd = one_reading(&w);
     assert!(rd.voided == Set::from([h]) && rd.applied.contains(&b) && rd.dropped == Set::from([n6, b5]) && rd.stray == Set::from([n6]), "{rd:?}");
     assert_eq!((rd.role(H, A), rd.role(B, A), rd.role(N5, A), rd.role(N6, A)), (Admin, Gone, Admin, Admin));
@@ -1040,12 +1040,12 @@ fn small_world_830267_judged_once() {
 #[test]
 fn small_world_360379_judged_once() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g6 = w.edge(H, 1, &[], A, N6, Admin, &[gb]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let r5 = w.edge(N5, 1, &[], A, H, Gone, &[gb, g5]);
-    let b5 = w.edge(B, 2, &[], A, N5, Gone, &[g5]);
-    let hb = w.edge(H, 9, &[], A, B, Gone, &[gb, r5]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    let g6 = w.grant(H, 1, &[], A, N6, Admin, &[gb]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let r5 = w.grant(N5, 1, &[], A, H, Gone, &[gb, g5]);
+    let b5 = w.grant(B, 2, &[], A, N5, Gone, &[g5]);
+    let hb = w.grant(H, 9, &[], A, B, Gone, &[gb, r5]);
     let rd = one_reading(&w);
     assert!(rd.applied.contains(&hb) && rd.dropped == Set::from([g6, r5, b5]) && rd.stray == Set::from([g6, r5]) && rd.voided.is_empty(), "{rd:?}");
     assert_eq!((rd.role(H, A), rd.role(B, A), rd.role(N5, A), rd.role(N6, A)), (Admin, Gone, Admin, Gone));
@@ -1058,13 +1058,13 @@ fn small_world_360379_judged_once() {
 #[test]
 fn small_world_234147_judged_once() {
     let mut w = account();
-    let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
-    let gz = w.edge(N5, 3, &[], A, Z, Admin, &[g5]);
-    let zh = w.edge(Z, 3, &[], A, H, Gone, &[g5, gz]);
-    let g6 = w.edge(N5, 8, &[], A, N6, Admin, &[g5]);
-    let r6 = w.edge(N6, 8, &[], A, Z, Gone, &[]);
-    let h6 = w.edge(H, 9, &[], A, N6, Gone, &[g5]);
-    let last = w.edge(N5, 10, &[], A, H, Gone, &[r6]);
+    let g5 = w.grant(H, 3, &[], A, N5, Admin, &[]);
+    let gz = w.grant(N5, 3, &[], A, Z, Admin, &[g5]);
+    let zh = w.grant(Z, 3, &[], A, H, Gone, &[g5, gz]);
+    let g6 = w.grant(N5, 8, &[], A, N6, Admin, &[g5]);
+    let r6 = w.grant(N6, 8, &[], A, Z, Gone, &[]);
+    let h6 = w.grant(H, 9, &[], A, N6, Gone, &[g5]);
+    let last = w.grant(N5, 10, &[], A, H, Gone, &[r6]);
     for t in [&[][..], &[r6]] {
         let rd = fixed(&w, t);
         assert!(rd.voided == Set::from([last]) && rd.applied.is_superset(&Set::from([g5, gz, g6, h6])) && rd.stray == Set::from([zh]), "{t:?} {rd:?}");
@@ -1078,18 +1078,18 @@ fn small_world_234147_judged_once() {
 /// listing that pairing, and removes N6 again listing the first removal (a no-op); N5 removes H
 /// listing H's second removal and its grant of N6. N5's path rests on N6's grant, which nothing N5
 /// drops touches, so N5's removal applies and drops H's first removal; the restart that drop makes
-/// lets H's second removal take N6's edge, which drops N6's grant of N5; N5's removal keeps its
+/// lets H's second removal take N6's grant, which drops N6's grant of N5; N5's removal keeps its
 /// verdict. A ends with no admin, trusting nothing, H's first removal (void: the current admin it
 /// left in place removed its author) or N5's (void too). Shown: H's second removal, whose seeds
 /// take N6's grant of N5 before the walk.
 #[test]
 fn a_lowerings_check_does_not_read_what_its_drops_free() {
     let mut w = account();
-    let g6 = w.edge(H, 1, &[], A, N6, Admin, &[]);
-    let g5 = w.edge(N6, 2, &[], A, N5, Admin, &[]);
-    let r1 = w.edge(H, 4, &[], A, N6, Gone, &[g5]);
-    let r2 = w.edge(H, 4, &[], A, N6, Gone, &[r1]);
-    let l = w.edge(N5, 4, &[], A, H, Gone, &[r2, g6]);
+    let g6 = w.grant(H, 1, &[], A, N6, Admin, &[]);
+    let g5 = w.grant(N6, 2, &[], A, N5, Admin, &[]);
+    let r1 = w.grant(H, 4, &[], A, N6, Gone, &[g5]);
+    let r2 = w.grant(H, 4, &[], A, N6, Gone, &[r1]);
+    let l = w.grant(N5, 4, &[], A, H, Gone, &[r2, g6]);
     for t in [&[][..], &[r1], &[l]] {
         let rd = fixed(&w, t);
         assert!(rd.applied == Set::from([g6, r2, l]) && rd.dropped == Set::from([g5, r1]) && rd.void == t.iter().copied().collect(), "{t:?} {rd:?}");
@@ -1107,28 +1107,28 @@ fn a_lowerings_check_does_not_read_what_its_drops_free() {
 #[test]
 fn a_lowering_dropping_its_granters_grant_is_void() {
     let mut w = account();
-    let gz = w.edge(H, 4, &[], A, Z, Admin, &[]);
-    let g5 = w.edge(Z, 8, &[], A, N5, Admin, &[]);
-    let l = w.edge(N5, 10, &[], A, H, Gone, &[g5]);
+    let gz = w.grant(H, 4, &[], A, Z, Admin, &[]);
+    let g5 = w.grant(Z, 8, &[], A, N5, Admin, &[]);
+    let l = w.grant(N5, 10, &[], A, H, Gone, &[g5]);
     let rd = one_reading(&w);
     assert!(rd.voided == Set::from([l]) && rd.applied == Set::from([gz, g5]) && rd.role(H, A) == Admin, "{rd:?}");
     assert_eq!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, l), (true, true));
 }
 
 /// A lowering that takes nothing where it is first reached is judged by the restart that gives it
-/// the edge: X removes N5 honestly at 3 (`out`, heard by H and listed); the thief backdates a
+/// the grant: X removes N5 honestly at 3 (`out`, heard by H and listed); the thief backdates a
 /// removal of N5 to 2 and, with N5's key, a grant of admin to Z after it. Trusting nothing, `out`
 /// first takes nothing (N5 is off A already) and the grant does not apply; H's removal drops the
-/// backdated removal, the grant applies, and `out`, now taking N5's edge, audits and drops it: Z
+/// backdated removal, the grant applies, and `out`, now taking N5's grant, audits and drops it: Z
 /// holds nothing, trusted or not.
 #[test]
-fn a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_edge() {
+fn a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_grant() {
     let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
-    w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    let gz = w.edge(N5, 2, &[], A, Z, Admin, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.grant(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out]);
+    w.grant(X, 2, &[], A, N5, Gone, &[g5]);
+    let gz = w.grant(N5, 2, &[], A, Z, Admin, &[]);
     for t in [&[][..], &[r]] {
         let rd = fixed(&w, t);
         assert!(rd.applied.contains(&r) && rd.applied.contains(&out) && rd.dropped.contains(&gz) && rd.role(Z, A) == Gone, "{t:?} {rd:?}");
@@ -1143,13 +1143,13 @@ fn a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_edge() {
 #[test]
 fn a_stray_drop_in_a_fight_of_admins_is_shown() {
     let mut w = account();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let g6 = w.edge(N5, 1, &[], A, N6, Admin, &[g5]);
-    let gb = w.edge(N5, 7, &[], A, B, Admin, &[]);
-    let gz = w.edge(B, 8, &[], A, Z, Admin, &[gb]);
-    let rb = w.edge(N6, 8, &[], A, B, Gone, &[gb, gz, g6]);
-    let rn6 = w.edge(Z, 9, &[], A, N6, Gone, &[g5, gz]);
-    let rz = w.edge(H, 10, &[], A, Z, Gone, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let g6 = w.grant(N5, 1, &[], A, N6, Admin, &[g5]);
+    let gb = w.grant(N5, 7, &[], A, B, Admin, &[]);
+    let gz = w.grant(B, 8, &[], A, Z, Admin, &[gb]);
+    let rb = w.grant(N6, 8, &[], A, B, Gone, &[gb, gz, g6]);
+    let rn6 = w.grant(Z, 9, &[], A, N6, Gone, &[g5, gz]);
+    let rz = w.grant(H, 10, &[], A, Z, Gone, &[]);
     let rd = one_reading(&w);
     assert!(rd.dropped == Set::from([rb, rn6]) && rd.stray == Set::from([rb]) && rd.applied.contains(&rz), "{rd:?}");
     assert_eq!((rd.role(B, A), rd.role(N6, A), rd.role(Z, A)), (Admin, Admin, Gone));
@@ -1166,22 +1166,22 @@ fn a_stray_drop_in_a_fight_of_admins_is_shown() {
 fn a_thiefs_lowering_after_the_removal_holds_nothing() {
     for by_z in [false, true] {
         let mut w = minted_by(M);
-        let gh = w.edge(M, 1, &[], A, H, Admin, &[]);
-        let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
-        let by = if by_z { w.edge(X, 4, &[], A, Z, Admin, &[gx]); Z } else { X };
-        let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-        w.edge(by, 7, &[], A, M, Gone, &[gx]);
-        w.edge(by, 7, &[], A, H, Gone, &[gx, gh]);
+        let gh = w.grant(M, 1, &[], A, H, Admin, &[]);
+        let gx = w.grant(M, 1, &[], A, X, Admin, &[]);
+        let by = if by_z { w.grant(X, 4, &[], A, Z, Admin, &[gx]); Z } else { X };
+        let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+        w.grant(by, 7, &[], A, M, Gone, &[gx]);
+        w.grant(by, 7, &[], A, H, Gone, &[gx, gh]);
         for t in [&[][..], &[r]] {
             let rd = fixed(&w, t);
             assert!(rd.applied.contains(&r) && rd.voided.is_empty() && (rd.role(H, A), rd.role(X, A), rd.role(Z, A)) == (Admin, Gone, Gone), "{by_z} {t:?}");
         }
     }
     let mut w = minted_by(M);
-    w.edge(M, 1, &[], A, H, Admin, &[]);
-    let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
-    w.edge(X, 4, &[], A, M, Gone, &[gx]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(M, 1, &[], A, H, Admin, &[]);
+    let gx = w.grant(M, 1, &[], A, X, Admin, &[]);
+    w.grant(X, 4, &[], A, M, Gone, &[gx]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     assert_eq!(fixed(&w, &[]).role(H, A), Gone);
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
     let rd = fixed(&w, &[r]);
@@ -1230,12 +1230,12 @@ fn small_worlds_hold_plain() {
 fn void_cost(k: usize) -> ((u32, u64, u64), (u32, u64, u64)) {
     let (mut w, ..) = paired();
     for z in 0..k {
-        w.edge(X, 1, &[], A, 23 + z as Thing, Admin, &[]);
+        w.grant(X, 1, &[], A, 23 + z as Thing, Admin, &[]);
     }
     for z in 0..k {
-        w.edge(23 + z as Thing, 2, &[], A, X, Gone, &[]);
+        w.grant(23 + z as Thing, 2, &[], A, X, Gone, &[]);
     }
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let plain = fixed(&w, &[]);
     assert!(plain.stray.is_empty() && plain.voided.len() == k && plain.lowered.contains(&r));
     let t = fixed(&w, &[r]);
@@ -1263,12 +1263,12 @@ fn a_void_check_reads_its_own_grant_chain() {
     let cost = |k: usize| {
         let (mut w, ..) = paired();
         let z = |i: usize| 23 + i as Thing;
-        w.edge(X, 1, &[], A, z(0), Admin, &[]);
+        w.grant(X, 1, &[], A, z(0), Admin, &[]);
         for i in 1..k {
-            w.edge(z(i - 1), 1, &[], A, z(i), Admin, &[]);
+            w.grant(z(i - 1), 1, &[], A, z(i), Admin, &[]);
         }
         for t in 0..k {
-            w.edge(z(k - 1), 2 + t as u32, &[], A, X, Gone, &[]);
+            w.grant(z(k - 1), 2 + t as u32, &[], A, X, Gone, &[]);
         }
         let rd = fixed(&w, &[]);
         assert!(rd.voided.len() == k && rd.rounds == 0);
@@ -1285,8 +1285,8 @@ fn a_void_check_reads_its_own_grant_chain() {
 #[test]
 fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let plain = fixed(&w, &[]);
     assert!(!plain.applied.contains(&r) && plain.applied.contains(&rx) && plain.stray.is_empty());
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
@@ -1304,9 +1304,9 @@ fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
 #[test]
 fn the_audit_puts_the_held_writes_in_question() {
     let (mut w, gx, gb) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let leave = w.edge(X, 1, &[], A, X, Gone, &[]);
+    let rx = w.grant(X, 5, &[], A, H, Gone, &[gx, gb]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    let leave = w.grant(X, 1, &[], A, X, Gone, &[]);
     let held = fixed(&w, &[]);
     assert!(held.applied.contains(&r) && held.dropped == Set::from([leave, rx]) && (held.role(H, A), held.role(X, A)) == (Admin, Gone));
     let applied = fixed_but(&w, &[], |x| x.audit_held = false);
@@ -1322,14 +1322,14 @@ fn the_audit_puts_the_held_writes_in_question() {
 /// removal of H drops X's grant, so `out` is unapplied: both are unapplied droppers.
 fn n5_back() -> (World, Id, Id) {
     let (mut w, gx, _) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let x5 = w.edge(X, 5, &[], A, H, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out, x5]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out = w.grant(X, 3, &[], A, N5, Gone, &[g5]);
+    let x5 = w.grant(X, 5, &[], A, H, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out, x5]);
     // H's list names both: its own walk applies the removal with them
     assert!(fixed(&w, &[r]).applied.contains(&r) && fixed(&w, &[r]).role(N5, A) == Gone);
     let _ = gx;
-    w.edge(N5, 2, &[], A, H, Admin, &[]);
+    w.grant(N5, 2, &[], A, H, Admin, &[]);
     (w, out, r)
 }
 
@@ -1454,7 +1454,7 @@ fn the_writers_rule_reads_each_clause() {
 /// drops Z's grant of N6, so neither of N6's writes applies in the end (N6 never held its right),
 /// and Z's removal of N6, reached with no right, never applies. Without it, the first pass reaches
 /// Z's removal of N6 with Z still admin (H's admin ended at 9) and judges it applied, a verdict it
-/// keeps once H's removal applies in a later pass: N6's edge is cut at 12. An idle write of a party
+/// keeps once H's removal applies in a later pass: N6's grant is cut at 12. An idle write of a party
 /// that held its right in no reading decides whether a removal applies, unshown (the class of 35,
 /// gated as `illegit gains`).
 #[test]
@@ -1572,19 +1572,19 @@ fn an_equivocating_twin_of_an_earlier_removal() {
 
 /// A removal stating more than one hop: B removes
 /// A2 from T1 stating [A], so it rests on (B, A) and (A, T1). X, admin on A2 (A2 admin on T1),
-/// backdates through A2 a removal of A from T1, an edge above B's own: in the plain walk B's
+/// backdates through A2 a removal of A from T1, a grant above B's own: in the plain walk B's
 /// removal finds no path and is a dispute shown; trusted, its seeds drop X's write (it rests on
-/// the edge B lowers) and it applies. X making A leave T1 through A (a self-removal, marked) is
+/// the grant B lowers) and it applies. X making A leave T1 through A (a self-removal, marked) is
 /// dropped by H's removal of X the same way. X's write through A2 after B's removal shows nowhere.
 #[test]
 fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Admin, &[]);
-    let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
+    w.grant(K, 1, &[], A2, X, Admin, &[]);
+    let gs = w.grant(B, 2, &[A], T1, A2, Admin, &[]);
     // listing B's grant to A2, its own authority (else it drops it and is void)
-    let xa = w.edge(X, 5, &[A2], T1, A, Gone, &[gs]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
+    let xa = w.grant(X, 5, &[A2], T1, A, Gone, &[gs]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    let r3 = w.grant(B, 6, &[A], T1, A2, Gone, &[]);
     let late = w.content(X, 7, &[A2], T1);
     let plain = fixed(&w, &[]);
     assert!(!plain.applied.contains(&r3) && plain.applied.contains(&xa), "{plain:?}");
@@ -1593,7 +1593,7 @@ fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
     assert!(rd.void.is_empty() && rd.applied.contains(&r3) && !rd.shows(xa) && !rd.shows(late));
     assert_eq!((rd.role(A, T1), rd.role(A2, T1)), (Admin, Gone));
     let mut w2 = w.clone();
-    let leave = w2.edge(X, 5, &[A], T1, A, Gone, &[]);
+    let leave = w2.grant(X, 5, &[A], T1, A, Gone, &[]);
     let rd = fixed(&w2, &[r, r3]);
     assert!(rd.void.is_empty() && !rd.shows(leave) && rd.applied.contains(&r3) && rd.role(A, T1) == Admin);
 }
@@ -1603,17 +1603,17 @@ fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
 /// through A (`xr`, which H's removal of X lists). A node trusting nothing: `xa` applies, so `xr`
 /// and B's removal of A2 find no path. Trusted, B's removal drops `xa` by its seeds, `xr`
 /// applies, and B's removal is a no-op (A2 is off T1 already): read as spec/permissions.md §5.1
-/// words it (the trusted write must lower its edge) it raises no dispute, and the node reads A
+/// words it (the trusted write must lower its grant) it raises no dispute, and the node reads A
 /// off T1 silently. As a write that applies once trusted, it is shown.
 #[test]
 fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Admin, &[]);
-    let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
-    let xa = w.edge(X, 3, &[A2], T1, A, Gone, &[gs]);
-    let xr = w.edge(X, 4, &[A], T1, A2, Gone, &[]);
-    w.edge(H, 6, &[], A, X, Gone, &[xr]);
-    let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
+    w.grant(K, 1, &[], A2, X, Admin, &[]);
+    let gs = w.grant(B, 2, &[A], T1, A2, Admin, &[]);
+    let xa = w.grant(X, 3, &[A2], T1, A, Gone, &[gs]);
+    let xr = w.grant(X, 4, &[A], T1, A2, Gone, &[]);
+    w.grant(H, 6, &[], A, X, Gone, &[xr]);
+    let r3 = w.grant(B, 6, &[A], T1, A2, Gone, &[]);
     let plain = fixed(&w, &[]);
     assert!(plain.applied.contains(&xa) && !plain.applied.contains(&r3) && plain.role(A, T1) == Gone);
     let t = fixed(&w, &[r3]);
@@ -1623,7 +1623,7 @@ fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
 }
 
 /// Self-removal and time. X's backdated leave
-/// carrying an `until` (admin until 2), and X setting its own edge to write until after the
+/// carrying an `until` (admin until 2), and X setting its own grant to write until after the
 /// story, each stamped before role writes X made honestly that H lists: a lowering of (X, A) puts
 /// each in question like a write through it, so H's removal drops them and X's writes stand.
 /// Control: a self-removal never put in question, X's writes fall.
@@ -1631,10 +1631,10 @@ fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
 fn a_timed_self_removal_is_put_in_question_like_a_leave() {
     for (role, until) in [(Admin, 2), (Write, 20)] {
         let (mut w, _, gb) = paired();
-        let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-        let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
-        let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
-        let timed = w.edge(X, 1, &[], A, X, role, &[]);
+        let down = w.grant(X, 3, &[], A, B, Write, &[gb]);
+        let g5 = w.grant(X, 3, &[], A, N5, Admin, &[]);
+        let r = w.grant(H, 6, &[], A, X, Gone, &[down, g5]);
+        let timed = w.grant(X, 1, &[], A, X, role, &[]);
         w.set_until(timed, until);
         assert!(w.leave(timed));
         let rd = fixed(&w, &[r]);
@@ -1649,15 +1649,15 @@ fn a_timed_self_removal_is_put_in_question_like_a_leave() {
 /// grant. The leave is put in question like a write through (A, T1): unlisted, it is dropped, and
 /// B's grant stands. Control: never put in question, the leave takes B's authority and its grant.
 #[test]
-fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
+fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_grant() {
     let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    let leave = w.edge(X, 2, &[A], T1, A, Gone, &[]);
-    let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
+    let g2 = w.grant(H, 1, &[A], T1, A2, Admin, &[]);
+    let leave = w.grant(X, 2, &[A], T1, A, Gone, &[]);
+    let gn = w.grant(B, 3, &[A], T1, N6, Write, &[]);
     // K lists its own holder's grant too (else it drops its own authority and is void)
-    let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
+    let rk = w.grant(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&rk) && !rd.applied.contains(&leave) && rd.applied.contains(&gn) && rd.role(N6, T1) == Write);
     let rd = fixed_but(&w, &[], |x| x.leave_in_question = false);
@@ -1668,11 +1668,11 @@ fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
 /// A2's share of T1 (through A), in one commit or two. Returns the world and the two removals.
 fn removals_on_two_things(one: bool) -> (World, Id, Id) {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let share = w.edge(H, 1, &[A], T1, A2, Write, &[]);
-    let on_a = w.edge(N5, 5, &[], A, H, Gone, &[gb, share]);
-    let on_t = w.edge(N5, 5, &[A], T1, A2, Gone, &[]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let share = w.grant(H, 1, &[A], T1, A2, Write, &[]);
+    let on_a = w.grant(N5, 5, &[], A, H, Gone, &[gb, share]);
+    let on_t = w.grant(N5, 5, &[A], T1, A2, Gone, &[]);
     if one {
         w.group(&[on_a, on_t]);
     }
@@ -1701,13 +1701,13 @@ fn guests() -> World {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(A2, Write));
     w.push(H, 1, &[A], T1, Kind::set(GU, Role::Read).may_grant());
-    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
     w
 }
 
 /// A may-grant grant applies where every hop of its path gives its role and the last carries the
 /// flag (G1, G2: X's [A2, GU]), to a holder with no current grant, and gives no right to change
-/// another edge. Beyond the arrangement: write through [A2, GU] (GU holds read), and read through
+/// another grant. Beyond the arrangement: write through [A2, GU] (GU holds read), and read through
 /// [A2], whose share carries no flag. Controls: the flag not read (`-no-flag`) grants through
 /// [A2]; the last hop's role not read grants write through [A2, GU].
 #[test]
@@ -1732,7 +1732,7 @@ fn a_may_grant_grant_applies_by_its_paths_flag() {
 fn a_may_grant_grant_needs_its_role_on_every_hop() {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
-    w.edge(K, 1, &[], A2, X, Role::Read, &[]);
+    w.grant(K, 1, &[], A2, X, Role::Read, &[]);
     let read = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let write = w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
     let rd = fixed(&w, &[]);
@@ -1755,14 +1755,14 @@ fn a_grant_by_a_flagless_hop_moves_no_first_point_back() {
     assert!(!rd.applied.contains(&x) && rd.applied.contains(&h) && !rd.valid.contains(&c), "{rd:?}");
 }
 
-/// A writer removed from the holder it granted through: its may-grant grants rest on that edge,
-/// fall unless the removal lists them, whether the edge fell from admin or from write.
+/// A writer removed from the holder it granted through: its may-grant grants rest on that grant,
+/// fall unless the removal lists them, whether the grant fell from admin or from write.
 #[test]
 fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
     let mut w = guests();
     let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let n6 = w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Role::Read));
-    let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
+    let r = w.grant(K, 6, &[], A2, X, Gone, &[z]);
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert!(rd.applied.contains(&z) && !rd.shows(n6), "{trust:?}");
@@ -1795,7 +1795,7 @@ fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
     // a timed admin grant is finalized by an admin only (its role at least the grant's), not by a
     // writer: the finalize is the grant's departure for keys
     let mut w = guests();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 2, &[A], T1, Kind::set(N6, Admin).until(4));
     let by_writer = w.push(K, 5, &[A2], T1, Kind::finalize(N6));
     let by_admin = w.push(B, 6, &[A], T1, Kind::finalize(N6));
@@ -1817,9 +1817,9 @@ fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&leave) && !rd.applied.contains(&fin));
     let mut w = account();
-    w.edge(H, 1, &[], A, Z, Admin, &[]);
+    w.grant(H, 1, &[], A, Z, Admin, &[]);
     w.push(H, 1, &[A], T1, Kind::set(Z, Admin).until(3));
-    let n5 = w.edge(Z, 2, &[], T1, N5, Write, &[]);
+    let n5 = w.grant(Z, 2, &[], T1, N5, Write, &[]);
     let own = w.push(Z, 5, &[A], T1, Kind::finalize(Z));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&own) && rd.dropped.contains(&n5));
@@ -1855,11 +1855,11 @@ fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
     let n5 = w.push(l, 3, &[], T1, Kind::set(N5, Write));
     let wz = w.content(Z, 4, &[], T1);
     let fin = w.push(B, 6, &[A], T1, Kind::finalize(l));
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&fin) && rd.valid.contains(&wz));
     assert_eq!((rd.role(Z, T1), rd.role(N5, T1)), (Write, Write));
-    let r = w.edge(H, 7, &[A], T1, l, Gone, &[z]);
+    let r = w.grant(H, 7, &[A], T1, l, Gone, &[z]);
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert!(rd.applied.contains(&r) && rd.valid.contains(&wz) && !rd.applied.contains(&n5), "{trust:?}");
@@ -1875,7 +1875,7 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     let mut w = guests();
     let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let plain = w.push(B, 5, &[A], T1, Kind::set(GU, Role::Read));
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&plain) && rd.dropped.contains(&z));
     assert_eq!(fixed_but(&w, &[], |r| r.flag_falls = false).role(Z, T1), Role::Read);
@@ -1887,7 +1887,7 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
 /// The grant as restored reads a value's role and flag alike, its `until` disregarded (notes/
 /// write-path-design.md §1 W3): H gives N5 write with the flag; N5 grants Z read by it and writes
 /// content; H sets N5 write with the flag until 3 at 4 (ended at its own `ts`), listing both; H
-/// removes N5 at 5 listing nothing. Restored, N5's edge gave write with the flag before the
+/// removes N5 at 5 listing nothing. Restored, N5's grant gave write with the flag before the
 /// removal, so it takes both: Z's grant falls as the content does.
 #[test]
 fn an_ended_value_restores_its_flag_as_its_role() {
@@ -1897,7 +1897,7 @@ fn an_ended_value_restores_its_flag_as_its_role() {
     let c = w.content(N5, 2, &[], A);
     let ended = w.push(H, 4, &[], A, Kind::set(N5, Write).may_grant().until(3));
     w.edit(ended, |k| k.listing(BTreeMap::from([(A, Set::from([z, c]))])));
-    w.edge(H, 5, &[], A, N5, Gone, &[]);
+    w.grant(H, 5, &[], A, N5, Gone, &[]);
     let rd = fixed(&w, &[]);
     assert!(!rd.valid.contains(&c), "{rd:?}");
     assert!(rd.dropped.contains(&z) && rd.role(Z, A) == Gone, "{rd:?}");
@@ -1911,11 +1911,11 @@ fn an_ended_value_restores_its_flag_as_its_role() {
 #[test]
 fn a_lowering_applied_by_its_verdict_raises_nothing() {
     let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N6, Admin, &[]);
-    let z = w.edge(N6, 3, &[], A, Z, Write, &[]);
-    w.edge(N6, 3, &[], A, Z, Role::Read, &[]);
-    let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
+    let gb = w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, N6, Admin, &[]);
+    let z = w.grant(N6, 3, &[], A, Z, Write, &[]);
+    w.grant(N6, 3, &[], A, Z, Role::Read, &[]);
+    let r = w.grant(B, 7, &[], A, H, Gone, &[gb]);
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert_eq!(rd.role(Z, A), Gone, "{trust:?}");
@@ -1944,13 +1944,13 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
 }
 
 /// A grant write whose holder is its target is not applied (spec/permissions.md §1), whoever
-/// writes it: A's admin H granting A admin on A, and A acting as itself on its own edge, set
+/// writes it: A's admin H granting A admin on A, and A acting as itself on its own grant, set
 /// nothing; H's grant to X beside them applies.
 #[test]
-fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
+fn an_grant_write_whose_holder_is_its_target_is_not_applied() {
     let (mut w, gx, _) = paired();
-    let by_admin = w.edge(H, 2, &[], A, A, Admin, &[]);
-    let by_itself = w.edge(A, 3, &[], A, A, Gone, &[]);
+    let by_admin = w.grant(H, 2, &[], A, A, Admin, &[]);
+    let by_itself = w.grant(A, 3, &[], A, A, Gone, &[]);
     assert!(!w.well(by_admin) && !w.well(by_itself));
     let rd = design(&w, &[]);
     assert!(rd.applied.contains(&gx) && !rd.applied.contains(&by_admin) && !rd.applied.contains(&by_itself));
@@ -1974,7 +1974,7 @@ fn a_commit_writes_its_paths_end_and_what_hangs_from_it() {
     assert!(!w.well(above[0]) && w.well(above[1]));
     let rd = fixed(&w, &[]);
     assert!(ids.iter().all(|i| rd.valid.contains(i)) && !rd.valid.contains(&off) && !rd.valid.contains(&above[0]) && rd.valid.contains(&above[1]));
-    let r = w.edge(H, 6, &[], A, X, Gone, &[ids[1]]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[ids[1]]);
     let rd = fixed(&w, &[r]);
     assert!(rd.valid.contains(&ids[1]) && !rd.valid.contains(&ids[0]) && !rd.valid.contains(&ids[2]));
 }
@@ -2001,13 +2001,13 @@ fn a_write_by_the_thing_it_writes_is_purged_by_no_request_by_author() {
 /// H's removal of X from A takes T1's part and leaves A2's (the commit half valid, as any commit
 /// whose deltas are judged on their own, spec/commits.md §4); K's removal the other way round; a
 /// removal listing the commit keeps T1's part; X's purge by author on T1 takes T1's part alone. A
-/// unit holding T1's part needs no edge of A2's path as evidence, and the reverse.
+/// unit holding T1's part needs no grant of A2's path as evidence, and the reverse.
 #[test]
 fn a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing() {
     // `then` adds the later writes to both worlds alike; the parts keep their ids in both
     let build = |one: bool, then: &dyn Fn(&mut World, [Id; 2])| {
         let (mut w, ..) = paired();
-        let gk = w.edge(K, 1, &[], A2, X, Write, &[]);
+        let gk = w.grant(K, 1, &[], A2, X, Write, &[]);
         let s = if one {
             let v = w.split(X, 3, X, &[(&[A], T1), (&[], A2)]);
             [v[0], v[1]]
@@ -2021,9 +2021,9 @@ fn a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing() {
     // (later writes, trusted among them, which parts stand, which are purged)
     let cases: Vec<(Then, [bool; 2], [bool; 2])> = vec![
         (Box::new(|_, _| vec![]), [true, true], [false, false]),
-        (Box::new(|w, _| vec![w.edge(H, 6, &[], A, X, Gone, &[])]), [false, true], [false, false]),
-        (Box::new(|w, _| vec![w.edge(K, 6, &[], A2, X, Gone, &[])]), [true, false], [false, false]),
-        (Box::new(|w, s| vec![w.edge(H, 6, &[], A, X, Gone, &[s[0]])]), [true, true], [false, false]),
+        (Box::new(|w, _| vec![w.grant(H, 6, &[], A, X, Gone, &[])]), [false, true], [false, false]),
+        (Box::new(|w, _| vec![w.grant(K, 6, &[], A2, X, Gone, &[])]), [true, false], [false, false]),
+        (Box::new(|w, s| vec![w.grant(H, 6, &[], A, X, Gone, &[s[0]])]), [true, true], [false, false]),
         (Box::new(|w, _| { w.purge(X, 4, &[A], T1, X); vec![] }), [true, true], [true, false]),
     ];
     for (k, (then, stand, purged)) in cases.iter().enumerate() {
@@ -2053,7 +2053,7 @@ fn a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing() {
 fn a_purge_holds_the_right_only_through_its_own_chain() {
     let mut w = guests();
     let k = w.content_as(K, 2, &[A2], T1, 1);
-    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
     let by_admin = w.purge(X, 3, &[A], T1, A2);
     let rd = fixed(&w, &[]);
     assert!(rd.valid.contains(&by_admin) && rd.purged.is_empty());
@@ -2062,17 +2062,17 @@ fn a_purge_holds_the_right_only_through_its_own_chain() {
     assert_eq!(fixed(&w, &[]).purged, Set::from([k]));
 }
 
-/// A removed signer's backdated purge through the cut edge takes nothing, trusted or not; listed
+/// A removed signer's backdated purge through the cut grant takes nothing, trusted or not; listed
 /// by the removal it stands; a purge through a path the signer keeps still holds.
 #[test]
 fn a_removed_signers_backdated_purge_takes_nothing() {
     let mut w = guests();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
     let h = w.content_as(H, 2, &[A], T1, 1);
     let k = w.content_as(K, 2, &[A2], T1, 1);
     let q = w.purge(X, 5, &[A], T1, A);
     let qk = w.purge(X, 5, &[A2], T1, A2);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert!(!rd.valid.contains(&q) && rd.valid.contains(&qk), "{trust:?}");
@@ -2129,7 +2129,7 @@ fn a_removal_naming_its_own_cover_keeps_what_the_cover_carries() {
     let x = w.content(X, 3, &[A], T1);
     let bc = w.push(B, 4, &[A], T1, Kind::Cover { carries: Set::from([x]) });
     let own = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
-    let r = w.edge(H, 6, &[], A, X, Gone, &[own]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[own]);
     let v = View::all(&w).trusting(&[r]).without(&[x]);
     let facts = Rules { cover_facts: true, ..Rules::fixed() };
     let rd = judge(&w, &facts, &v);
@@ -2153,7 +2153,7 @@ fn a_fallen_cover_takes_nothing_honest() {
     let b = w.content(B, 2, &[A], T1);
     let x = w.content(X, 3, &[A], T1);
     let xc = w.push(X, 4, &[A], T1, Kind::Cover { carries: Set::from([b, x]) });
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let at_author = judge(&w, &Rules::fixed(), &View::all(&w).trusting(&[r]));
     assert!(!at_author.valid.contains(&xc) && at_author.valid.contains(&b) && !at_author.shows(x));
     let forgot = View::all(&w).trusting(&[r]).without(&[b, x]);
@@ -2166,19 +2166,19 @@ fn a_fallen_cover_takes_nothing_honest() {
 
 // ---- A commit of several grant writes (spec/commits.md §2; notes/a1-spec/README.md, OPEN 10) ----
 
-/// X's edge granted by B and by N5; X removes B and N5 in one commit, listing nothing. Its parts
+/// X's grant granted by B and by N5; X removes B and N5 in one commit, listing nothing. Its parts
 /// are judged in holder order: the removal of B drops B's grant of X, N5's grant still keeping X's
-/// edge, and applies. The removal of N5 would drop N5's grant: past its own drop and the commit's
-/// earlier one X's edge has no grant left, so it is void, and X keeps admin by N5's grant, trusted
+/// grant, and applies. The removal of N5 would drop N5's grant: past its own drop and the commit's
+/// earlier one X's grant has no grant left, so it is void, and X keeps admin by N5's grant, trusted
 /// or not. Control (`keeps` over each lowering's own drops alone): both apply and the commit's
 /// path ends with no authority.
 #[test]
 fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
     let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let bx = w.edge(B, 2, &[], A, X, Admin, &[]);
-    let nx = w.edge(N5, 3, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let bx = w.grant(B, 2, &[], A, X, Admin, &[]);
+    let nx = w.grant(N5, 3, &[], A, X, Admin, &[]);
     let ids = w.commit(X, 5, &[], A, vec![Kind::set(N5, Gone), Kind::set(B, Gone)]);
     let (rb, r5) = (ids[0], ids[1]);
     assert_eq!(w.sets(rb), Some((B, A)));
@@ -2193,10 +2193,10 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
     assert_eq!(rd.self_taken, Set::from([rb]));
 }
 
-/// A commit of several grant writes is judged part by part like any, the part on an edge of its
+/// A commit of several grant writes is judged part by part like any, the part on a grant of its
 /// own stated path last (spec/commits.md §2; notes/a1-spec/README.md, OPEN 14). X removes B and
 /// leaves A in one commit: both apply. H, along [A],
-/// takes T1's record grant off D1 (the edge its descent ends with) and grants N5 admin on D1: the
+/// takes T1's record grant off D1 (the grant its descent ends with) and grants N5 admin on D1: the
 /// grant applies by the path as it stood, then the removal, judged as any lowering, applies and
 /// drops nothing of its own commit (no list can name it). Naming one holder twice is bad input.
 /// Control (`-refuse-shapes`: a self-removal or a part on the commit's own path refuses the
@@ -2205,7 +2205,7 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
 fn a_commit_of_several_writes_is_judged_part_by_part_its_own_path_last() {
     let build = || {
         let (mut w, ..) = paired();
-        let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
+        let ga = w.grant(H, 1, &[A, T1], D1, A, Admin, &[]);
         let own = w.commit(X, 5, &[], A, vec![Kind::set(X, Gone), Kind::set(B, Gone)]);
         let twice = w.commit(X, 5, &[], A, vec![Kind::set(N5, Admin), Kind::set(N5, Write)]);
         let rec = w.commit(H, 5, &[A], D1, vec![Kind::set(T1, Gone).listing(w.cut(&[ga])), Kind::set(N5, Admin)]);
@@ -2280,7 +2280,7 @@ fn a_link_redemption_grants_once_and_ends_the_link() {
 }
 
 /// Redeemed twice concurrently (two holders of the seed, both at 3, or at 3 and 4): the redemption
-/// first in key order grants and ends L's grant; the other's grant finds no flag on L's edge and
+/// first in key order grants and ends L's grant; the other's grant finds no flag on L's grant and
 /// applies nowhere, its leave a no-op. One redeemer holds LK at every node, whatever arrives first.
 #[test]
 fn a_link_redeemed_twice_concurrently_grants_once() {
@@ -2295,7 +2295,7 @@ fn a_link_redeemed_twice_concurrently_grants_once() {
     }
 }
 
-/// A thief holding the link key after the redemption: its grant stamped after it finds L's edge
+/// A thief holding the link key after the redemption: its grant stamped after it finds L's grant
 /// gone and applies nowhere; one backdated before it applies by L's flag then, until the
 /// sharer's explicit removal of L, listing the redemption it received, drops it (spec/permissions.md
 /// §7, Finalized). Trusted or not, R1 keeps LK and the thief's keys hold nothing.
@@ -2345,8 +2345,8 @@ fn tiny_gates_under(w: &World, trust: &[Id], rules: &Rules) -> TinyStats {
 /// - `multi`: a link for many (no leave part): R2 at 3 unseen, R1 at 4 listed.
 /// The rule (`Drops::Commit`): R2's grant falls and its leave with it (one commit's parts on LK),
 /// so R1's grant applies: R1 holds LK, as today's walk has it. Control `-part-drops`: in `unseen`
-/// and `backdated`, at a node not trusting the removal, R2's leave stands (its need at L's edge,
-/// admin, was never met there), so R1's grant finds L's edge gone and nobody holds LK; a node
+/// and `backdated`, at a node not trusting the removal, R2's leave stands (its need at L's grant,
+/// admin, was never met there), so R1's grant finds L's grant gone and nobody holds LK; a node
 /// trusting it seeds the leave too (a seed asks only that the removal's value not meet the need)
 /// and gives R1 LK: the nodes read differently by trust. The other worlds read alike under both
 /// readings and trust.
@@ -2467,7 +2467,7 @@ fn part_drops_change_no_story_reading() {
 #[test]
 fn two_admins_leaving_at_once_leave_the_thing_adminless() {
     let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     let lh = w.push(H, 3, &[], A, Kind::set(H, Gone));
     let lb = w.push(B, 3, &[], A, Kind::set(B, Gone));
     assert!(w.leave(lh) && w.leave(lb) && w.key(lh) < w.key(lb));
@@ -2487,13 +2487,13 @@ fn a_writer_of_an_admin_holder_grants_up_to_its_own_role() {
     const M: Thing = 41;
     const T: Thing = 42;
     let mut w = World::new(&[(H, M), (H, T)]);
-    w.edge(H, 1, &[], T, M, Admin, &[]);
-    w.edge(H, 1, &[], M, B, Write, &[]);
+    w.grant(H, 1, &[], T, M, Admin, &[]);
+    w.grant(H, 1, &[], M, B, Write, &[]);
     let read = w.push(B, 2, &[M], T, Kind::set(Z, Role::Read));
     let write = w.push(B, 2, &[M], T, Kind::set(N5, Write).may_grant());
     let admin = w.push(B, 2, &[M], T, Kind::set(N6, Admin));
     // a reader of M grants readers on T
-    w.edge(H, 1, &[], M, X, Role::Read, &[]);
+    w.grant(H, 1, &[], M, X, Role::Read, &[]);
     let x_read = w.push(X, 3, &[M], T, Kind::set(K, Role::Read));
     let x_write = w.push(X, 3, &[M], T, Kind::set(A2, Write));
     let rd = keyed(&w);
@@ -2505,8 +2505,8 @@ fn a_writer_of_an_admin_holder_grants_up_to_its_own_role() {
 
 /// A thing detached from its folder (notes/a1-spec/README.md Open 21): H mints A (the folder),
 /// A mints T. H grants itself admin on T by [A] (its direct grant (H, T)), then removes A's record
-/// edge on T by its descent []: both apply. A record grant
-/// is an edge like any (the walk starts it at admin and grant writes move it), and a descent rests
+/// grant on T by its descent []: both apply. A record grant
+/// is a grant like any (the walk starts it at admin and grant writes move it), and a descent rests
 /// on each of its record grants as they stand at the part's key: so H's later content and grant on
 /// T, stated along the descent [] or through [A], apply nowhere, though H holds admin on T by its
 /// own direct grant, which no unmarked path can state (a hop from a mint ancestor is a descent).
@@ -2540,10 +2540,10 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
 /// record grants above T, makes M admin on T and writes T by the descent []. M then grants H read
 /// on T, stamped before H's write. Were a hop from a mint ancestor read as direct wherever a
 /// direct grant is held (`push_marked` standing for that reading), M's grant would turn H's write
-/// into one through a read edge: invalid. M, by granting, decides how H's earlier writes are
-/// read. Stated, H's write stays a descent and valid whatever edge M writes.
+/// into one through a read grant: invalid. M, by granting, decides how H's earlier writes are
+/// read. Stated, H's write stays a descent and valid whatever grant M writes.
 #[test]
-fn a_hop_read_by_the_direct_edges_held_lets_another_admin_void_a_mint_ancestors_writes() {
+fn a_hop_read_by_the_direct_grants_held_lets_another_admin_void_a_mint_ancestors_writes() {
     const T: Thing = 40;
     const M: Thing = 41;
     let mut w = World::new(&[(H, A), (A, T)]);
@@ -2561,8 +2561,8 @@ fn a_hop_read_by_the_direct_edges_held_lets_another_admin_void_a_mint_ancestors_
 /// A self-removal rewriting its holder's own admin unchanged (it lowers, so it applies) does not
 /// keep that admin past a lowering's drops (notes/path-model-findings.md 43): H grants B admin on
 /// A; B rewrites its own grant unchanged; B removes H listing nothing, which drops H's grant of B,
-/// the only authority B's removal had. `keeps` reads B's edge back past the rewrite (it gives at
-/// most what the edge gave before it, here nothing): the removal is void, H stays an admin, as
+/// the only authority B's removal had. `keeps` reads B's grant back past the rewrite (it gives at
+/// most what the grant gave before it, here nothing): the removal is void, H stays an admin, as
 /// without the rewrite.
 #[test]
 fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
@@ -2584,7 +2584,7 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
 /// record chain of T1): [] marked applies nowhere, unmarked applies. A, T1's mint admin, holds the
 /// record grant, which is its direct grant: its write by [] marked applies nowhere, unmarked applies.
 /// A mark past the members (hop 1 of a path of one hop) applies nowhere. H's marked hop, where H
-/// holds a direct grant on T1, applies; where it holds none, nowhere (no edge, not the descent).
+/// holds a direct grant on T1, applies; where it holds none, nowhere (no grant, not the descent).
 /// (A, minted by H, signs by a key H grants.)
 #[test]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
@@ -2606,13 +2606,13 @@ fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     assert!([b_marked, a_marked, past, h_none].iter().all(|i| !rd.valid.contains(i)), "{rd:?}");
 }
 
-/// A final hop marked direct is the path's last edge (spec/permissions.md §1 Path: its last
-/// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B along
-/// the marked hop: its last edge (H's grant) gives admin, so it applies (the descent would give
+/// A final hop marked direct is the path's last grant (spec/permissions.md §1 Path: its last
+/// grant): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B along
+/// the marked hop: its last grant (H's grant) gives admin, so it applies (the descent would give
 /// nothing). H, given read with the flag on T1 in place of admin, grants Z read along the marked
-/// hop and not N5 write: the last edge's flag at its role.
+/// hop and not N5 write: the last grant's flag at its role.
 #[test]
-fn a_marked_final_hop_is_the_last_edge() {
+fn a_marked_final_hop_is_the_last_grant() {
     let mut w = account();
     let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
@@ -2632,7 +2632,7 @@ fn a_marked_final_hop_is_the_last_edge() {
 
 /// Two routes, two claims (spec/permissions.md §1 Path, Direct mark): H holds T1 by the
 /// descent and by its own direct grant; B holds a direct admin grant on T1. B removes A's record
-/// edge on T1, detaching it: H's write along the descent stamped after applies nowhere, the one
+/// grant on T1, detaching it: H's write along the descent stamped after applies nowhere, the one
 /// along its marked direct hop stands. B then removes H's direct grant listing that write: H's
 /// later marked write falls, the listed one stays; unlisted, it falls too. A remover takes both
 /// routes, as any party's two grants.
@@ -2684,7 +2684,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
 /// T1 minted with admin A, A with admin H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
 /// detaches T1 (A's record grant removed, listing those grants). Along its marked direct hop H
 /// grants X write and writes content; X writes. B removes H listing H's content: H's grant of X
-/// rests on the removed edge, so it falls with X's write unless B's list names it too; the listed
+/// rests on the removed grant, so it falls with X's write unless B's list names it too; the listed
 /// content stays. The grant stated by the cut descent instead applies nowhere.
 #[test]
 fn a_marked_hop_under_a_removal_with_a_list() {
@@ -2714,7 +2714,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 /// `tiny_detached` reaches every case its doc names (counted over its first 300 worlds, every
 /// count above zero): a marked hop applying, one applying nowhere (no direct grant), a mark off a
 /// descent of two steps or more (on no descent, on a one-step descent, past the hops), A's record
-/// edge removed (T1 detached), and an unmarked descent applying nowhere.
+/// grant removed (T1 detached), and an unmarked descent applying nowhere.
 #[test]
 fn tiny_detached_worlds_reach_the_marked_cases() {
     let mut n = BTreeMap::<&str, u64>::new();
@@ -2740,7 +2740,7 @@ fn tiny_detached_worlds_reach_the_marked_cases() {
                 _ => "other",
             };
             *n.entry(key).or_default() += 1;
-            if rd.applied.contains(&k) && matches!(&c.kind, Kind::Edge { holder, role: Role::None, .. } if *holder == A) {
+            if rd.applied.contains(&k) && matches!(&c.kind, Kind::Grant { holder, role: Role::None, .. } if *holder == A) {
                 *n.entry("detached").or_default() += 1;
             }
         }
@@ -2756,13 +2756,13 @@ fn tiny_detached_worlds_reach_the_marked_cases() {
 /// makes A2 leave T1 (a self-removal by [A2], naming A). Trusted, its seeds would drop K's grant
 /// (unlisted: a self-removal carries no frontier), so as a candidate it is shown in an honest
 /// history. Candidates are explicit writes: a self-removal, never trusted, is none. Control: every
-/// lowering of another holder's edge a candidate, the leave is shown.
+/// lowering of another holder's grant a candidate, the leave is shown.
 #[test]
 fn an_honest_holder_leave_is_no_dispute() {
     let mut w = account();
-    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    let gz = w.edge(K, 2, &[A2], T1, Z, Write, &[]);
-    let leave = w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
+    w.grant(H, 1, &[A], T1, A2, Admin, &[]);
+    let gz = w.grant(K, 2, &[A2], T1, Z, Write, &[]);
+    let leave = w.grant(K, 3, &[A2], T1, A2, Gone, &[]);
     assert!(w.leave(leave));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&leave) && rd.role(Z, T1) == Write && rd.role(A2, T1) == Gone);
@@ -2779,13 +2779,13 @@ fn an_honest_holder_leave_is_no_dispute() {
 /// The grant's need on (A2, T1) is read with the flag, which the demotion still gives: its audit
 /// keeps it at a node trusting nothing, and a trusted demotion's seeds (its value's unmet needs)
 /// keep it too, so both read alike and nothing is shown. Control (seeds every unlisted write
-/// resting on the edge): the trusting node drops the grant and the demotion is shown as a dispute.
+/// resting on the grant): the trusting node drops the grant and the demotion is shown as a dispute.
 #[test]
 fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
     let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
-    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
     let gi = w.push(X, 4, &[A2], T1, Kind::set(G, Role::Read));
     let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).may_grant());
     for t in [&[][..], &[kiosk]] {
@@ -2812,12 +2812,12 @@ fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
 #[test]
 fn an_unapplied_grant_changes_nothing_observed() {
     let mut w = account();
-    let again = w.edge(H, 11, &[], A, N5, Admin, &[]);
-    w.edge(N5, 11, &[], A, H, Write, &[again]);
+    let again = w.grant(H, 11, &[], A, N5, Admin, &[]);
+    w.grant(N5, 11, &[], A, H, Write, &[again]);
     w.edit(1, |k| k.may_grant());
-    let r6 = w.edge(N5, 9, &[], A, N6, Gone, &[]);
+    let r6 = w.grant(N5, 9, &[], A, N6, Gone, &[]);
     let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).may_grant().until(10));
-    w.edge(H, 3, &[], A, N5, Admin, &[]);
+    w.grant(H, 3, &[], A, N5, Admin, &[]);
     let (n6, h) = (w.content(N6, 9, &[], A), w.content(H, 12, &[], A));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&r6) && !rd.applied.contains(&g6), "{rd:?}");
@@ -2844,7 +2844,7 @@ fn h_demotes_n5(listing: &[Id]) -> (World, Id) {
 
 /// Finding 34 (accepted, counted): the first pass applies N5's demotion of Z, so Z's writes at 5
 /// do not apply, and H's demotion of N5 is judged with H holding admin: `keeps` holds (no setter of
-/// H's edge is dropped) and it applies, dropping N5's demotion of Z. The restart lets Z's writes at
+/// H's grant is dropped) and it applies, dropping N5's demotion of Z. The restart lets Z's writes at
 /// 5 apply, so H's demotion, now raising N5 from read, applies nowhere (finding 27), yet its drop
 /// stays: H ends at read and Z admin, where without H's demotion held H stays admin and Z at write.
 /// No dispute is shown: trusted, H's demotion's seeds take N5's demotion of Z first, Z's writes
@@ -2879,7 +2879,7 @@ fn idle_gate(w: &World, trust: &[Id]) -> Vec<Id> {
 /// Finding 35 (accepted, counted; the smallest `tiny` world counted in `idle N`): H grants N5 admin
 /// at 2; N5, in one commit at 2, sets H's admin to end at 4 and grants B admin; B grants H admin
 /// again at 4; H removes N5 at 6, listing nothing. Held, B's grant gives H admin at 6: H's removal is
-/// judged, its drops take N5's commit (H's edge is its record grant again), so B's grant applies
+/// judged, its drops take N5's commit (H's grant is its record grant again), so B's grant applies
 /// nowhere in the end: H admin, N5 and B none. Without B's grant H's admin ended at 4 and its removal
 /// has no right: N5 and B admins, H none. No dispute either way: H's removal applies; N5's end on H
 /// is a grant (`Until::Plain`). As a lowering judged at its key (`Until::AtKey`) the same: its drops
@@ -2917,7 +2917,7 @@ fn b_ends_h(end: Kind) -> (World, Id, Id, Vec<Vec<Id>>) {
 }
 
 /// Finding 36 (accepted, counted): in `b_ends_h`, held, Z's grant gives H admin at 12: H's removal
-/// drops B's writes, Z's grant among them, and H's edge is its record grant again: B and Z none, H
+/// drops B's writes, Z's grant among them, and H's grant is its record grant again: B and Z none, H
 /// admin. Without it H's admin ended at 8: B and Z admins, H none. Nobody is hostile and no dispute
 /// is shown. As a lowering judged at its key (`Until::AtKey`) B's end drops nothing: the same. With
 /// B removing H at 6 in place of the end date the world reads the same, unshown: the class is a
@@ -2969,7 +2969,7 @@ fn an_end_on_admin_drops_nothing_stamped_past_it() {
 /// nothing in 13 of 1,000,000 worlds against 3, with no dispute shown more): H grants B and N6
 /// admin at 2; N6 removes H at 3 listing H's grant of N6; B, in one commit at 3 (before N6's in key
 /// order), sets H's and N6's admin to end at 5. Judged at its key B's commit applies; N6's removal,
-/// H's edge timed, applies and drops
+/// H's grant timed, applies and drops
 /// H's grant of B. Restarted, B holds nothing, yet its ends keep their verdict and apply: H and B
 /// none, N6 timed, A with no standing admin. As grants (the rule) B's ends apply nowhere once B
 /// holds nothing: N6 stays a standing admin. The idle-write counts it lowers (47 to 35) are such
@@ -3054,7 +3054,7 @@ fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
 /// H paired N5; B shared T1 with A2 at 2;
 /// X removed N5 at 3, listing H's grant, and everyone received it; H removes X at 6 listing it.
 /// With N5's key the thief backdates a removal of B to 2, ordered after B's share. It applies at
-/// its key (N5 an admin then) and drops B's share (unlisted, resting on B's edge); X's removal of
+/// its key (N5 an admin then) and drops B's share (unlisted, resting on B's grant); X's removal of
 /// N5 then drops the thief's write, but a drop stands for good (finding 16): the share stays
 /// dropped where X's removal of N5 is not trusted: B is an admin throughout and its share is lost,
 /// and X's removal of N5 is shown as a dispute. A node that held X's removal of N5 before the
@@ -3063,13 +3063,13 @@ fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
 #[test]
 fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
     let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let gs = w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out5]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let gs = w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let out5 = w.grant(X, 3, &[], A, N5, Gone, &[g5]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out5]);
     let rd = fixed(&w, &[r]);
     assert!(rd.applied.contains(&gs) && rd.role(A2, T1) == Write, "{rd:?}");
-    let down = w.edge(N5, 2, &[], A, B, Gone, &[]);
+    let down = w.grant(N5, 2, &[], A, B, Gone, &[]);
     assert!(w.key(gs) < w.key(down) && w.key(down) < w.key(out5));
     for t in [&[][..], &[r]] {
         let rd = fixed(&w, t);
@@ -3188,13 +3188,13 @@ fn a_lowering_that_applied_taking_nothing_is_a_side() {
 #[test]
 fn a_choice_drops_an_earlier_lowering_of_its_own_path() {
     let mut w = minted_by(M);
-    w.edge(M, 0, &[], A, H, Admin, &[]);
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out5 = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let down = w.edge(X, 1, &[], A, H, Write, &[gx]);
-    let off = w.edge(X, 5, &[], A, H, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out5, off]);
+    w.grant(M, 0, &[], A, H, Admin, &[]);
+    let gx = w.grant(H, 1, &[], A, X, Admin, &[]);
+    let g5 = w.grant(H, 1, &[], A, N5, Admin, &[]);
+    let out5 = w.grant(X, 3, &[], A, N5, Gone, &[g5]);
+    let down = w.grant(X, 1, &[], A, H, Write, &[gx]);
+    let off = w.grant(X, 5, &[], A, H, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[out5, off]);
     let v = View::all(&w).trusting(&[down, off]);
     let rd = judge(&w, &Rules::fixed(), &v);
     assert!(rd.role(H, A) == Gone && rd.role(X, A) == Admin && !rd.applied.contains(&r), "{rd:?}");
@@ -3228,7 +3228,7 @@ fn masked() -> (Sim, Rules) {
 
 /// W10, the same world at a node trusting nothing (N6): both demotions apply at their keys and B's
 /// share is dropped. Trusting either removal alone leaves the other demotion dropping it, so each
-/// removal, whose drops include a lowering of another holder's edge, is tried beside the other:
+/// removal, whose drops include a lowering of another holder's grant, is tried beside the other:
 /// both are shown, and choosing them brings the share back. Control `-alone` (each candidate tried
 /// alone): nothing is shown and the share is lost.
 #[test]
@@ -3254,8 +3254,8 @@ const CT: Thing = 43;
 /// Z holds write on A (H's grant at 1); A holds write on CT (M's grant at 2, M CT's mint).
 fn cut_twice() -> World {
     let mut w = World::new(&[(H, A), (M, CT)]);
-    w.edge(H, 1, &[], A, Z, Write, &[]);
-    w.edge(M, 2, &[], CT, A, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
+    w.grant(M, 2, &[], CT, A, Write, &[]);
     w
 }
 
@@ -3265,55 +3265,55 @@ fn any_cut(w: &World) -> Reading {
 
 /// M removes A from CT at 4, listing nothing; Z then writes CT through [A] at 5; H removes Z from
 /// A at 7 listing everything it received, Z's write included. H's list answers H's cut of (Z, A)
-/// alone: M's cut of (A, CT) already refused the write, and H holds no authority over that edge.
+/// alone: M's cut of (A, CT) already refused the write, and H holds no authority over that grant.
 /// Control `-list-any-cut`: H's list revives it.
 #[test]
 fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
     let mut w = cut_twice();
-    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    w.grant(M, 4, &[], CT, A, Gone, &[]);
     let c = w.content(Z, 5, &[A], CT);
-    let r = w.edge(H, 7, &[], A, Z, Gone, &[c]);
+    let r = w.grant(H, 7, &[], A, Z, Gone, &[c]);
     for t in [&[][..], &[r]] {
         let rd = judge(&w, &Rules::fixed(), &View::all(&w).trusting(t));
         assert!(!rd.shows(c), "{rd:?}");
     }
     assert!(any_cut(&w).valid.contains(&c));
     // an addendum against H's removal answers H's cut alone too
-    w.edge(H, 1, &[], A, B, Write, &[]);
+    w.grant(H, 1, &[], A, B, Write, &[]);
     w.addendum(B, 8, &[A], CT, r, &[c]);
     assert!(!fixed(&w, &[]).shows(c));
 }
 
 /// Both removals, stamped 4, list Z's write stamped 5: backdated (an honest remover's clock passes
 /// what it received, spec/crdt.md HLC rules). Each cut lists it, so it stands against each: valid. Where only M lists it, H's cut of (Z, A), the
-/// edge's last write before it, refuses it.
+/// grant's last write before it, refuses it.
 #[test]
 fn a_write_after_two_cuts_stands_where_each_lists_it() {
     for both in [true, false] {
         let mut w = cut_twice();
         let c = w.content(Z, 5, &[A], CT);
-        w.edge(M, 4, &[], CT, A, Gone, &[c]);
+        w.grant(M, 4, &[], CT, A, Gone, &[c]);
         let list = if both { vec![c] } else { vec![] };
-        w.edge(H, 4, &[], A, Z, Gone, &list);
+        w.grant(H, 4, &[], A, Z, Gone, &list);
         assert_eq!(fixed(&w, &[]).valid.contains(&c), both, "both {both}");
         assert!(any_cut(&w).valid.contains(&c));
     }
 }
 
-/// One edge cut twice after the write: H's first removal lists it or not, the second (after a
+/// One grant cut twice after the write: H's first removal lists it or not, the second (after a
 /// re-grant) does not. It stands only where each cut is answered: an addendum answers the cut it
 /// is against, not the other.
 #[test]
-fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
+fn a_write_stands_only_where_every_later_cut_of_its_grant_answers_it() {
     for listed in [true, false] {
         let mut w = World::new(&[(H, A)]);
-        w.edge(H, 1, &[], A, Z, Write, &[]);
-        w.edge(H, 1, &[], A, B, Write, &[]);
+        w.grant(H, 1, &[], A, Z, Write, &[]);
+        w.grant(H, 1, &[], A, B, Write, &[]);
         let c = w.content(Z, 2, &[], A);
         let list = if listed { vec![c] } else { vec![] };
-        let r1 = w.edge(H, 4, &[], A, Z, Gone, &list);
-        w.edge(H, 5, &[], A, Z, Write, &[]);
-        let r2 = w.edge(H, 6, &[], A, Z, Gone, &[]);
+        let r1 = w.grant(H, 4, &[], A, Z, Gone, &list);
+        w.grant(H, 5, &[], A, Z, Write, &[]);
+        let r2 = w.grant(H, 6, &[], A, Z, Gone, &[]);
         assert!(!fixed(&w, &[]).shows(c));
         assert_eq!(any_cut(&w).valid.contains(&c), listed);
         // an addendum against the first cut alone
@@ -3329,27 +3329,27 @@ fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
 }
 
 /// A write stamped before its path gave the role, listed by a later cut: the list answers the
-/// cut, not the missing grant (valid as if the cut had not cut it: the edge gave nothing then).
+/// cut, not the missing grant (valid as if the cut had not cut it: the grant gave nothing then).
 #[test]
 fn a_list_gives_no_role_the_path_never_gave() {
     let mut w = World::new(&[(H, A)]);
     let c = w.content(Z, 1, &[], A);
-    w.edge(H, 2, &[], A, Z, Write, &[]);
-    w.edge(H, 4, &[], A, Z, Gone, &[c]);
+    w.grant(H, 2, &[], A, Z, Write, &[]);
+    w.grant(H, 4, &[], A, Z, Gone, &[c]);
     assert!(!fixed(&w, &[]).shows(c));
     assert!(any_cut(&w).valid.contains(&c));
 }
 
-/// The edge before an answering cut is read at the write's `ts`: H's removal at 2 lists Z's write
-/// stamped 5 (backdated, as above), but Z's grant ended at 3: the cut not taken, the edge gave
+/// The grant before an answering cut is read at the write's `ts`: H's removal at 2 lists Z's write
+/// stamped 5 (backdated, as above), but Z's grant ended at 3: the cut not taken, the grant gave
 /// nothing at 5. With a standing grant it stands.
 #[test]
-fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
+fn an_answered_cut_gives_back_only_what_the_grant_gave_at_the_write() {
     for until in [true, false] {
         let mut w = World::new(&[(H, A)]);
         w.push(H, 1, &[], A, if until { Kind::set(Z, Write).until(3) } else { Kind::set(Z, Write) });
         let c = w.content(Z, 5, &[], A);
-        w.edge(H, 2, &[], A, Z, Gone, &[c]);
+        w.grant(H, 2, &[], A, Z, Gone, &[c]);
         assert_eq!(fixed(&w, &[]).valid.contains(&c), !until, "until {until}");
         assert!(any_cut(&w).valid.contains(&c));
     }
@@ -3359,14 +3359,14 @@ fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
 /// the one made after the re-grant needs only the second cut's answer; the one the first cut
 /// refused stays refused (the final state gives nothing, so no re-grant).
 #[test]
-fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
+fn a_second_cut_of_an_grant_answers_only_what_the_first_left_standing() {
     let mut w = World::new(&[(H, A)]);
-    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
     let c0 = w.content(Z, 2, &[], A);
-    w.edge(H, 3, &[], A, Z, Gone, &[]);
-    w.edge(H, 4, &[], A, Z, Write, &[]);
+    w.grant(H, 3, &[], A, Z, Gone, &[]);
+    w.grant(H, 4, &[], A, Z, Write, &[]);
     let c1 = w.content(Z, 5, &[], A);
-    w.edge(H, 6, &[], A, Z, Gone, &[c0, c1]);
+    w.grant(H, 6, &[], A, Z, Gone, &[c0, c1]);
     let rd = fixed(&w, &[]);
     assert!(rd.valid.contains(&c1) && !rd.shows(c0), "{rd:?}");
     assert!(any_cut(&w).valid.contains(&c0));
@@ -3379,12 +3379,12 @@ fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
 fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
     for listed in [true, false] {
         let mut w = World::new(&[(H, A)]);
-        w.edge(H, 1, &[], A, Z, Write, &[]);
-        w.edge(H, 1, &[], A, B, Write, &[]);
+        w.grant(H, 1, &[], A, Z, Write, &[]);
+        w.grant(H, 1, &[], A, B, Write, &[]);
         let c = w.content(Z, 2, &[], A);
-        let r1 = w.edge(H, 4, &[], A, Z, Gone, &[]);
+        let r1 = w.grant(H, 4, &[], A, Z, Gone, &[]);
         let a = w.addendum(B, 5, &[], A, r1, &[c]);
-        w.edge(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
+        w.grant(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
         let rd = fixed(&w, &[]);
         assert_eq!((rd.valid.contains(&a), rd.valid.contains(&c)), (listed, listed), "listed {listed}");
     }
@@ -3396,10 +3396,10 @@ fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
 #[test]
 fn an_addendum_answers_the_cut_it_is_against_alone() {
     let mut w = cut_twice();
-    w.edge(M, 1, &[], CT, W, Write, &[]);
+    w.grant(M, 1, &[], CT, W, Write, &[]);
     let c = w.content(Z, 3, &[A], CT);
-    let rm = w.edge(M, 4, &[], CT, A, Gone, &[]);
-    let rh = w.edge(H, 5, &[], A, Z, Gone, &[]);
+    let rm = w.grant(M, 4, &[], CT, A, Gone, &[]);
+    let rh = w.grant(H, 5, &[], A, Z, Gone, &[]);
     w.addendum(W, 6, &[], CT, rh, &[c]);
     assert!(!fixed(&w, &[]).shows(c));
     assert!(any_cut(&w).valid.contains(&c));
@@ -3414,9 +3414,9 @@ fn an_addendum_answers_the_cut_it_is_against_alone() {
 fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
     let mut w = cut_twice();
     let parts = w.split(Z, 3, Z, &[(&[A], CT), (&[], A)]);
-    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    w.grant(M, 4, &[], CT, A, Gone, &[]);
     let honest = w.through((Z, A), |_| true);
-    w.edge(H, 5, &[], A, Z, Gone, &honest);
+    w.grant(H, 5, &[], A, Z, Gone, &honest);
     let rd = fixed(&w, &[]);
     assert!(rd.valid.contains(&parts[1]) && !rd.shows(parts[0]), "{rd:?}");
     assert!(any_cut(&w).valid.contains(&parts[0]));
@@ -3427,20 +3427,20 @@ fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
 /// Z writes one commit with a part on T1 through [A] and a part on A; H removes Z from A listing
 /// the commit in T1's leaf alone. The entry names the part on T1, not the part on A: a reader of A
 /// holds no leaf of T1, so only this reading is one every node can make. Listed in both leaves
-/// (the honest remover: each part resting on the lowered edge, in its own thing's leaf), both stand.
+/// (the honest remover: each part resting on the lowered grant, in its own thing's leaf), both stand.
 #[test]
 fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let (mut w, ..) = paired();
-    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
     let parts = w.split(Z, 2, Z, &[(&[A], T1), (&[], A)]);
     let (on_t1, on_a) = (parts[0], parts[1]);
     let mut w2 = w.clone();
-    w.edge(H, 4, &[], A, Z, Gone, &[on_t1]);
+    w.grant(H, 4, &[], A, Z, Gone, &[on_t1]);
     let rd = fixed(&w, &[]);
     assert!(rd.valid.contains(&on_t1) && !rd.shows(on_a), "{rd:?}");
     let honest = w2.through((Z, A), |_| true);
     assert!(honest.contains(&on_t1) && honest.contains(&on_a));
-    w2.edge(H, 4, &[], A, Z, Gone, &honest);
+    w2.grant(H, 4, &[], A, Z, Gone, &honest);
     let rd = fixed(&w2, &[]);
     assert!(rd.valid.contains(&on_t1) && rd.valid.contains(&on_a), "{rd:?}");
 }
@@ -3449,10 +3449,10 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
 /// on T1 through [A] and B write on A; H removes X from A listing the commit in T1's leaf alone:
 /// the grant on T1 stays, the grant on A drops; listed in both leaves, both stay.
 #[test]
-fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
+fn a_list_entry_keeps_an_grant_class_part_on_its_leafs_thing_alone() {
     for both in [false, true] {
         let mut w = World::new(&[(H, A), (A, T1)]);
-        w.edge(H, 1, &[], A, X, Admin, &[]);
+        w.grant(H, 1, &[], A, X, Admin, &[]);
         let on_t1 = w.push(X, 2, &[A], T1, Kind::set(K, Write));
         let on_a = w.push(X, 2, &[], A, Kind::set(B, Write));
         w.group(&[on_t1, on_a]);
@@ -3489,7 +3489,7 @@ fn a_thing_signs_by_the_key_its_record_holds_or_one_an_admin_grants() {
     assert!(fixed_but(&w, &[], |r| r.key_hop = false).valid.contains(&a_own));
 }
 
-/// K3: a key's grant is an edge like any. A's admins write it at any role, beside other keys; a
+/// K3: a key's grant is a grant like any. A's admins write it at any role, beside other keys; a
 /// key acts as its thing by the role its grant gives (at write: content, no grant write); an admin
 /// removes a key by the ordinary removal, and what the key signed falls unless listed (K4).
 #[test]
@@ -3503,7 +3503,7 @@ fn a_keys_grant_is_written_and_removed_like_any_grant() {
     let rd = fixed(&w, &[]);
     assert!([rk, tk, up].iter().all(|i| rd.applied.contains(i)) && rd.valid.contains(&c) && !rd.applied.contains(&g), "{rd:?}");
     assert!(rd.key_role(RK, A) == Admin && rd.key_role(TK, A) == Write && rd.role(Z, A) == Gone);
-    let out = w.edge(H, 5, &[], A, RK, Gone, &[]);
+    let out = w.grant(H, 5, &[], A, RK, Gone, &[]);
     let late = w.push_signed(RK, A, 6, &[], A, Kind::set(H, Gone));
     for trust in [vec![], vec![out]] {
         let v = View::all(&w).trusting(&trust);
@@ -3546,8 +3546,8 @@ fn a_key_outranks_no_admin() {
     w.records.push((T, TD));
     let gh = w.push(T, 1, &[], T, Kind::set(H, Admin));
     let down = w.content(T, 2, &[], TD);
-    let out = w.edge(H, 3, &[], T, own_key(T), Gone, &[gh, down]);
-    let back = w.edge(T, 4, &[], T, H, Gone, &[]);
+    let out = w.grant(H, 3, &[], T, own_key(T), Gone, &[gh, down]);
+    let back = w.grant(T, 4, &[], T, H, Gone, &[]);
     let late = w.content(T, 4, &[], TD);
     for trust in [vec![], vec![out]] {
         let v = View::all(&w).trusting(&trust);
@@ -3559,8 +3559,8 @@ fn a_key_outranks_no_admin() {
     }
     let mut w = account();
     let gh = w.push(T, 1, &[], T, Kind::set(H, Admin));
-    let by_key = w.edge(T, 3, &[], T, H, Gone, &[]);
-    let by_h = w.edge(H, 4, &[], T, own_key(T), Gone, &[gh]);
+    let by_key = w.grant(T, 3, &[], T, H, Gone, &[]);
+    let by_h = w.grant(H, 4, &[], T, own_key(T), Gone, &[gh]);
     let v = View::all(&w);
     let rd = judge(&w, &Rules::fixed(), &v);
     assert!(rd.applied.contains(&by_key) && !rd.applied.contains(&by_h) && rd.role(H, T) == Gone && rd.key_role(own_key(T), T) == Admin, "{rd:?}");
@@ -3592,8 +3592,8 @@ fn a_key_lowers_its_own_grant_whatever_its_role() {
 fn a_keys_grant_falls_with_its_grantor_where_the_removal_leaves_it_out() {
     let mut w = account();
     let attach = w.push(H, 1, &[], A, Kind::set(RK, Admin));
-    let gm = w.edge(H, 2, &[], A, M, Admin, &[]);
-    let mh = w.edge(M, 3, &[], A, H, Gone, &[gm]);
+    let gm = w.grant(H, 2, &[], A, M, Admin, &[]);
+    let mh = w.grant(M, 3, &[], A, H, Gone, &[gm]);
     let tk = w.push(M, 4, &[], A, Kind::set(TK, Admin));
     let out = w.push_signed(RK, A, 5, &[], A, Kind::set(M, Gone));
     for trust in [vec![], vec![mh]] {
@@ -3611,10 +3611,10 @@ fn a_keys_grant_falls_with_its_grantor_where_the_removal_leaves_it_out() {
 #[test]
 fn a_stolen_nodes_backdated_key_grant_falls_where_its_removal_is_trusted() {
     let mut w = account();
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
+    let gx = w.grant(H, 1, &[], A, X, Admin, &[]);
     let attach = w.push(X, 4, &[], A, Kind::set(TK, Admin));
     let th = w.push_signed(TK, A, 5, &[], A, Kind::set(H, Gone).listing(w.cut(&[gx])));
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let t = fixed(&w, &[r]);
     assert!(t.dropped.contains(&attach) && !t.applied.contains(&th) && t.applied.contains(&r), "{t:?}");
     assert!(t.role(X, A) == Gone && t.key_role(TK, A) == Gone && t.role(H, A) == Admin);
@@ -3685,7 +3685,7 @@ fn a_key_replaces_itself_in_one_commit_in_either_key_order() {
         } else {
             let mut parts = parts;
             parts.sort_by_key(|k| match k {
-                Kind::Edge { holder, .. } => *holder,
+                Kind::Grant { holder, .. } => *holder,
                 _ => unreachable!(),
             });
             let ids: Vec<Id> = parts.into_iter().map(|k| w.push_signed(old, A, 2, &[], A, k)).collect();
@@ -3923,8 +3923,8 @@ fn a_write_by_a_nodes_stolen_key_is_not_its_own() {
 #[test]
 fn a_counter_removal_changing_nothing_is_not_told() {
     let (mut w, ..) = paired();
-    let out = w.edge(X, 2, &[], A, B, Gone, &[]);
-    let r = w.edge(H, 3, &[], A, X, Gone, &[]);
+    let out = w.grant(X, 2, &[], A, B, Gone, &[]);
+    let r = w.grant(H, 3, &[], A, X, Gone, &[]);
     let v = View::all(&w).trusting(&[r]);
     for (sides, told) in [(Sides::Received, false), (Sides::ToldAll, true)] {
         let rules = Rules { sides, ..Rules::fixed() };

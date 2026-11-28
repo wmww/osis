@@ -107,8 +107,8 @@ pub fn plain(id: CommitId, author: NodeId, h: u64, parts: Vec<(Aspect, Body)>) -
     Event { commit: commit(id, author, h, CommitKind::Content, parts.into_iter().map(|(a, b)| part(a, b)).collect(), None), dots: vec![] }
 }
 
-pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Event {
-    let p = part(Aspect::ROLES, Body::Held(Delta::Edge(EdgeWrite::role(holder, role))));
+pub fn grant(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Event {
+    let p = part(Aspect::ROLES, Body::Held(Delta::Grant(GrantWrite::role(holder, role))));
     Event { commit: commit(id, author, h, CommitKind::Role, vec![p], frontier), dots: vec![] }
 }
 
@@ -134,8 +134,8 @@ pub struct World {
 /// Creations, X granted admin and W write at hour 0.
 pub fn base() -> Vec<Event> {
     let mut b: Vec<Event> = creations().into_iter().map(|commit| Event { commit, dots: vec![] }).collect();
-    b.push(edge(FIRST - 2, ADMIN, 0, X, Some(Role::Admin), None));
-    b.push(edge(FIRST - 1, ADMIN, 0, W, Some(Role::Write), None));
+    b.push(grant(FIRST - 2, ADMIN, 0, X, Some(Role::Admin), None));
+    b.push(grant(FIRST - 1, ADMIN, 0, W, Some(Role::Write), None));
     b
 }
 
@@ -162,7 +162,7 @@ pub fn removed_junk() -> World {
     let s = session(X, 0);
     let events = vec![
         sess(FIRST, X, 1, &s, vec![(K, NONE, 1, 3)]),
-        edge(FIRST + 1, ADMIN, 2, X, None, Some(vec![FIRST])),
+        grant(FIRST + 1, ADMIN, 2, X, None, Some(vec![FIRST])),
         sess(FIRST + 2, X, 3, &s, vec![(K, NONE, 2, 4)]),
     ];
     World { name: "removed_junk", base: base(), events }
@@ -183,7 +183,7 @@ pub fn vouched_later() -> World {
     let events = vec![
         sess(FIRST, X, 1, &s, vec![(K, NONE, 1, 3)]),
         sess(FIRST + 1, X, 2, &s, vec![(K, NONE, 2, 4)]),
-        edge(FIRST + 2, ADMIN, 3, X, None, Some(vec![FIRST])),
+        grant(FIRST + 2, ADMIN, 3, X, None, Some(vec![FIRST])),
         plain(FIRST + 3, W, 4, vec![(Aspect::ADDENDA, addendum(FIRST + 2, vec![FIRST + 1]))]),
     ];
     World { name: "vouched_later", base: base(), events }
@@ -196,7 +196,7 @@ pub fn liar_setting() -> World {
     let s = session(X, 0);
     let events = vec![
         sess(FIRST, X, 1, &s, vec![(Aspect::RETENTION, setting(true), 1, 2), (EXT, NONE, 1, 2)]),
-        edge(FIRST + 1, ADMIN, 2, X, None, Some(vec![FIRST])),
+        grant(FIRST + 1, ADMIN, 2, X, None, Some(vec![FIRST])),
         sess(FIRST + 2, X, 3, &s, vec![(EXT, NONE, 1, 2)]),
     ];
     World { name: "liar_setting", base: base(), events }
@@ -210,14 +210,14 @@ pub fn liar_addenda() -> World {
     let (c, rx, e, rw, g, d) = (FIRST, FIRST + 1, FIRST + 2, FIRST + 3, FIRST + 4, FIRST + 5);
     let events = vec![
         sess(c, X, 1, &s, vec![(K, NONE, 1, 2)]),
-        edge(rx, ADMIN, 2, X, None, Some(vec![])),
+        grant(rx, ADMIN, 2, X, None, Some(vec![])),
         plain(e, W, 3, vec![(Aspect::ADDENDA, addendum(rx, vec![c]))]),
-        edge(rw, ADMIN, 4, W, None, Some(vec![])),
-        edge(g, ADMIN, 5, X, Some(Role::Write), None),
+        grant(rw, ADMIN, 4, W, None, Some(vec![])),
+        grant(g, ADMIN, 5, X, Some(Role::Write), None),
         sess(d, X, 6, &s, vec![(K, NONE, 1, 2), (Aspect::ADDENDA, addendum(rw, vec![e]), 1, 2)]),
         // removed again, listing D and C: a re-grant standing would bring C back by itself, and a
         // cut that left C out would refuse it whatever E says (each cut needs its own answer)
-        edge(FIRST + 6, ADMIN, 7, X, None, Some(vec![d, c])),
+        grant(FIRST + 6, ADMIN, 7, X, None, Some(vec![d, c])),
     ];
     World { name: "liar_addenda", base: base(), events }
 }
@@ -265,9 +265,9 @@ pub fn world(seed: u64, honest: bool, rule_inputs: bool) -> World {
             }
             4 => {
                 let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.signer == X && r.chance(50)).map(|e| e.commit.id).collect();
-                edge(id, ADMIN, h, X, None, Some(xs))
+                grant(id, ADMIN, h, X, None, Some(xs))
             }
-            5 => edge(id, ADMIN, h, X, Some(r.pick(&[Role::Write, Role::Admin])), None),
+            5 => grant(id, ADMIN, h, X, Some(r.pick(&[Role::Write, Role::Admin])), None),
             6 => {
                 let Some(&rm) = removals(&events).last() else { continue };
                 let xs: Vec<CommitId> = events.iter().filter(|e| e.commit.signer == X && r.chance(60)).map(|e| e.commit.id).collect();

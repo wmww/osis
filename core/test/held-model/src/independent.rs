@@ -10,7 +10,7 @@
 //! bearing epoch 1's sync key) and A may grant G and G2 read on Y (a grant write and a box each)
 //! and K sync (a sync-only box: K keeps Y unread). Hostile parts: W, W2 or X boxing R, P or G at a
 //! made-up epoch, or writing a step bearing one; A planting a box and a step with no keyset.
-//! Validity is judged at each part's point: a box needs write on Y, a keyset, a step or an edge
+//! Validity is judged at each part's point: a box needs write on Y, a keyset, a step or a grant
 //! write admin (A demoted after its plant changes nothing). Sync and read share one epoch
 //! counter: a read box gives both secrets of its epoch, a sync box the sync secret alone.
 //! A node holds any subset of the parts (a stub carries no keyset) and opens the boxes to
@@ -39,7 +39,7 @@ pub enum Part {
     /// a `sync.0` step bearing `epoch`'s sync key, verified to its genesis
     Step { signer: Id, epoch: u32 },
     /// a grant write naming `holder`
-    Edge { signer: Id, holder: Id },
+    Grant { signer: Id, holder: Id },
 }
 
 /// The epochs a rotation of Y makes; a made-up one is any other.
@@ -58,7 +58,7 @@ fn role(signer: Id) -> u8 {
 pub fn valid(p: &Part) -> bool {
     match *p {
         Part::Box { signer, .. } => role(signer) >= 2,
-        Part::Keyset { signer } | Part::Step { signer, .. } | Part::Edge { signer, .. } => role(signer) >= 3,
+        Part::Keyset { signer } | Part::Step { signer, .. } | Part::Grant { signer, .. } => role(signer) >= 3,
     }
 }
 
@@ -77,7 +77,7 @@ pub enum Rule {
     /// Control: a box counts only where the node does not open Y as dependent (it opens P).
     NotOpenedDependent,
     /// Control: a box counts only beside a held valid grant write on Y.
-    BesideEdge,
+    BesideGrant,
 }
 
 /// Whether a node holding `held` and opening the boxes to `opens` counts Y independent.
@@ -97,7 +97,7 @@ pub fn counts(rule: Rule, held: &BTreeSet<Part>, opens: &BTreeSet<Id>) -> bool {
         Rule::BoxAlone => true,
         Rule::KeysetOnly => false,
         Rule::NotOpenedDependent => !opens.contains(&P),
-        Rule::BesideEdge => held.iter().any(|p| matches!(p, Part::Edge { .. })),
+        Rule::BesideGrant => held.iter().any(|p| matches!(p, Part::Grant { .. })),
     }
 }
 
@@ -131,11 +131,11 @@ pub fn made_independent() -> Vec<Part> {
         Part::Keyset { signer: A },
         Part::Box { signer: A, holder: P, epoch: MADE, read: true },
         Part::Step { signer: A, epoch: MADE },
-        Part::Edge { signer: A, holder: G },
+        Part::Grant { signer: A, holder: G },
         Part::Box { signer: A, holder: G, epoch: MADE, read: true },
-        Part::Edge { signer: A, holder: G2 },
+        Part::Grant { signer: A, holder: G2 },
         Part::Box { signer: A, holder: G2, epoch: MADE, read: true },
-        Part::Edge { signer: A, holder: K },
+        Part::Grant { signer: A, holder: K },
         Part::Box { signer: A, holder: K, epoch: MADE, read: false },
     ]
 }
@@ -193,10 +193,10 @@ pub fn subsets(parts: &[Part]) -> impl Iterator<Item = BTreeSet<Part>> + '_ {
 pub fn honest_holdings() -> Vec<(&'static str, BTreeSet<Part>, BTreeSet<Id>)> {
     let (step, keyset) = (Part::Step { signer: A, epoch: MADE }, Part::Keyset { signer: A });
     vec![
-        ("grantee", [Part::Edge { signer: A, holder: G }, Part::Box { signer: A, holder: G, epoch: MADE, read: true }, step, keyset].into(), [G].into()),
+        ("grantee", [Part::Grant { signer: A, holder: G }, Part::Box { signer: A, holder: G, epoch: MADE, read: true }, step, keyset].into(), [G].into()),
         ("stub in the mint admin's unit", [Part::Box { signer: A, holder: P, epoch: MADE, read: true }, step, keyset].into(), [P].into()),
-        ("late reader of the mint admin", [Part::Edge { signer: A, holder: G2 }, Part::Box { signer: A, holder: G2, epoch: MADE, read: true }, step, keyset].into(), [G2, P].into()),
-        ("sync-only cut", [Part::Edge { signer: A, holder: K }, Part::Box { signer: A, holder: K, epoch: MADE, read: false }, step].into(), [K].into()),
+        ("late reader of the mint admin", [Part::Grant { signer: A, holder: G2 }, Part::Box { signer: A, holder: G2, epoch: MADE, read: true }, step, keyset].into(), [G2, P].into()),
+        ("sync-only cut", [Part::Grant { signer: A, holder: K }, Part::Box { signer: A, holder: K, epoch: MADE, read: false }, step].into(), [K].into()),
     ]
 }
 

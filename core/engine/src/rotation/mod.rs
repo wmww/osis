@@ -127,10 +127,10 @@ pub(crate) enum Block {
 }
 
 /// `blocked_epoch`, with why (a box reason where any is found, else a missed departure) and the
-/// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest edge
+/// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest grant
 /// write a covering epoch must name (`Departure::newest_needed`), each stale box's superseding
 /// keyset's rotation commit, each keyless grant's grant write, each counting record's causes, and
-/// for a box or rotator departure no edge shows, the rotation commit of each epoch its holder holds
+/// for a box or rotator departure no grant shows, the rotation commit of each epoch its holder holds
 /// (`departures::departure_causes`). The whole walk is judged, so every cause is found: every
 /// block has one.
 pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<(Block, BTreeSet<osis_base::CommitId>)>> {
@@ -546,7 +546,7 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     merge::settle(tx, &a).map(|_| ())
 }
 
-/// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
+/// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no grant), signed
 /// by `who` (the tests' rotation by hand).
 #[cfg(test)]
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
@@ -597,8 +597,8 @@ pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, 
 pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
     let mut out = vec![*a];
     if let Some(tl) = core.timelines().get(a) {
-        let edges = tl.edges_at(None);
-        out.extend(edges.targets(a).copied());
+        let grants = tl.edges_at(None);
+        out.extend(grants.targets(a).copied());
     }
     out.sort();
     out.dedup();
@@ -610,7 +610,7 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// actors of `a` with key access that `who` may rotate (boxing `a` to one is encrypting under
 /// its epoch, so its rotation due goes first and `a`'s boxes then name its new keyset), each
 /// once, then `a`'s (`rotation_due`). Each of those actors first gets the finalize `who` may
-/// write of its edges past their `until` (`finalize_due`). Then, for each actor rotated, the
+/// write of its grants past their `until` (`finalize_due`). Then, for each actor rotated, the
 /// same for the actors it is a holder of, upward (`rotate_above`). Returns the roles of `a`
 /// still blocked: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
@@ -618,8 +618,8 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
 }
 
 /// What the cascade before a commit leaves alone on the actor `on` the commit writes, wherever
-/// it meets `on` (below, or upward from a holder actor it rotated): it finalizes no edge of a
-/// holder in `rewriting` (the commit writes those edges anew: a removal, which is their
+/// it meets `on` (below, or upward from a holder actor it rotated): it finalizes no grant of a
+/// holder in `rewriting` (the commit writes those grants anew: a removal, which is their
 /// departure, or a renewal) and no rotation of it, a finalize's included, rotates any of
 /// `leaving` (the roles the removal's holders leave, which its own rotation rotates: so none
 /// boxes a party at a role it is leaving).
@@ -637,7 +637,7 @@ impl Keep<'_> {
     }
 }
 
-/// `ensure_rotated` before a commit writing `rewriting`'s edges on `a`, whose holders leave
+/// `ensure_rotated` before a commit writing `rewriting`'s grants on `a`, whose holders leave
 /// `leaving` of it (`Keep`).
 pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], leaving: &BTreeSet<Role>, done: &mut Done) -> Result<BTreeSet<Role>> {
     let keep = Keep { on: a, rewriting, leaving };
@@ -730,7 +730,7 @@ fn owed_below(tx: &mut Tx<'_>, who: Tid, a: Tid) -> Result<bool> {
     let mut entered = BTreeSet::from([a]);
     let mut next = vec![a];
     while let Some(x) = next.pop() {
-        if !flows::edges::finalizable(tx.core, &who, &x).is_empty() || !rotation_due(tx, &who, &x, Due::Encrypt, &BTreeSet::new())?.is_empty() {
+        if !flows::grants::finalizable(tx.core, &who, &x).is_empty() || !rotation_due(tx, &who, &x, Due::Encrypt, &BTreeSet::new())?.is_empty() {
             return Ok(true);
         }
         next.extend(below(tx.core, &who, &x).into_iter().filter(|y| entered.insert(*y)));
@@ -749,19 +749,19 @@ fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Res
     rotate_above(tx, who, rotated, None, done)
 }
 
-/// The finalize `who` may write of the edges on `a` past their `until` by this node's clock
-/// (spec/permissions.md §2, `flows::edges::finalizable`), written now: a node with write on `a`
+/// The finalize `who` may write of the grants on `a` past their `until` by this node's clock
+/// (spec/permissions.md §2, `flows::grants::finalizable`), written now: a node with write on `a`
 /// writes it before its next commit encrypting under `a`. It is `a`'s departure for keys, and
 /// carries the rotation where `who` can make it now, else goes alone (the departure uncovered,
 /// so `a`'s roles stay blocked until a rotation covers it). Under `keep`: on `keep.on`, none of
 /// its `rewriting`.
 fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, done: &mut Done) -> Result<()> {
-    let mut ended = flows::edges::finalizable(tx.core, &who, &a);
+    let mut ended = flows::grants::finalizable(tx.core, &who, &a);
     ended.retain(|x| !keep.is_some_and(|k| k.on == a && k.rewriting.contains(&x.0)));
     if ended.is_empty() {
         return Ok(());
     }
-    flows::edges::finalize_in(tx, who, a, &ended, &Keep::kept(keep, &a), done)
+    flows::grants::finalize_in(tx, who, a, &ended, &Keep::kept(keep, &a), done)
 }
 
 /// Makes `t` independent (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
@@ -950,11 +950,11 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     Ok(out)
 }
 
-/// The holders of `a` whose grant `who` may finalize (`flows::edges::finalizable`: past its
+/// The holders of `a` whose grant `who` may finalize (`flows::grants::finalizable`: past its
 /// `until` by this node's clock): their departure is due here, so no grant or re-seal by `who`
 /// boxes them, whether or not the finalize can be written yet (spec/permissions.md §2).
 fn ended_holders(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Tid> {
-    flows::edges::finalizable(core, who, a).into_iter().map(|x| x.0).collect()
+    flows::grants::finalizable(core, who, a).into_iter().map(|x| x.0).collect()
 }
 
 /// Which boxes a re-seal writes (`reseal_one`).
@@ -1308,7 +1308,7 @@ impl Engine {
             pass_end_rotations(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
-                // the rotations due and the finalizes of ended edges go first where this node can
+                // the rotations due and the finalizes of ended grants go first where this node can
                 // (`reseal_one` would make them before its re-seal): the candidates are read from
                 // the state they leave, where a holder a rotation boxed or left out is none (an
                 // ended holder is none either way, `ended_holders`)

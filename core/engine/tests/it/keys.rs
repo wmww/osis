@@ -24,7 +24,7 @@ fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
 /// (spec/permissions.md §3: a node holds no secret of an actor it cannot read).
 fn read_by_1(lp: &mut LocalPeer, a: Tid) {
     let b = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&a, &b, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&a, &b, &grant(Role::Read)).unwrap();
 }
 
 /// A read rotation of `a` from node 0's view, written as one role commit naming `names`.
@@ -71,7 +71,7 @@ fn rotation_out_of_order_spec_crypto_4() {
     assert!(v0.read.is_established(&e1), "{:?}", v0.read);
     let h1 = lp.peers[0].engine.header(&c1).unwrap();
     let key = osis_keys::Key { ts: h1.ts.to_u64(), node: h1.signer, commit: c1 };
-    // a void name: met once its commit is applied (it writes no edge, so nothing applies)
+    // a void name: met once its commit is applied (it writes no grant, so nothing applies)
     let names = Names { list: [osis_keys::Name::void(key, a)].into(), ..Names::default() };
     let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &names);
     let e2 = r2.rotated[0].epoch;
@@ -193,7 +193,7 @@ fn link_key_opens_deep_holder_chain_spec_crypto_4() {
     lp.sync_all().unwrap();
     let mut chain: Vec<Tid> = (0..12).map(|_| new_thing(&mut lp, 0)).collect();
     chain.sort_by(|a, b| b.cmp(a));
-    let read = edge(Role::Read);
+    let read = grant(Role::Read);
     for w in chain.windows(2) {
         // each holder refers to what it holds: the reader finds the chain by references
         lp.grant_through(0, w[1], w[0], &read);

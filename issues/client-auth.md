@@ -7,4 +7,4 @@
 
 - To build: a credential names the thing it acts as, the main one included if the node's operator chooses.
 - notes/client-port.md Rejected ("Thin nodes", phrased as a default) argues from one threat model; machine, transport and the account acted as are independent (spec/requirements.md Concepts, Client).
-- Acting as several things in one process: issues/grant-rename-multi-actor.md (`act_as`).
+- Acting as several things in one process: issues/act-as-several.md (`act_as`).

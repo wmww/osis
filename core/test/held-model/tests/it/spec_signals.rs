@@ -70,12 +70,12 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
 #[test]
 fn signal_kick_rejudges_history_spec_perm_5_2() {
     let r = PurgeBy::AuthorOrAdmin;
-    let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    let granted = grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
     let msg = reg(10, 1, 1, SIG, r, 7);
-    let kick = edge(20, MINT_ADMIN, 2, 1, None, Some(vec![]));
+    let kick = grant(20, MINT_ADMIN, 2, 1, None, Some(vec![]));
     let keep = setting(6, 0, SIG, KEPT);
-    assert_eq!(shown(&held(3, vec![keep.clone(), grant.clone(), msg.clone()])), vec![10]);
-    let kicked = held(3, vec![keep, grant.clone(), msg.clone(), kick]);
+    assert_eq!(shown(&held(3, vec![keep.clone(), granted.clone(), msg.clone()])), vec![10]);
+    let kicked = held(3, vec![keep, granted.clone(), msg.clone(), kick]);
     assert!(shown(&kicked).is_empty());
     assert_eq!(fate(&kicked, 10), Fate::MustDrop(DropWhy::Invalid));
     assert_eq!(read(&kicked, SIG), None);
@@ -85,9 +85,9 @@ fn signal_kick_rejudges_history_spec_perm_5_2() {
 // while in history and may go once out; the moment it leaves is a deadline like a valid fire's
 #[test]
 fn own_invalid_fire_leaves_history_at_a_deadline_spec_commits_5() {
-    let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
-    let kick = edge(20, MINT_ADMIN, 2, 1, None, Some(vec![]));
-    let h = |now| Held { me: 1, ..held(now, vec![setting(6, 0, SIG, keep_after(3)), grant.clone(), reg(10, 1, 1, SIG, PurgeBy::AuthorOrAdmin, 7), kick.clone()]) };
+    let granted = grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    let kick = grant(20, MINT_ADMIN, 2, 1, None, Some(vec![]));
+    let h = |now| Held { me: 1, ..held(now, vec![setting(6, 0, SIG, keep_after(3)), granted.clone(), reg(10, 1, 1, SIG, PurgeBy::AuthorOrAdmin, 7), kick.clone()]) };
     let o = evaluate(&h(3));
     assert_eq!(o.valid[&(10, 0)], false);
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
@@ -136,14 +136,14 @@ mod external {
     // as any other party's
     #[test]
     fn a_writers_external_fire_ignores_the_setting_a_removed_writers_does_not_spec_perm_5_2() {
-        let grant = edge(30, MINT_ADMIN, 0, WRITER, Some(Role::Write), None);
+        let granted = grant(30, MINT_ADMIN, 0, WRITER, Some(Role::Write), None);
         let f = fire(50, WRITER, ts(2));
-        assert!(valid(&on(3, vec![grant.clone(), f.clone()]), 50), "a writer's");
-        let kick = edge(31, MINT_ADMIN, 3, WRITER, None, Some(vec![]));
-        assert!(!valid(&on(4, vec![grant.clone(), f.clone(), kick.clone()]), 50), "removed, not listed");
-        let listed_kick = edge(31, MINT_ADMIN, 3, WRITER, None, Some(vec![50]));
-        assert!(valid(&on(4, vec![grant.clone(), f.clone(), listed_kick]), 50), "listed by the removal");
-        assert!(valid(&on(4, vec![grant, f, kick, setting(40, MINT_ADMIN, ts(1), &[EXT], false)]), 50), "removed, enabled");
+        assert!(valid(&on(3, vec![granted.clone(), f.clone()]), 50), "a writer's");
+        let kick = grant(31, MINT_ADMIN, 3, WRITER, None, Some(vec![]));
+        assert!(!valid(&on(4, vec![granted.clone(), f.clone(), kick.clone()]), 50), "removed, not listed");
+        let listed_kick = grant(31, MINT_ADMIN, 3, WRITER, None, Some(vec![50]));
+        assert!(valid(&on(4, vec![granted.clone(), f.clone(), listed_kick]), 50), "listed by the removal");
+        assert!(valid(&on(4, vec![granted, f, kick, setting(40, MINT_ADMIN, ts(1), &[EXT], false)]), 50), "removed, enabled");
     }
 
     // spec/commits.md §5 (In force), spec/permissions.md §5.2: the current setting decides every

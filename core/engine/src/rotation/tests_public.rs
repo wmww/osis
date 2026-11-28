@@ -3,7 +3,7 @@
 //! grant.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, granted, put_on, reads_key};
+use super::tests::{grant, granted, put_on, reads_key};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -49,7 +49,7 @@ fn opened_by_anyone(lp: &mut LocalPeer, g: Tid) -> BTreeSet<(Role, osis_crypto::
 #[test]
 fn a_public_grant_boxes_open_at_each_rotation() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
-    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     let first = current_read_sync(&lp, 0, g);
     assert_eq!(open_boxes(&mut lp, 0, g), first, "open at each current read and sync epoch, nothing above");
     assert_eq!(opened_by_anyone(&mut lp, g), first);
@@ -66,7 +66,7 @@ fn a_public_grant_boxes_open_at_each_rotation() {
 #[test]
 fn removing_the_public_rotates_it_out() {
     let (mut lp, g, _) = granted(2, &[(1, Role::Read)]);
-    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     let before = current_read_sync(&lp, 0, g);
     lp.peers[0].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
     let after = current_read_sync(&lp, 0, g);
@@ -82,11 +82,11 @@ fn removing_the_public_rotates_it_out() {
 #[test]
 fn the_public_is_granted_at_most_read_without_may_grant() {
     let (mut lp, g, _) = granted(2, &[]);
-    for e in [edge(Role::Write), edge(Role::Admin), ct::Grant { may_grant: true, ..edge(Role::Read) }] {
+    for e in [grant(Role::Write), grant(Role::Admin), ct::Grant { may_grant: true, ..grant(Role::Read) }] {
         assert!(lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
     }
     assert!(open_boxes(&mut lp, 0, g).is_empty());
-    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Sync)).unwrap();
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Sync)).unwrap();
     let sync: BTreeSet<_> = current_read_sync(&lp, 0, g).into_iter().filter(|x| x.0 == Role::Sync).collect();
     assert_eq!(open_boxes(&mut lp, 0, g), sync, "a sync grant boxes the sync secret alone");
 }
@@ -100,7 +100,7 @@ fn an_ignored_box_to_the_public_is_resealed_over() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
     let (mut lp, g, _) = granted(2, &[(1, Role::Write)]);
-    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let current = current_read_sync(&lp, 0, g);
     let mut m = crate::Mutation::new();
@@ -133,7 +133,7 @@ fn a_replayed_open_box_is_resealed_over_once() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
-    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let old = current_read_sync(&lp, 0, g);
     let s = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
@@ -165,19 +165,19 @@ fn a_replayed_open_box_is_resealed_over_once() {
 // spec/permissions.md §2 (May-grant grant; Granting to the public; Finalize): the public is a
 // holder as any there. Writer W (1), holding the may-grant flag, makes g public (at most read,
 // never the flag: refused above), and stranger S (2), granted nothing, redeems a locator and
-// reads g. Holders by may-grant remove no other edge: W cannot take the public's grant away; past
+// reads g. Holders by may-grant remove no other grant: W cannot take the public's grant away; past
 // its `until` a writer finalizes it, and the admin (0) removes W's grant made again.
 #[test]
 fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     let (mut lp, g, tids) = granted(3, &[]);
-    lp.peers[0].engine.grant(&g, &tids[1], &ct::Grant { may_grant: true, ..edge(Role::Write) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &ct::Grant { may_grant: true, ..grant(Role::Write) }).unwrap();
     put_on(&mut lp, 0, g, "open", 1);
     lp.sync_all().unwrap();
-    for e in [edge(Role::Write), ct::Grant { may_grant: true, ..edge(Role::Read) }] {
+    for e in [grant(Role::Write), ct::Grant { may_grant: true, ..grant(Role::Read) }] {
         assert!(lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &e).is_err(), "{e:?} refused");
     }
     let until = osis_base::Time(lp.peers[1].engine.core.now().0 + 100);
-    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &ct::Grant { until: Some(until), ..grant(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let public = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).get(&Tid::PUBLIC).map(|e| e.role);
     assert_eq!(public(&lp, 0), Some(Role::Read), "the may-grant grant applies");
@@ -186,12 +186,12 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     lp.peers[2].engine.redeem_locator(&link, &tids[2]).unwrap();
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 2, g, "open"), "a stranger reads g by the link");
-    assert!(lp.peers[1].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other edge");
+    assert!(lp.peers[1].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other grant");
     lp.peers[1].clock.advance(1_000);
     lp.peers[1].engine.ensure_rotated(&g).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(public(&lp, 0), None, "W finalizes the ended grant");
-    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(public(&lp, 0), Some(Role::Read), "granted again by may-grant");
     lp.peers[0].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
@@ -229,8 +229,8 @@ fn an_epochs_history_is_its_states_whatever_the_roles_spec_crypto_4() {
     lp.peers[0].clock.advance(3 * drift);
     let mut late = lp.peers[0].engine.make_independent(&g).unwrap().commits;
     lp.peers[0].clock.advance(2 * drift);
-    late.extend(lp.peers[0].engine.grant(&p, &Tid::PUBLIC, &edge(Role::Sync)).unwrap().commits);
-    late.extend(lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &edge(Role::Sync)).unwrap().commits);
+    late.extend(lp.peers[0].engine.grant(&p, &Tid::PUBLIC, &grant(Role::Sync)).unwrap().commits);
+    late.extend(lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Sync)).unwrap().commits);
     for c in &late {
         let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
         assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(..)), "each waits");

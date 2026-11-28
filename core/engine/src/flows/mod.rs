@@ -11,7 +11,7 @@
 
 pub(crate) mod addenda;
 pub mod cards;
-pub mod edges;
+pub mod grants;
 pub(crate) mod sync_ids;
 pub(crate) mod links;
 mod create;
@@ -19,7 +19,7 @@ pub(crate) mod inbox;
 pub(crate) mod roots;
 
 
-pub use edges::{Demotion, Removal};
+pub use grants::{Demotion, Removal};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 
 use crate::engine::{Core, Engine, Tx};
@@ -112,10 +112,10 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
     Ok(())
 }
 
-/// A new entry holding `holder`'s whole edge on `target` (spec/crdt.md §5.6 `put_new`): never
+/// A new entry holding `holder`'s whole grant on `target` (spec/crdt.md §5.6 `put_new`): never
 /// written into a held entry. The reset of the holder's current entry is the caller's
-/// (`edges::reset_current`, spec/permissions.md §2).
-pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: impl Into<osis_base::Holder>, e: &ct::Grant) -> Result<()> {
+/// (`grants::reset_current`, spec/permissions.md §2).
+pub(crate) fn put_grant(m: &mut Mutation, target: Tid, holder: impl Into<osis_base::Holder>, e: &ct::Grant) -> Result<()> {
     let holder = holder.into();
     let path = vec![PathSeg::Key(crate::apply::validity::Grants::key(&holder))];
     match holder {
@@ -157,7 +157,7 @@ impl Core {
         self.created(tid)?.mint_admin()
     }
 
-    /// Current holders of `actor` with their role and `until` (alive edges), its record grant
+    /// Current holders of `actor` with their role and `until` (alive grants), its record grant
     /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<Time>)> {
         let ts = now_ts(self);
@@ -167,19 +167,19 @@ impl Core {
         }
     }
 
-    /// The holders of `actor` for keys (spec/crypto.md §4): every holder of an edge on it by
+    /// The holders of `actor` for keys (spec/crypto.md §4): every holder of a grant on it by
     /// `rotation::key_role` (its record grant included while it stands), every held applied
-    /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
+    /// write in effect and `until` disregarded: keys read no clock, so a grant past its `until`
     /// stays until it is finalized (spec/permissions.md §2). A destroyed thing is none: it holds
     /// no keys and nobody stands in for it (spec/crypto.md §4, Holder actors, Destroyed).
     pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        self.edge_holders(actor).into_iter().filter(|(m, _)| !self.destroyed(m)).collect()
+        self.grant_holders(actor).into_iter().filter(|(m, _)| !self.destroyed(m)).collect()
     }
 
     /// The direct holders of `actor` for keys with destroyed things among them (`key_holders`
-    /// keeps them out): every edge on it by `rotation::key_role`, its record grant included while
+    /// keeps them out): every grant on it by `rotation::key_role`, its record grant included while
     /// it stands.
-    pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
+    pub(crate) fn grant_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
         match self.timelines().on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.mint_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),

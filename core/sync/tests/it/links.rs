@@ -1,7 +1,7 @@
 //! A link's first contact over real connections (spec/sync-inbox.md §6, spec/permissions.md §7):
 //! the redeemer dials the sharer node by the link's hints, opens K, pulls K and joins.
 
-use crate::harness::{World, edge, fixture, two_nodes};
+use crate::harness::{World, grant, fixture, two_nodes};
 use osis_base::Role;
 use osis_blob::ShareLink;
 use osis_sync::types::Waiting;
@@ -97,7 +97,7 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
 }
 
 // spec/permissions.md §7 (joiner's leave): a node of the joining account writes its leave of K
-// once it holds K's edge on the link's target removed: node 0 takes K off its profile; node 1's
+// once it holds K's grant on the link's target removed: node 0 takes K off its profile; node 1's
 // account leaves K, at node 1 and at node 0.
 #[test]
 fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
@@ -112,16 +112,16 @@ fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7 (joiner's leave: K's edge on the target past `until`): node 0 gives K's
-// edge on its profile an `until` a minute ahead; once it passes, by time alone, node 1's account
+// spec/permissions.md §7 (joiner's leave: K's grant on the target past `until`): node 0 gives K's
+// grant on its profile an `until` a minute ahead; once it passes, by time alone, node 1's account
 // leaves K.
 #[test]
-fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
+fn a_joiner_leaves_k_once_its_grant_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::Time(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
-    w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
+    let grant = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
+    w.write(0, |e| e.grant(&link.target, &link.k, &grant)).unwrap();
     w.run();
     assert!(w.now() >= until, "the run reached the expiry");
     for i in 0..2 {
@@ -129,9 +129,9 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7 (Joiner's leave): the held role history read as it shows K's edge on the
+// spec/permissions.md §7 (Joiner's leave): the held role history read as it shows K's grant on the
 // target now: node 0, cut off from node 1, takes K off its profile and grants it again; once
-// healed node 1 holds K's edge alive and its account stays in K (a hostile ordering of the
+// healed node 1 holds K's grant alive and its account stays in K (a hostile ordering of the
 // removal and the re-grant removes no live join).
 #[test]
 fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() {
@@ -139,7 +139,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     let a1 = w.node(1).account.unwrap();
     w.partition(0, 1);
     w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&link.target, &link.k, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&link.target, &link.k, &grant(Role::Read))).unwrap();
     w.heal();
     w.run();
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k), "K on the target at node 1");
@@ -148,18 +148,18 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     }
 }
 
-// spec/permissions.md §7 (joiner's leave: K's edge on the target past `until`, judged by the
-// node's own clock): as above, but node 1 is cut off from node 0 once it holds the edge, so
+// spec/permissions.md §7 (joiner's leave: K's grant on the target past `until`, judged by the
+// node's own clock): as above, but node 1 is cut off from node 0 once it holds the grant, so
 // nothing arrives: the `until` passing alone makes node 1's account leave K there.
 #[test]
 fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::Time(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
-    w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
+    let grant = osis_schema::core_types::Grant { role: Role::Read, until: Some(until), may_grant: false, retain: false, floor: None };
+    w.write(0, |e| e.grant(&link.target, &link.k, &grant)).unwrap();
     w.advance(1000);
-    assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the edge, joined");
+    assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the grant, joined");
     w.partition(0, 1);
     w.advance(120_000);
     assert!(!w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account still holds K");

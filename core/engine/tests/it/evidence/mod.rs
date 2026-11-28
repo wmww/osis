@@ -1,6 +1,6 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
 //! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Rule::fixed` less
-//! chain stubs: every grant write on a stated path's edges), the oracle: at every step of a
+//! chain stubs: every grant write on a stated path's grants), the oracle: at every step of a
 //! world, for every node's held set and every sync ID's held entries, under every sync ID, the
 //! copies the derivation keeps incrementally and computes from scratch equal the model's required
 //! copies. Hand worlds per model test naming a rule or finding; the derivation's own (a waiting path entry, delete-key steps); count tests.
@@ -37,7 +37,7 @@ fn e1(w: &mut World) -> Rule {
 fn part(w: &World, i: Id) -> Part<Thing, Key> {
     let pw = &w.w;
     let kind = match &pw.commits[i].kind {
-        paths::Kind::Edge { holder, .. } => Kind::Write(Write { holder: *holder }),
+        paths::Kind::Grant { holder, .. } => Kind::Write(Write { holder: *holder }),
         _ => Kind::Content,
     };
     Part::new(kind, Some(pw.hops(i).to_vec()))

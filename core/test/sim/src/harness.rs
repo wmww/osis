@@ -382,16 +382,16 @@ impl Sim {
         Ok(t)
     }
 
-    /// Node `i` writes the edge of node `j`'s account on `thing` (spec/permissions.md §2), signalling
+    /// Node `i` writes the grant of node `j`'s account on `thing` (spec/permissions.md §2), signalling
     /// it; node `j` holds `thing` from its node root, as a node keeps and writes only what it holds
     /// (spec/sync-set.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
         let holder = self.account(j)?;
-        let edge = ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        let grant = ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
         // the grant and its signal to the holder, as the `osis` library's grant (spec/sync-set.md
         // §2 First entry: a grant reaches its holder by a signal or a reference)
         let e = self.engine(i)?;
-        let r = e.grant(&thing, &holder, &edge).and_then(|d| e.signal_grant(&thing, &holder, &[]).map(|()| d));
+        let r = e.grant(&thing, &holder, &grant).and_then(|d| e.signal_grant(&thing, &holder, &[]).map(|()| d));
         let done = r.map_err(|e| self.fail(format!("node {i} grant: {e}")))?;
         self.drain(i)?;
         self.history.roles.insert((thing, j), Some(role));
@@ -403,7 +403,7 @@ impl Sim {
         done.commits.last().copied().ok_or_else(|| self.fail("grant changed nothing"))
     }
 
-    /// Node `i` removes the edge of node `j`'s account on `thing` (spec/permissions.md §5).
+    /// Node `i` removes the grant of node `j`'s account on `thing` (spec/permissions.md §5).
     pub fn revoke(&mut self, i: usize, thing: Tid, j: usize) -> Res<CommitId> {
         let holder = self.account(j)?;
         let mut m = Mutation::new();

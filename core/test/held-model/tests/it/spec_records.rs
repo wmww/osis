@@ -67,8 +67,8 @@ fn authority_through_an_expired_thing_stands_spec_commits_5() {
     let k = creation(LINK_K, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), PurgeBy::Admin, Some(at(3)));
     let h = held(5, vec![
         k,
-        edge_on(5, MINT_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
-        edge_on(6, MINT_ADMIN, 0, LINK_K, EdgeWrite::role(3, Some(Role::Write)), None),
+        grant_on(5, MINT_ADMIN, 0, T, GrantWrite::role(LINK_K, Some(Role::Write)), None),
+        grant_on(6, MINT_ADMIN, 0, LINK_K, GrantWrite::role(3, Some(Role::Write)), None),
         reg(10, 3, 1, REG, PurgeBy::AuthorOrAdmin, 7).along(&[LINK_K]),
     ]);
     let o = evaluate(&h);
@@ -93,24 +93,24 @@ fn purged_creation_destroys_the_thing_spec_commits_5() {
     assert_eq!(o.destroyed, [T].into());
     assert!(o.applied.contains(&20), "the request stands, its own part on the thing forgotten");
     assert_eq!(read(&hd, REG), None);
-    let other = held(5, vec![made(None), w, edge(5, MINT_ADMIN, 0, 2, Some(Role::Write), None), purge(20, 2, 2, item)]);
+    let other = held(5, vec![made(None), w, grant(5, MINT_ADMIN, 0, 2, Some(Role::Write), None), purge(20, 2, 2, item)]);
     assert!(evaluate(&other).destroyed.is_empty());
     assert_eq!(read(&other, REG), int(1));
 }
 
 // spec/permissions.md §6 (Destruction), spec/commits.md §5: any admin at the request may destroy a thing,
-// and the verdict reads the edges the destruction keeps: a removal arriving after the destruction makes it
+// and the verdict reads the grants the destruction keeps: a removal arriving after the destruction makes it
 // fall, and a stale creation copy is destroyed again
 #[test]
-fn destruction_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
+fn destruction_is_judged_from_the_grants_it_keeps_spec_permissions_6() {
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
     let w = reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1);
-    let grant = edge(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None);
-    let by_grant = held(5, vec![made(None), grant.clone(), w.clone(), purge(20, 2, 2, item)]);
+    let granted = grant(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None);
+    let by_grant = held(5, vec![made(None), granted.clone(), w.clone(), purge(20, 2, 2, item)]);
     let o = evaluate(&by_grant);
     assert_eq!(o.destroyed, [T].into(), "a grant on the thing gives the right to destroy it");
     assert_eq!(read(&by_grant, REG), None);
-    // a stale creation copy the purge still names destroys it again: the edges stayed
+    // a stale creation copy the purge still names destroys it again: the grants stayed
     let mut next = act(&by_grant, &o, None);
     assert_eq!(read(&next, REG), None);
     next.commits.retain(|c| c.id != CREATION_ID + T);
@@ -119,11 +119,11 @@ fn destruction_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
     assert_eq!(read(&next, REG), None);
     // the grantee removes the mint admin before its request: the destruction falls in either order
     // its frontier lists the grant the removal rests on, else the audit drops it
-    let removal = edge(6, 2, 1, MINT_ADMIN, None, Some(vec![5]));
+    let removal = grant(6, 2, 1, MINT_ADMIN, None, Some(vec![5]));
     let by_first = purge(20, MINT_ADMIN, 2, item);
-    let raced = held(5, vec![made(None), grant.clone(), removal.clone(), w.clone(), by_first.clone()]);
+    let raced = held(5, vec![made(None), granted.clone(), removal.clone(), w.clone(), by_first.clone()]);
     assert!(evaluate(&raced).destroyed.is_empty(), "removal held first");
-    let first = held(5, vec![made(None), grant, w, by_first]);
+    let first = held(5, vec![made(None), granted, w, by_first]);
     let o = evaluate(&first);
     assert_eq!(o.destroyed, [T].into());
     let mut then = act(&first, &o, None);

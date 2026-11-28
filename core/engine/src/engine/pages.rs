@@ -787,7 +787,7 @@ impl osis_crdt::PageWalk for StoredPages<'_, '_> {
 // ---- placement of paged sequences (spec/crdt.md §6)
 //
 // A paged sequence keeps its placement (`osis_crdt::SeqPlace`: every node in order, hidden ones
-// included, with its depth, parent and edge, in blocks with their visible counts and least
+// included, with its depth, parent and grant, in blocks with their visible counts and least
 // depths, and a dot → block map in chunks by dot) in the aspect's placement table:
 // - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], [group*],
 //   newest]`, the groups by first block ID in order, newest `[ts, dot]` a stamp at or above
@@ -3309,7 +3309,7 @@ mod tests {
             assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
             f.join(delta.clone());
             // a delta writing on a node of a broken cycle, before or after it joins, may change
-            // which edges are demoted (§6.2): its follow gives up and the placement is laid out anew
+            // which grants are demoted (§6.2): its follow gives up and the placement is laid out anew
             let cyc = on_cycle(&st, &delta);
             st.join(delta.clone());
             let cyc = cyc || on_cycle(&st, &delta);

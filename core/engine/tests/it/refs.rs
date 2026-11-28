@@ -105,7 +105,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let elem = elem(n);
         m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();
         let w = lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.grant(&x, &reader, &edge(osis_base::Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&x, &reader, &grant(osis_base::Role::Read)).unwrap();
         let chunked = matches!(lp.peers[0].engine.get(&s, &a).unwrap(), Some(Value::Set(v)) if v.iter().all(|v| matches!(v, Value::Link(_))));
         assert_eq!(chunked, over, "over {over}: chunked as sized");
         let row = (s, "x:a.0".to_string(), RefKind::Strong, 1);
@@ -165,7 +165,7 @@ fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_mode
     let elem = Value::List(vec![Value::Strong(x), Value::Str("p".repeat(osis_base::format::CHUNK_THRESHOLD))]);
     m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();
     let w = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].engine.grant(&x, &reader, &edge(osis_base::Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &reader, &grant(osis_base::Role::Read)).unwrap();
     let mut m = Mutation::new();
     m.op(s, &a, PathOp { path: vec![], op: Op::Remove(elem) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -370,7 +370,7 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
         }
         for j in 1..3 {
             let who = lp.peers[j].engine.tid();
-            lp.peers[0].engine.grant(&things[0], &who, &edge(osis_base::Role::Write)).unwrap();
+            lp.peers[0].engine.grant(&things[0], &who, &grant(osis_base::Role::Write)).unwrap();
         }
         lp.sync_all().unwrap();
         (lp, things)
@@ -511,7 +511,7 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
                     let e = &mut lp.peers[0].engine;
                     let had: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
                     e.demote(&t, &osis_engine::flows::Demotion { holder: ids[wi], new: None, retain: None }).unwrap();
-                    e.grant(&t, &ids[wi], &edge(Role::Write)).unwrap();
+                    e.grant(&t, &ids[wi], &grant(Role::Write)).unwrap();
                     // the writer takes both and writes at once
                     for c in lp.peers[0].engine.commit_ids().into_iter().filter(|c| !had.contains(c)) {
                         let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -663,7 +663,7 @@ fn a_hidden_write_holds_no_reference_spec_data_model_8() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&t, &w, &edge(osis_base::Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&t, &w, &grant(osis_base::Role::Write)).unwrap();
     // a map entry, an enum and a list element, each with a strong written inside it later, unseen
     let (map, en, list) = (ak("x:a.0"), ak("x:b.0"), ak("x:c.0"));
     let mut m = Mutation::new();

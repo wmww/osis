@@ -3,7 +3,7 @@
 //! core/test/tla/rotation/ForkRot.tla.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, independent_thing, newest_read, rotate_as, rotate_leaving_out, synced};
+use super::tests::{grant, independent_thing, newest_read, rotate_as, rotate_leaving_out, synced};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -25,11 +25,11 @@ fn fork_on_m() -> (LocalPeer, Tid, Tid, Epoch, Epoch) {
         let a = independent_thing(&mut lp, 2);
         for t in [m, a] {
             for h in [p, q] {
-                lp.peers[2].engine.grant(&t, &h, &edge(Role::Admin)).unwrap();
+                lp.peers[2].engine.grant(&t, &h, &grant(Role::Admin)).unwrap();
             }
         }
         lp.sync_all().unwrap();
-        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);
@@ -169,7 +169,7 @@ fn foreign_epoch_blocks_and_stays_current_spec_crypto_4() {
     });
     assert!(blocked.unwrap(), "eP is blocked at Q");
     let x = independent_thing(&mut lp, Q);
-    lp.peers[Q].engine.grant(&a, &x, &edge(Role::Read)).unwrap();
+    lp.peers[Q].engine.grant(&a, &x, &grant(Role::Read)).unwrap();
     assert!(boxed_at(&mut lp, Q, a, ep, x).is_some(), "the grant boxes X at eP");
     lp.advance(1000);
     rotate_leaving_out(&mut lp, Q, a, &[Role::Read].into(), &[]);
@@ -222,12 +222,12 @@ fn fork_below_g() -> (LocalPeer, Tid, Tid, Tid) {
         let g = independent_thing(&mut lp, 2);
         for t in [m, a, g] {
             for h in [p, q] {
-                lp.peers[2].engine.grant(&t, &h, &edge(Role::Admin)).unwrap();
+                lp.peers[2].engine.grant(&t, &h, &grant(Role::Admin)).unwrap();
             }
         }
         lp.sync_all().unwrap();
-        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
-        lp.peers[2].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&g, &a, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);
@@ -336,15 +336,15 @@ fn fork_with_one_role_rotators() -> (LocalPeer, Tid, Tid, Tid, Epoch) {
         let (m, a, g) = (independent_thing(&mut lp, 2), independent_thing(&mut lp, 2), independent_thing(&mut lp, 2));
         for t in [m, a, g] {
             for i in [P, Q] {
-                lp.peers[2].engine.grant(&t, &ids[i], &edge(Role::Admin)).unwrap();
+                lp.peers[2].engine.grant(&t, &ids[i], &grant(Role::Admin)).unwrap();
             }
         }
-        lp.peers[2].engine.grant(&g, &ids[W], &edge(Role::Write)).unwrap();
-        lp.peers[2].engine.grant(&a, &ids[R], &edge(Role::Write)).unwrap();
-        lp.peers[2].engine.grant(&g, &ids[R], &edge(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&g, &ids[W], &grant(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&a, &ids[R], &grant(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&g, &ids[R], &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
-        lp.peers[2].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&g, &a, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);

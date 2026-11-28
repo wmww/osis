@@ -35,7 +35,7 @@ fn holds(net: &Net, rule: Rule, i: usize) -> (bool, bool) {
 /// signal's stub (A reads its role entries): X's record names R, so node 0 reads X through R.
 /// Without the record grants known (X's roster is no read of A's), it keeps X unread.
 #[test]
-fn entry_a_record_edge_is_known_where_its_thing_is_held() {
+fn entry_a_record_grant_is_known_where_its_thing_is_held() {
     for records in [true, false] {
         let mut net = account(2);
         net.w.grants.extend([((R, X), Role::Admin), ((A, X), Role::Sync), ((A, R), Role::Read)]);

@@ -1,7 +1,7 @@
 //! Incremental update is from-scratch evaluation restricted to what changed (notes/perm-paths.md,
 //! One definition): commits added one at a time in any arrival order read as the walk of all of
 //! them from scratch, and each update's `Changed` names exactly the parts whose status changed
-//! and, per edge, the first key from which its history changed.
+//! and, per grant, the first key from which its history changed.
 //! spec: none (the walk's update path; its rules are those of spec/permissions.md §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -84,12 +84,12 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
         return Some(format!("{id:?} changed unreported: {ch:?}"));
     }
     let empty = vec![];
-    let edges: BTreeSet<&(Holder, Tid)> = ha.keys().chain(hb.keys()).collect();
-    for e in edges {
+    let grants: BTreeSet<&(Holder, Tid)> = ha.keys().chain(hb.keys()).collect();
+    for e in grants {
         let (x, y) = (ha.get(e).unwrap_or(&empty), hb.get(e).unwrap_or(&empty));
         let at = x.iter().zip(y).position(|(p, q)| p != q).unwrap_or(x.len().min(y.len()));
         if let Some(k) = x.get(at).map(|p| p.0).into_iter().chain(y.get(at).map(|q| q.0)).min() {
-            want.edges.insert(*e, k);
+            want.grants.insert(*e, k);
         }
         let cuts = |p: &Paths| -> BTreeSet<(Key, [bool; 2])> { p.writes(&e.0, &e.1).iter().map(|w| (w.key, [w.cuts(Role::Write), w.cuts(Role::Admin)])).filter(|c| c.1 != [false, false]).collect() };
         if let Some(k) = cuts(a).symmetric_difference(&cuts(b)).map(|c| c.0).max() {
@@ -102,7 +102,7 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
             want.regrant.insert(*e);
         }
     }
-    if (&ch.edges, &ch.cuts, &ch.regrant) != (&want.edges, &want.cuts, &want.regrant) {
+    if (&ch.grants, &ch.cuts, &ch.regrant) != (&want.grants, &want.cuts, &want.regrant) {
         return Some(format!("reported {ch:?}, readings differ by {want:?}"));
     }
     // purges: exactly the scopes of the requests whose right changed (arrived or went holding
@@ -140,7 +140,7 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
 
 /// The deltas an engine holding only `ch` and the indexes (`Paths::rests`, `Paths::naming`, its
 /// deltas' facts) judges again after the update from `a` to `b`: those `ch` reaches (new or in
-/// `parts`, its commit in `named`, a hop in `edges` before its position, in `cuts` at or after
+/// `parts`, its commit in `named`, a hop in `grants` before its position, in `cuts` at or after
 /// it, in `regrant`, a scope in `purges` covering it), then, while one judged again moved, every
 /// delta it names; and the deltas whose verdict or purge moved.
 pub(super) fn rejudged(ta: &Tracked, tb: &Tracked, ch: &Changed) -> (BTreeSet<WriteId>, BTreeSet<WriteId>) {
@@ -148,7 +148,7 @@ pub(super) fn rejudged(ta: &Tracked, tb: &Tracked, ch: &Changed) -> (BTreeSet<Wr
     let direct = |id: &WriteId| -> bool {
         ch.parts.contains(id)
             || ch.named.contains(&id.0)
-            || b.rests(id).is_some_and(|(hops, pos)| hops.iter().any(|e| ch.edges.get(e).is_some_and(|k| *k < pos) || ch.cuts.get(e).is_some_and(|k| *k >= pos) || ch.regrant.contains(e)))
+            || b.rests(id).is_some_and(|(hops, pos)| hops.iter().any(|e| ch.grants.get(e).is_some_and(|k| *k < pos) || ch.cuts.get(e).is_some_and(|k| *k >= pos) || ch.regrant.contains(e)))
             || b.store().get(id).is_some_and(|f| ch.purges.iter().any(|s| s.covers(&f.on, &f.aspect, f.ts, &f.commit(), f.purge_author.as_ref())))
     };
     let moved: BTreeSet<WriteId> = cb.keys().filter(|id| ca.get(id) != cb.get(id) || pa.contains(id) != pb.contains(id)).copied().collect();
@@ -296,19 +296,19 @@ fn a_commit_before_a_verdict_undoes_its_drops() {
     use m::{account, A, B, H, N5, X};
     use roles_model::Role::{Admin, None as Gone};
     let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
-    w.edge(B, 10, &[], A, X, Gone, &[]);
-    w.edge(H, 5, &[], A, B, Gone, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(B, 10, &[], A, X, Gone, &[]);
+    w.grant(H, 5, &[], A, B, Gone, &[]);
     every_order(&w);
     // the same, the late commit ordered before the restart point (X's grant at 2)
     let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
-    w.edge(B, 10, &[], A, X, Gone, &[]);
-    w.edge(H, 2, &[], A, X, Gone, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(B, 10, &[], A, X, Gone, &[]);
+    w.grant(H, 2, &[], A, X, Gone, &[]);
     every_order(&w);
 }
 
@@ -320,12 +320,12 @@ fn a_commit_far_before_a_void_lowering_flips_it() {
     use m::{account, A, B, H, X};
     use roles_model::Role::{Admin, None as Gone};
     let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(X, 2, &[], A, B, Admin, &[]);
-    w.edge(B, 10, &[], A, X, Gone, &[]);
-    w.edge(H, 3, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
+    w.grant(X, 2, &[], A, B, Admin, &[]);
+    w.grant(B, 10, &[], A, X, Gone, &[]);
+    w.grant(H, 3, &[], A, B, Admin, &[]);
     every_order(&w);
-    w.edge(H, 4, &[], A, B, Gone, &[1, 3]);
+    w.grant(H, 4, &[], A, B, Gone, &[1, 3]);
     every_order(&w);
 }
 
@@ -469,7 +469,7 @@ fn paths_forget_agrees_large() {
 
 // notes/perm-paths.md, One definition: which of two lowerings a pass reaches
 // first is set by the component's restart sequence, so an update forgets every verdict given after
-// its key. X (admin on A by H) grants B admin on T1 at 40 (j: sets g = B's edge, rests on X's);
+// its key. X (admin on A by H) grants B admin on T1 at 40 (j: sets g = B's grant, rests on X's);
 // B removes Z from T1 at 60 along g (Q); H removes X from A at 70 listing nothing (E: drops j, the
 // pass restarts, Q applies by its verdict). A part at 50 changes what Q reads and nothing E reads
 // (H granting Z write on T1; or B write, where Q then holds no right): Q is judged before E's drop of j, as the model reads it
@@ -481,20 +481,20 @@ fn a_verdict_kept_past_a_later_restart_would_misjudge() {
     use roles_model::Role::{Admin, None as Gone, Write};
     for variant in 0..3 {
         let mut w = account();
-        w.edge(H, 1, &[], A, X, Admin, &[]);
-        w.edge(H, 2, &[A], T1, Z, Admin, &[]);
-        let j = w.edge(X, 40, &[A], T1, B, Admin, &[]);
+        w.grant(H, 1, &[], A, X, Admin, &[]);
+        w.grant(H, 2, &[A], T1, Z, Admin, &[]);
+        let j = w.grant(X, 40, &[A], T1, B, Admin, &[]);
         match variant {
             0 => {}
             1 => {
-                w.edge(H, 50, &[A], T1, Z, Write, &[]);
+                w.grant(H, 50, &[A], T1, Z, Write, &[]);
             }
             _ => {
-                w.edge(H, 50, &[A], T1, B, Write, &[]);
+                w.grant(H, 50, &[A], T1, B, Write, &[]);
             }
         }
-        let q = w.edge(B, 60, &[], T1, Z, Gone, &[]);
-        let e = w.edge(H, 70, &[], A, X, Gone, &[]);
+        let q = w.grant(B, 60, &[], T1, Z, Gone, &[]);
+        let e = w.grant(H, 70, &[], A, X, Gone, &[]);
         let all = m::View::all(&w);
         let rd = m::judge(&w, &rules(), &all);
         // (variant 2: B holds only write on T1 at 60, so Q holds no right)
@@ -529,14 +529,14 @@ fn two_lowerings_on_one_thing_fall_together_in_every_order_and_forget() {
     for listed in [false, true] {
         let mut w = account();
         for h in [X, N5, B] {
-            w.edge(H, 1, &[], A, h, Admin, &[]);
+            w.grant(H, 1, &[], A, h, Admin, &[]);
         }
-        w.edge(N5, 3, &[], A, Z, Admin, &[]);
-        let out = w.edge(X, 5, &[], A, N5, Gone, &[]);
-        let low = w.edge(X, 5, &[], A, B, Write, &[]);
+        w.grant(N5, 3, &[], A, Z, Admin, &[]);
+        let out = w.grant(X, 5, &[], A, N5, Gone, &[]);
+        let low = w.grant(X, 5, &[], A, B, Write, &[]);
         w.group(&[out, low]);
         let list = if listed { vec![out] } else { vec![] };
-        let r = w.edge(H, 7, &[], A, X, Gone, &list);
+        let r = w.grant(H, 7, &[], A, X, Gone, &list);
         every_order(&w);
         for trust in [vec![], vec![r]] {
             let all = m::View::all(&w).trusting(&trust);

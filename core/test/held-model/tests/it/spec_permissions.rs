@@ -6,14 +6,14 @@ use held_model::*;
 const OTHER: Aspect = Aspect::plain(5);
 
 fn writer_history() -> Vec<Commit> {
-    vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, 1, 2, OTHER, PurgeBy::AuthorOrAdmin, 2)]
+    vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, 1, 2, OTHER, PurgeBy::AuthorOrAdmin, 2)]
 }
 
 // spec/permissions.md §5.2: a demotion's frontier keeps exactly the writes it lists
 #[test]
 fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
     let mut cs = writer_history();
-    cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
+    cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
     let o = evaluate(&held(4, cs));
     assert_eq!(o.valid[&(10, 0)], true);
     assert_eq!(o.valid[&(11, 0)], false);
@@ -26,12 +26,12 @@ fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
 fn only_a_marked_own_cover_stands_on_its_removal_spec_permissions_5_2() {
     let cs = |own_cover: bool| {
         vec![
-            edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
-            edge(6, MINT_ADMIN, 0, 2, Some(Role::Write), None),
+            grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
+            grant(6, MINT_ADMIN, 0, 2, Some(Role::Write), None),
             reg(10, 2, 1, REG, PurgeBy::AuthorOrAdmin, 1),
             Commit { own_cover, ..snap(11, 1, 2, REG, PurgeBy::Writer, vec![set(1, 10, 1)]) },
-            edge(12, 1, 3, 2, None, Some(vec![10, 11])),
-            edge(20, MINT_ADMIN, 4, 1, None, Some(vec![5, 6, 10, 12])),
+            grant(12, 1, 3, 2, None, Some(vec![10, 11])),
+            grant(20, MINT_ADMIN, 4, 1, None, Some(vec![5, 6, 10, 12])),
         ]
     };
     let o = evaluate(&held(5, cs(true)));
@@ -45,10 +45,10 @@ fn only_a_marked_own_cover_stands_on_its_removal_spec_permissions_5_2() {
 #[test]
 fn demotion_to_write_takes_only_admin_writes_spec_permissions_5_2() {
     let cs = vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
         reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
         reg(11, 1, 2, ADM, PurgeBy::AuthorOrAdmin, 2),
-        edge(20, MINT_ADMIN, 3, 1, Some(Role::Write), Some(vec![])),
+        grant(20, MINT_ADMIN, 3, 1, Some(Role::Write), Some(vec![])),
     ];
     let o = evaluate(&held(4, cs));
     assert_eq!(o.valid[&(10, 0)], true);
@@ -59,22 +59,22 @@ fn demotion_to_write_takes_only_admin_writes_spec_permissions_5_2() {
 #[test]
 fn regrant_revives_writes_spec_permissions_5_2() {
     let mut cs = writer_history();
-    cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
-    cs.push(edge(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
+    cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
+    cs.push(grant(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
     let o = evaluate(&held(5, cs));
     assert_eq!(o.valid[&(10, 0)], true);
     assert_eq!(o.valid[&(11, 0)], true);
 }
 
-// spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the grant writes resting on its edge that the frontier leaves out
+// spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the grant writes resting on its grant that the frontier leaves out
 #[test]
-fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
+fn demotion_audits_grant_admin_grants_spec_permissions_5_1() {
     let cs = |f: Vec<CommitId>| {
         vec![
-            edge(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None),
-            edge(6, 2, 1, 1, Some(Role::Write), None),
+            grant(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None),
+            grant(6, 2, 1, 1, Some(Role::Write), None),
             reg(10, 1, 2, REG, PurgeBy::AuthorOrAdmin, 1),
-            edge(20, MINT_ADMIN, 3, 2, None, Some(f)),
+            grant(20, MINT_ADMIN, 3, 2, None, Some(f)),
         ]
     };
     let o = evaluate(&held(4, cs(vec![])));
@@ -89,21 +89,21 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
 // spec/permissions.md §5.1 step 3 (void): a lowering whose drops would take its own authority is
 // void: it does not apply and drops nothing, whatever the order of its commit's parts. Thing 41's
 // mint admin is 40, 40's is node 0; node 0 makes node 1 admin on 40 (#5) and node 2 admin
-// on 41 (#6), both resting on its edge on 40. Node 1's commit #7 lowers node 0 to read on both, listing nothing: its write on 40
+// on 41 (#6), both resting on its grant on 40. Node 1's commit #7 lowers node 0 to read on both, listing nothing: its write on 40
 // would drop #5, the grant it rests on; its write on 41 states a path that gives nothing.
 #[test]
 fn a_lowering_whose_drops_take_its_authority_drops_nothing_spec_permissions_5_1() {
     let mint = |t, link, k| held_model::gen::creation(t, link, MINT_ADMIN, ts(0) - 10 + k, PurgeBy::Admin, None);
     for things in [[40, 41], [41, 40]] {
         let r = Commit {
-            parts: things.map(|t| edge_on(7, 1, 2, t, EdgeWrite::role(MINT_ADMIN, Some(Role::Read)), None).parts.remove(0)).to_vec(),
-            ..edge_on(7, 1, 2, 40, EdgeWrite::role(MINT_ADMIN, Some(Role::Read)), Some(vec![]))
+            parts: things.map(|t| grant_on(7, 1, 2, t, GrantWrite::role(MINT_ADMIN, Some(Role::Read)), None).parts.remove(0)).to_vec(),
+            ..grant_on(7, 1, 2, 40, GrantWrite::role(MINT_ADMIN, Some(Role::Read)), Some(vec![]))
         };
         let o = evaluate(&held(3, vec![
             mint(40, RecordLink::Admin(MINT_ADMIN), 0),
             mint(41, RecordLink::Admin(40), 1),
-            edge_on(5, MINT_ADMIN, 0, 40, EdgeWrite::role(1, Some(Role::Admin)), None),
-            edge_on(6, MINT_ADMIN, 1, 41, EdgeWrite::role(2, Some(Role::Admin)), None),
+            grant_on(5, MINT_ADMIN, 0, 40, GrantWrite::role(1, Some(Role::Admin)), None),
+            grant_on(6, MINT_ADMIN, 1, 41, GrantWrite::role(2, Some(Role::Admin)), None),
             r,
         ]));
         assert!(o.valid[&(5, 0)] && o.valid[&(6, 0)], "{things:?}: #7 is void and drops nothing");
@@ -114,9 +114,9 @@ fn a_lowering_whose_drops_take_its_authority_drops_nothing_spec_permissions_5_1(
 // spec/permissions.md §5.2: an admin-only aspect needs admin
 #[test]
 fn admin_only_aspect_needs_admin_spec_permissions_5_2() {
-    let w = vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, ADM, PurgeBy::AuthorOrAdmin, 1)];
+    let w = vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, ADM, PurgeBy::AuthorOrAdmin, 1)];
     assert_eq!(evaluate(&held(2, w)).valid[&(10, 0)], false);
-    let a = vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None), reg(10, 1, 1, ADM, PurgeBy::AuthorOrAdmin, 1)];
+    let a = vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None), reg(10, 1, 1, ADM, PurgeBy::AuthorOrAdmin, 1)];
     assert_eq!(evaluate(&held(2, a)).valid[&(10, 0)], true);
 }
 
@@ -125,10 +125,10 @@ fn admin_only_aspect_needs_admin_spec_permissions_5_2() {
 fn demotion_takes_the_purge_right_spec_permissions_6() {
     let cs = |f: Vec<CommitId>| {
         vec![
-            edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+            grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
             reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 7),
             purge(15, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
-            edge(20, MINT_ADMIN, 3, 1, None, Some(f)),
+            grant(20, MINT_ADMIN, 3, 1, None, Some(f)),
         ]
     };
     assert_eq!(read(&held(4, cs(vec![10, 15])), REG), None);
@@ -144,7 +144,7 @@ fn purge_right_judged_at_the_request_spec_permissions_6() {
     let cs = |grant_h: u64| {
         vec![
             reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 7),
-            edge(5, MINT_ADMIN, grant_h, 1, Some(Role::Admin), None),
+            grant(5, MINT_ADMIN, grant_h, 1, Some(Role::Admin), None),
             purge(20, 1, 3, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
         ]
     };
@@ -164,9 +164,9 @@ fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
         let mut own = reg(10, MINT_ADMIN, 1, REG, PurgeBy::Writer, 7);
         own.parts[0].body = Body::Dropped(20);
         let s = snap(20, 1, 2, REG, PurgeBy::Writer, vec![w.clone()]);
-        let mut cs = vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), own, s];
+        let mut cs = vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), own, s];
         if demoted {
-            cs.push(edge(30, MINT_ADMIN, 3, 1, None, Some(vec![])));
+            cs.push(grant(30, MINT_ADMIN, 3, 1, None, Some(vec![])));
         }
         held(5, cs)
     };
@@ -188,9 +188,9 @@ fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
 fn a_later_cut_needs_its_own_answer_spec_permissions_5_2() {
     let cs = |second: Vec<CommitId>| {
         let mut cs = writer_history();
-        cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
-        cs.push(edge(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
-        cs.push(edge(40, MINT_ADMIN, 5, 1, Some(Role::Read), Some(second)));
+        cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
+        cs.push(grant(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
+        cs.push(grant(40, MINT_ADMIN, 5, 1, Some(Role::Read), Some(second)));
         evaluate(&held(6, cs))
     };
     let o = cs(vec![]);
@@ -216,11 +216,11 @@ fn addendum(id: CommitId, author: NodeId, h: u64, removal: CommitId, lists: Vec<
 fn addendum_vouches_for_listed_plain_content_spec_permissions_5_2() {
     let base = |witness: Role| {
         vec![
-            edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
-            edge(6, MINT_ADMIN, 0, 2, Some(witness), None),
+            grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
+            grant(6, MINT_ADMIN, 0, 2, Some(witness), None),
             reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
             reg(11, 1, 2, ADM, PurgeBy::AuthorOrAdmin, 2),
-            edge(20, MINT_ADMIN, 3, 1, None, Some(vec![])),
+            grant(20, MINT_ADMIN, 3, 1, None, Some(vec![])),
         ]
     };
     let valid = |cs: Vec<Commit>| {
@@ -245,14 +245,14 @@ fn addendum_vouches_for_listed_plain_content_spec_permissions_5_2() {
 fn addendum_vouched_by_another_counts_spec_permissions_5_2() {
     let cs = |listed: bool| {
         let mut v = vec![
-            edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
-            edge(6, MINT_ADMIN, 0, 2, Some(Role::Write), None),
-            edge(7, MINT_ADMIN, 0, 3, Some(Role::Write), None),
+            grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+            grant(6, MINT_ADMIN, 0, 2, Some(Role::Write), None),
+            grant(7, MINT_ADMIN, 0, 3, Some(Role::Write), None),
             reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
             // 2 vouches for 1, then is removed; 3 vouches for 2's addendum
-            edge(20, MINT_ADMIN, 2, 1, None, Some(vec![])),
+            grant(20, MINT_ADMIN, 2, 1, None, Some(vec![])),
             addendum(30, 2, 3, 20, vec![10]),
-            edge(40, MINT_ADMIN, 4, 2, None, Some(vec![])),
+            grant(40, MINT_ADMIN, 4, 2, None, Some(vec![])),
             addendum(50, 3, 5, 40, vec![30]),
         ];
         if !listed {

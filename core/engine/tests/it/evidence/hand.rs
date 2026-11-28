@@ -23,25 +23,25 @@ fn reader_of(w: &World, s: Thing) -> BTreeMap<CopyId<Id, Thing>, Reason<Thing, K
     d.ev.required(&s).cloned().unwrap_or_default()
 }
 
-/// held-model `spec_edges`'s base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
+/// held-model `spec_grants`'s base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
 /// Q syncs A, K (no admin) is hostile.
 fn base() -> (World, [usize; 4]) {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let n = [w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A])];
-    w.write(n[0], |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(n[1], |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(n[0], |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(n[1], |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
     (w, n)
 }
 
 /// Finding 9 (`f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2`): X removes K and Q from A in
-/// one commit C; K writes D after it. C is on K's edge; the creation of Q's entry (X's grant to Q),
-/// on no stated path, is in D's evidence: a copy brings every grant write on the edges it writes.
+/// one commit C; K writes D after it. C is on K's grant; the creation of Q's entry (X's grant to Q),
+/// on no stated path, is in D's evidence: a copy brings every grant write on the grants it writes.
 #[test]
 fn f9_the_creation_a_reset_names_is_evidence_spec_permissions_2() {
     let (mut w, [x, _, _, _]) = base();
     let kn = w.node(true, &[A]);
-    let gq = w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    let gq = w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
     let c = w.write_parts(x, |p| p.commit(X, 5, &[], A, vec![PKind::set(K, Role::None), PKind::set(Q, Role::None)]));
     w.write(kn, |p| p.content(K, 6, &[A], D));
     assert_agrees("f9", &w);
@@ -55,16 +55,16 @@ const M2: Thing = 31;
 const V: Thing = 32;
 
 /// Finding 11 (b): K states [M1, M2, A] for its write on D, M2 holding nothing on A: the path's
-/// edges bring their writes whatever joins them, so V's grant of M1 on M2 is a copy under D at U
+/// grants bring their writes whatever joins them, so V's grant of M1 on M2 is a copy under D at U
 /// (the roster leak spec/sync-hostile.md §2 states).
 #[test]
-fn f11_an_unjoined_path_still_brings_its_edges_writes_spec_permissions_4() {
+fn f11_an_unjoined_path_still_brings_its_grants_writes_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D), (V, M1), (V, M2)]);
     let mut w = World::new(pw, &[A, D, M1, M2]);
     let (y, v, u, k) = (w.node(true, &[D]), w.node(true, &[M1, M2]), w.node(true, &[M2, D]), w.node(false, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let gm = w.write(v, |p| p.edge(V, 1, &[], M2, M1, Role::Write, &[]));
-    w.write(v, |p| p.edge(V, 1, &[], M1, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    let gm = w.write(v, |p| p.grant(V, 1, &[], M2, M1, Role::Write, &[]));
+    w.write(v, |p| p.grant(V, 1, &[], M1, K, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[M1, M2, A], D));
     assert_agrees("f11", &w);
     let (d, _) = at_end(&w, |st| st.held[u].clone());
@@ -74,13 +74,13 @@ fn f11_an_unjoined_path_still_brings_its_edges_writes_spec_permissions_4() {
 /// Q writes D through [A] where (Q, A) holds only K's junk grant: the junk is a copy (finding 11,
 /// spec/sync-hostile.md §2), and with it its own evidence, X's grant to K on the junk's path.
 #[test]
-fn junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
+fn junk_on_a_path_grant_is_a_copy_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let [x, y, k, q] = [w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A])];
-    let gk = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let junk = w.write(k, |p| p.edge(K, 2, &[], A, Q, Role::Admin, &[]));
+    let gk = w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    let junk = w.write(k, |p| p.grant(K, 2, &[], A, Q, Role::Admin, &[]));
     w.write(q, |p| p.content(Q, 3, &[A], D));
     assert_agrees("junk", &w);
     let (d, _) = at_end(&w, |st| st.held[q].iter().chain(&st.held[y]).chain(&st.held[k]).copied().collect());
@@ -88,33 +88,33 @@ fn junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
 }
 
 /// Q's grant to K (g1), dropped by X's removal of Q: D's evidence holds it (the re-grant reads it,
-/// spec/permissions.md §5.2), on the edge K's write uses.
+/// spec/permissions.md §5.2), on the grant K's write uses.
 #[test]
 fn a_dropped_grant_is_evidence_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
-    let g1 = w.write(q, |p| p.edge(Q, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Admin, &[]));
+    let g1 = w.write(q, |p| p.grant(Q, 1, &[], A, K, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[A], D));
-    w.write(x, |p| p.edge(X, 3, &[], A, Q, Role::None, &[]));
-    let rg = w.write(x, |p| p.edge(X, 5, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 3, &[], A, Q, Role::None, &[]));
+    let rg = w.write(x, |p| p.grant(X, 5, &[], A, K, Role::Write, &[]));
     assert_agrees("dropped", &w);
     let req = reader_of(&w, D);
     assert!(req.contains_key(&(g1, A)), "{req:?}");
     assert!(req.contains_key(&(rg, A)));
 }
 
-/// Finding 15 (`every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4`): a writer's
-/// finalizes on a used edge are each a copy (27 more for 27 more); a may-grant holder's grants
+/// Finding 15 (`every_grant_write_on_a_used_grant_is_a_copy_spec_permissions_4`): a writer's
+/// finalizes on a used grant are each a copy (27 more for 27 more); a may-grant holder's grants
 /// likewise; a non-admin's junk too, and an admin's writes.
 #[test]
-fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
+fn f15_what_a_non_admin_and_an_admin_force_on_a_used_grant_spec_permissions_4() {
     let copies = |w: &World| reader_of(w, D).len();
     let finalizes = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
-        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
             w.write(k, |p| p.push(K, 2 + i, &[], A, PKind::finalize(Q)));
         }
@@ -126,7 +126,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     let may_grants = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.push(X, 1, &[], A, PKind::set(K, Role::Write).may_grant()));
-        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
             w.write(k, |p| p.push(K, 2 + i, &[], A, PKind::set(Q, Role::Read)));
         }
@@ -136,9 +136,9 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     assert_eq!(may_grants(30) - may_grants(3), 27);
     let junk = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
-        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
-            w.write(k, |p| p.edge(K, 2 + i, &[], A, Q, Role::Admin, &[]));
+            w.write(k, |p| p.grant(K, 2 + i, &[], A, Q, Role::Admin, &[]));
         }
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
         assert_agrees("junk", &w);
@@ -148,7 +148,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     let admin = |n: u32| {
         let (mut w, [x, _, _, q]) = base();
         for i in 0..n {
-            w.write(x, |p| p.edge(X, 1 + i, &[], A, Q, Role::Write, &[]));
+            w.write(x, |p| p.grant(X, 1 + i, &[], A, Q, Role::Write, &[]));
         }
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
         copies(&w)
@@ -166,12 +166,12 @@ fn split_a_part_on_another_thing_brings_nothing_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (X, T1), (Y, B), (Y, T2)]);
     let mut w = World::new(pw, &[A, B, T1, T2]);
     let (x, y, k) = (w.node(true, &[A, T1]), w.node(true, &[B, T2]), w.node(true, &[]));
-    let ga = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], T1, A, Role::Write, &[]));
-    let gb = w.write(y, |p| p.edge(Y, 1, &[], B, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], T2, B, Role::Write, &[]));
+    let ga = w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], T1, A, Role::Write, &[]));
+    let gb = w.write(y, |p| p.grant(Y, 1, &[], B, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], T2, B, Role::Write, &[]));
     w.write_parts(k, |p| p.split(K, 2, K, &[(&[A], T1), (&[B], T2)]));
-    w.write(y, |p| p.edge(Y, 6, &[], B, K, Role::None, &[]));
+    w.write(y, |p| p.grant(Y, 6, &[], B, K, Role::None, &[]));
     assert_agrees("split", &w);
     let t1: Copies = reader_of(&w, T1).into_keys().collect();
     assert_eq!(t1, Copies::from([(ga, A)]));
@@ -185,7 +185,7 @@ fn split_a_part_on_another_thing_brings_nothing_spec_permissions_4() {
 #[test]
 fn p4_a_copy_leaves_with_the_last_body_that_needed_it_spec_permissions_4() {
     let (mut w, [x, _, _, q]) = base();
-    let gq = w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+    let gq = w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
     let c0 = w.write(q, |p| p.content(Q, 2, &[A], D));
     let c1 = w.write(q, |p| p.content(Q, 3, &[A], D));
     let rule = e1(&mut w);
@@ -240,15 +240,15 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
         let pw = paths::World::new(&[(X, A), (Y, D)]);
         let mut w = World::new(pw, &[A, D]);
         let (x, y, k, q) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
-        w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
-        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
-        w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-        let gz = w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Admin, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+        let gz = w.write(k, |p| p.grant(K, 2, &[], A, Z, Role::Write, &[]));
         let c0 = w.write(k, |p| p.content(K, 2, &[A], D));
         let c = w.write(k, |p| p.content(K, c1, &[A], D));
-        let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &if listed { vec![c0, gz] } else { vec![c] }));
+        let r = w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &if listed { vec![c0, gz] } else { vec![c] }));
         w.write(q, |p| p.addendum(Q, 7, &[A], D, r, &[c]));
-        w.write(x, |p| p.edge(X, 6, &[], A, K, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 6, &[], A, K, Role::Write, &[]));
         w
     };
     for (c1, listed) in [(3, true), (7, false)] {
@@ -258,9 +258,9 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
     let mut w = World::new(pw, &[A, R]);
     w.member(E, R);
     let (x, y, k) = (w.node(true, &[A]), w.node(true, &[R]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     w.write(k, |p| p.content(K, 8, &[A, R], E));
     assert_agrees("risk3", &w);
 }
@@ -287,7 +287,7 @@ fn d_unit() -> E {
 }
 
 /// The derivation's own (finding 8, notes/path-form.md): a body whose path entry has not opened
-/// here brings nothing; its opening brings the path's edges' writes, whatever their order. Each
+/// here brings nothing; its opening brings the path's grants' writes, whatever their order. Each
 /// step incremental equals from scratch.
 #[test]
 fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
@@ -300,18 +300,18 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     ev.open_path(&(5, D), 0, vec![(K, A), (A, D)]);
     assert_eq!(req32(&ev), Copies32::from([(2, A)]));
     assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Edge((K, A))));
-    // a write on the edge ordered after the body is taken too, and a forgotten member leaves
+    // a write on the grant ordered after the body is taken too, and a forgotten member leaves
     ev.add((7, A), vec![Part::new(write(K), Some(vec![(X, A)]))]);
     assert_eq!(req32(&ev), Copies32::from([(2, A), (7, A)]));
     ev.forget(&(2, A));
     assert_eq!(req32(&ev), Copies32::from([(7, A)]));
 }
 
-/// A member brings every write on each edge it writes (finding 9's clause under E1): X's commit
+/// A member brings every write on each grant it writes (finding 9's clause under E1): X's commit
 /// on A removes K and Q; K's write on D through [A] brings it, and with it X's grant to Q (the
 /// entry it resets), arriving before or after.
 #[test]
-fn a_member_brings_the_writes_on_the_edges_it_writes_spec_permissions_4() {
+fn a_member_brings_the_writes_on_the_grants_it_writes_spec_permissions_4() {
     let mut ev = d_unit();
     ev.add((3, D), vec![Part::new(Kind::Content, Some(vec![(K, A), (A, D)]))]);
     ev.add((5, A), vec![Part::new(write(K), Some(vec![(X, A)])), Part::new(write(Q), Some(vec![(X, A)]))]);
@@ -322,10 +322,10 @@ fn a_member_brings_the_writes_on_the_edges_it_writes_spec_permissions_4() {
 }
 
 /// A removal reaches a far thing only with a write it judges there: X removes K on A while A writes
-/// D (Y's grant). With no body of D resting on K's edge, D requires nothing of A; K's write on D
+/// D (Y's grant). With no body of D resting on K's grant, D requires nothing of A; K's write on D
 /// through [A] brings the removal and the grant it ends.
 #[test]
-fn a_removal_is_evidence_only_where_a_body_rests_on_its_edge_spec_permissions_4() {
+fn a_removal_is_evidence_only_where_a_body_rests_on_its_grant_spec_permissions_4() {
     let w = |holder: Thing, _grant: bool| Kind::Write(Write { holder });
     let mut ev = d_unit();
     ev.add((1, D), vec![Part::new(w(A, true), Some(vec![(Y, D)]))]);
@@ -337,16 +337,16 @@ fn a_removal_is_evidence_only_where_a_body_rests_on_its_edge_spec_permissions_4(
 }
 
 /// Finding 23 (held-model `gaps_a_write_through_a_read_hop_pends_at_a_reader_no_source_brings_the_read_grant`):
-/// the stolen K writes R through [A, O], A holding only read on O. The path's edges bring
+/// the stolen K writes R through [A, O], A holding only read on O. The path's grants bring
 /// their writes whatever they give: X's grant to K and W's read grant are both copies.
 #[test]
 fn f23_a_read_hop_brings_its_writes_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
     let mut w = World::new(pw, &[A, O, R]);
     let (x, wn, y, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[R]), w.node(false, &[]));
-    let gk = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    let ga = w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
+    let gk = w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    let ga = w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Read, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, O, Role::Write, &[]));
     w.write(k, |p| p.content(K, 5, &[A, O], R));
     assert_agrees("f23", &w);
     let (d, _) = at_end(&w, |st| st.written.clone());

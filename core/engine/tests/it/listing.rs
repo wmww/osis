@@ -34,14 +34,14 @@ fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(d);
-    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, d, ids[3], Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[2], Some(grant(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[3], Some(grant(Role::Write)), None);
     // the fresh node's account, granted read on D: what it is handed of D applies (content of a
     // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
     let mut f = fresh_account();
     lp.meet(0, &mut f).unwrap();
-    set_edge(&mut lp.peers[0].engine, d, f.engine.tid(), Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, f.engine.tid(), Some(grant(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d, ids)
@@ -182,7 +182,7 @@ fn invalid_body_reads_marked() {
     assert!(held(&mut lp.peers[1], d, &c).valid);
     lp.sync_all().unwrap();
     let f = ct::Frontier { commits: BTreeSet::new() };
-    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     let r = held(&mut lp.peers[0], d, &c);
     assert!(!r.valid);
     assert_eq!(r.body, PartBody::Dropped);
@@ -291,7 +291,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(e);
     let f = fresh_account().engine.tid();
-    set_edge(&mut lp.peers[0].engine, e, f, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, e, f, Some(grant(Role::Read)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
     let base = all(&mut lp, 0);
@@ -363,7 +363,7 @@ fn events_per_commit_exact() {
     let f = ct::Frontier { commits: BTreeSet::new() };
     lp.sync_all().unwrap();
     lp.peers[1].drain_events();
-    let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
+    let dm = set_grant(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     let pd = pack(&mut lp, 0, &dm);
     // Dan received Bob's writes: he would vouch for them (spec/permissions.md §5.2); this counts
     // what turns invalid under a removal listing none
@@ -453,7 +453,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let prq = pack(&mut lp, who, &rq);
             // an honest demotion: it lists the delta and the request (spec/permissions.md §5.1)
             let f = ct::Frontier { commits: [c, rq].into_iter().collect() };
-            let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), Some(f.clone()));
+            let dm = set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Read)), Some(f.clone()));
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];
             // a fresh node holding `base`, copied for each order

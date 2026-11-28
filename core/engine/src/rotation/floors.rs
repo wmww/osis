@@ -16,7 +16,7 @@ use osis_base::{Role, Tid};
 use osis_keys::ActorEpochs;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// `p`'s floor on `a` (spec/crypto.md §4, A party's floor): its edge in force there (its floor,
+/// `p`'s floor on `a` (spec/crypto.md §4, A party's floor): its grant in force there (its floor,
 /// at least its author's: a party hands no history it was not given) and its floor through each
 /// holder actor of `a` it reads for keys, the least of them; 0 holding `a` by none.
 pub(crate) fn party_floor(core: &Core, a: &Tid, p: &Tid) -> u64 {
@@ -35,7 +35,7 @@ pub(crate) fn holder_floor(core: &Core, a: &Tid, p: &Tid) -> u64 {
     }
 }
 
-/// Whether some edge on `a` in force carries a floor: else every party's is 0.
+/// Whether some grant on `a` in force carries a floor: else every party's is 0.
 fn any_floor(core: &Core, a: &Tid) -> bool {
     core.timelines().on(a).is_some_and(|on| on.holders().iter().any(|(_, e)| e.floor.is_some()))
 }
@@ -48,7 +48,7 @@ fn floor_in(core: &Core, a: &Tid, p: &Tid, seen: &mut BTreeSet<Tid>) -> u64 {
     }
     let Some(on) = core.timelines().on(a) else { return 0 };
     let mut paths = Vec::new();
-    if let Some(e) = on.edge_at(p, None) {
+    if let Some(e) = on.grant_at(p, None) {
         let author = on.in_force(p).and_then(|c| core.ix.commits.get(&c)).map(|m| m.view.signer).filter(|x| x != p);
         let by = author.map_or(0, |x| floor_in(core, a, &x, &mut seen.clone()));
         paths.push(e.floor.unwrap_or(0).max(by));
@@ -145,7 +145,7 @@ pub(crate) fn removal_listed(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs, 
     let Some(on) = core.timelines().on(a) else { return BTreeSet::new() };
     let rm = on
         .applied()
-        .filter(|(c, o)| o.holder == osis_base::Holder::Thing(*x) && o.edge.is_none_or(|e| e.says_retain()) && before.is_none_or(|p| c.point() < p))
+        .filter(|(c, o)| o.holder == osis_base::Holder::Thing(*x) && o.grant.is_none_or(|e| e.says_retain()) && before.is_none_or(|p| c.point() < p))
         .max_by_key(|(c, _)| c.point())
         .map(|(c, _)| c.id);
     let Some(rm) = rm else { return BTreeSet::new() };
@@ -163,7 +163,7 @@ pub(crate) fn removal_listed(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs, 
 /// that removal; else none.
 pub(crate) fn readd_epochs(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs) -> BTreeSet<osis_crypto::Epoch> {
     let Some(on) = core.timelines().on(a) else { return BTreeSet::new() };
-    if !on.edge_at(x, None).is_some_and(|e| e.floor.is_some()) {
+    if !on.grant_at(x, None).is_some_and(|e| e.floor.is_some()) {
         return BTreeSet::new();
     }
     let Some(grant) = on.in_force(x).and_then(|c| on.applied().find(|(rc, _)| rc.id == c).map(|(rc, _)| rc.point())) else { return BTreeSet::new() };

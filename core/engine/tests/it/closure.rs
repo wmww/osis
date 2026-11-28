@@ -69,12 +69,12 @@ fn work(n: usize, setup: impl Fn(&mut Engine, Tid, usize) -> (Tid, Tid)) -> u64 
 
 // spec/sync-set.md §2 Cost (notes/closure-model.md P5 counts): removing a strong costs at most
 // the part of the node closure it held, never its target's other referrers; checked at n and
-// 10n. A non-tree referrer of a target with fan-in n, the target's tree edge with referrers
-// outside, a tree edge whose target has a shallow alternative over a subtree of n, and one whose
+// 10n. A non-tree referrer of a target with fan-in n, the target's tree grant with referrers
+// outside, a tree grant whose target has a shallow alternative over a subtree of n, and one whose
 // alternative is n deep: each the same at both sizes. A subtree of n released: n.
 #[test]
 fn removal_costs_what_it_held_spec_sync_set_2() {
-    // D -> x1..xn, each xi -> t: the tree edge of t is x1's, made first
+    // D -> x1..xn, each xi -> t: the tree grant of t is x1's, made first
     let fan = |e: &mut Engine, d: Tid, n: usize| {
         let xs: Vec<Tid> = (0..n).map(|_| make(e, d, d)).collect();
         let t = make(e, d, xs[0]);
@@ -315,16 +315,16 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                 }
                 3..=4 if g != t => {
                     let r = [Role::Sync, Role::Read, Role::Write][rng.below(3) as usize];
-                    let edge = ct::Grant { role: r, until: None, may_grant: false, retain: false, floor: None };
+                    let grant = ct::Grant { role: r, until: None, may_grant: false, retain: false, floor: None };
                     let had: Option<hc::Role> = grants.get(&(g, t)).copied();
                     let m = match r { Role::Sync => hc::Role::Sync, Role::Read => hc::Role::Read, _ => hc::Role::Write };
                     if had == Some(m) {
                         continue;
                     }
                     if had.is_some_and(|h| h > m) {
-                        e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: Some(edge), retain: None }).unwrap();
+                        e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: Some(grant), retain: None }).unwrap();
                     } else {
-                        e.grant(&tids[t], &tids[g], &edge).unwrap();
+                        e.grant(&tids[t], &tids[g], &grant).unwrap();
                     }
                     if had.is_none() {
                         order.push((g, t));
@@ -422,8 +422,8 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     let x = make(e, p, d);
     let y = make(e, p, x);
     let b = make(e, y, y);
-    e.grant(&y, &x, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e.grant(&y, &x, &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
+    e.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let e1 = &mut lp.peers[1].engine;
     let d1 = e1.node_root().unwrap();
     strong(e1, d1, x, true);
@@ -507,7 +507,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
         e.commit(m).unwrap();
     };
     put(e, "before");
-    e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let e1 = &mut lp.peers[1].engine;
     let d1 = e1.node_root().unwrap();
     strong(e1, d1, x, true);
@@ -515,7 +515,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     let read = |lp: &mut LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
     assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
     let e = &mut lp.peers[0].engine;
-    let lowering = e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::edge_of(osis_base::Role::Sync)), retain: None }).unwrap();
+    let lowering = e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::grant_of(osis_base::Role::Sync)), retain: None }).unwrap();
     // the lowering's role commits reach account 1, as its sync role keeps them coming
     for c in &lowering.commits {
         let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
@@ -590,7 +590,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         let t = e1.new_thing(&mut m, q);
         m.set(t, &crate::common::REG, &Value::Str("t".into())).unwrap();
         e1.commit(m).unwrap();
-        e1.grant(&t, &p0, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        e1.grant(&t, &p0, &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
         let mut m = Mutation::new();
         m.set(profile, &crate::common::REG, &Value::Str("q".into())).unwrap();
         let x = e1.commit(m).unwrap().unwrap();
@@ -663,7 +663,7 @@ fn held_minted_with_d() -> (LocalPeer, Tid) {
     let (mut lp, ps) = crate::flows::accounts(2);
     let d = ps[0];
     let x = make(&mut lp.peers[0].engine, d, d);
-    lp.peers[0].engine.grant(&x, &ps[1], &crate::common::edge(osis_base::Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &ps[1], &crate::common::grant(osis_base::Role::Read)).unwrap();
     lp.hold_at(1, x);
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
@@ -735,7 +735,7 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
     let e0 = &mut lp.peers[0].engine;
     let d0 = e0.node_root().unwrap();
     let t = make(e0, d0, d0);
-    e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+    e0.grant(&t, &ps[1], &crate::flows::grant_of(osis_base::Role::Write)).unwrap();
     let ids = lp.peers[0].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 0, 1, &ids);
     let e1 = &mut lp.peers[1].engine;
@@ -989,7 +989,7 @@ fn a_retained_copy_stays_once_released_spec_commits_5() {
     let mut m = Mutation::new();
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
     e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     let reg = crate::common::ak("t:reg.0");
     let before = [x, y].map(|t| lp.peers[1].engine.get(&t, &reg).unwrap());
@@ -1019,7 +1019,7 @@ fn a_release_judges_every_commit_on_the_held_set_before_it_spec_sync_set_3() {
     let y = crate::flows::thing_of(&mut lp, 0, ps[0]);
     let e0 = &mut lp.peers[0].engine;
     for t in [x, y] {
-        e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+        e0.grant(&t, &ps[1], &crate::flows::grant_of(osis_base::Role::Write)).unwrap();
     }
     crate::flows::spread(&mut lp);
     let reg = crate::common::ak("t:reg.0");
@@ -1061,7 +1061,7 @@ fn a_release_judges_every_commit_on_the_held_set_before_it_spec_sync_set_3() {
 fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     let e1 = &mut lp.peers[1].engine;
     let c = e1.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
@@ -1085,7 +1085,7 @@ fn x_read_at_1() -> (LocalPeer, Tid) {
         let mut m = Mutation::new();
         let x = e0.new_thing(&mut m, ps[0]);
         e0.commit(m).unwrap();
-        e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
         let d1 = lp.peers[1].engine.node_root().unwrap();
         strong(&mut lp.peers[1].engine, d1, x, true);
         let all = lp.peers[0].engine.commit_ids();
@@ -1139,7 +1139,7 @@ fn minted_with_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
     m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
     e0.commit(m).unwrap();
     for t in [y, x] {
-        e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        e0.grant(&t, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     }
     let e1 = &mut lp.peers[1].engine;
     strong(e1, d1, x, true);
@@ -1199,7 +1199,7 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     let mut m = Mutation::new();
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
     e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let d1 = lp.peers[1].engine.node_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
     let all = lp.peers[0].engine.commit_ids();
@@ -1248,7 +1248,7 @@ fn a_thing_minted_again_with_the_strong_back_is_pulled_anew_spec_sync_judgement_
     let mut m = Mutation::new();
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
     e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let d1 = lp.peers[1].engine.node_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
     let all = lp.peers[0].engine.commit_ids();
@@ -1482,7 +1482,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
         let x = e0.new_thing(&mut m, ps[0]);
         m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
         e0.commit(m).unwrap();
-        e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
         let all = lp.peers[0].engine.commit_ids();
         crate::flows::send_carried(&mut lp, 0, 1, &all);
         let d1 = lp.peers[1].engine.node_root().unwrap();
@@ -1709,7 +1709,7 @@ fn a_signal_then_a_reference_outlives_the_signal_spec_sync_set_2() {
     lp.peers[0].commit(m).unwrap();
     lp.hold_at(0, t);
     let who = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&t, &who, &crate::common::edge(osis_base::Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &who, &crate::common::grant(osis_base::Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert!(!lp.peers[1].engine.closure_holds(&t), "the signal alone: a stub");
     lp.hold_at(1, t);

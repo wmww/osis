@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 const CREATED: &str = osis_commit::retention::CREATED;
 
 /// Aspects whose parts a destroyed thing keeps and still takes (`thing_wait`), so its destruction is
-/// judged alike: its mintings, its role-class aspects (no content: its frozen edges, its keys and
+/// judged alike: its mintings, its role-class aspects (no content: its frozen grants, its keys and
 /// sync IDs, as role history always stays) and the destroying requests' parts on it.
 pub(crate) fn judges_destruction(ak: &str) -> bool {
     ak == CREATED || osis_schema::core_types::is_role_class(ak) || osis_commit::retention::destroying_request(ak)
@@ -38,7 +38,7 @@ pub(crate) fn judges_destruction(ak: &str) -> bool {
 /// any request's, by every held grant write (spec/commits.md §5 Destruction), so a removal stamped
 /// after it reads the same in every arrival order.
 pub(crate) fn kept_whole(ak: &str) -> bool {
-    ak == CREATED || crate::apply::validity::edge_ak(ak)
+    ak == CREATED || crate::apply::validity::grant_ak(ak)
 }
 
 /// When a held minting is destroyed (spec/commits.md §5 Destruction): at its expiry `At(T, None)`,

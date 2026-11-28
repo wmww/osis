@@ -18,8 +18,8 @@ fn synthetic_ak(ak: &str) -> bool {
     matches!(ak, "aspects.0" | "roles.0" | "signers.0")
 }
 
-fn edge_value(e: &Grant) -> Value {
-    crate::apply::validity::schema_edge(e).to_value()
+fn grant_value(e: &Grant) -> Value {
+    crate::apply::validity::schema_grant(e).to_value()
 }
 
 impl Core {
@@ -34,13 +34,13 @@ impl Core {
         })
     }
 
-    /// `holder`'s edge on `thing` now, as `roster_of` reads it, without reading the rest.
-    pub(crate) fn edge_now(&self, thing: &Tid, holder: &Tid) -> Option<Grant> {
+    /// `holder`'s grant on `thing` now, as `roster_of` reads it, without reading the rest.
+    pub(crate) fn grant_now(&self, thing: &Tid, holder: &Tid) -> Option<Grant> {
         if !self.exists(thing) {
             return None;
         }
         self.time.at(|now| {
-            let e = self.timelines().on(thing).and_then(|on| on.edge_at(holder, None)).filter(|e| e.alive_at(Some(crate::flows::ts_at(now))));
+            let e = self.timelines().on(thing).and_then(|on| on.grant_at(holder, None)).filter(|e| e.alive_at(Some(crate::flows::ts_at(now))));
             (e, e.and_then(|e| e.until).map(|u| u.0).filter(|u| *u > now))
         })
     }
@@ -90,12 +90,12 @@ impl Engine {
             "aspects.0" => Some(Value::Set(self.aspects_within(&tid, max)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
             "roles.0" => {
                 let r = self.core.roster_of(&tid);
-                (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), edge_value(e))).collect()))
+                (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), grant_value(e))).collect()))
             }
             // the walk's key grants alive now, the record's key among them (spec/data-model.md §9)
             "signers.0" => {
                 let g = self.core.timelines().key_grants(&tid, Some(crate::flows::now_ts(&self.core)));
-                (!g.is_empty()).then(|| Value::Map(g.iter().map(|(k, e)| (k.to_value(), edge_value(e))).collect()))
+                (!g.is_empty()).then(|| Value::Map(g.iter().map(|(k, e)| (k.to_value(), grant_value(e))).collect()))
             }
             _ => self.read(|tx| tx.reading(&tid, &ak, max, |tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read))))?,
         };

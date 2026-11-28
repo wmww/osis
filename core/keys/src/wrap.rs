@@ -65,7 +65,7 @@ pub fn newer_than_head(a: &ActorEpochs, head: [Option<Epoch>; 3]) -> bool {
 /// establishes epochs by, `sync.0` among them: its steps place the delete keys every part lists
 /// (spec/crypto.md §7 Checked keys), so whoever opens a thing's role parts opens the steps that
 /// judge them, in the same blobs. Every holder of the actor opens them, one with a floor
-/// included; their contents are public keys, sealed boxes and entries, steps and edges. Nothing
+/// included; their contents are public keys, sealed boxes and entries, steps and grants. Nothing
 /// else goes there.
 pub const UNDER_ROLES: [&str; 4] = ["roles.0", "keys.0", "secrets.0", "sync.0"];
 

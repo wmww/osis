@@ -139,7 +139,7 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
     let found = core.timelines_mut().aside().disputes();
     let mut trusts = false;
     for op in found {
-        let Some((author, holder, target)) = core.timelines().edge_op(&op) else { continue };
+        let Some((author, holder, target)) = core.timelines().grant_op(&op) else { continue };
         if core.sides.get(op, holder).is_some() {
             continue;
         }
@@ -246,14 +246,14 @@ impl crate::engine::Engine {
         let open = tl.disputes();
         let left = open.len().saturating_sub(max);
         for op in open.into_iter().take(max) {
-            let Some((author, holder, target)) = tl.edge_op(&op) else { continue };
+            let Some((author, holder, target)) = tl.grant_op(&op) else { continue };
             out.insert((op, holder), DisputeInfo { commit: op.0, op: op.1, holder, target, author, side: self.core.sides.get(op, holder) });
         }
         for ((op, holder), side) in self.core.sides.map.iter() {
             if out.contains_key(&(*op, *holder)) {
                 continue;
             }
-            if let Some((author, h, target)) = tl.edge_op(op).filter(|x| x.1 == *holder) {
+            if let Some((author, h, target)) = tl.grant_op(op).filter(|x| x.1 == *holder) {
                 out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: *side });
             }
         }
@@ -265,7 +265,7 @@ impl crate::engine::Engine {
     /// when no held grant write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Holder, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
-        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
+        if !self.core.timelines().grant_op(&w).is_some_and(|(_, h, _)| h == holder) {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {
@@ -293,7 +293,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::flows::Demotion;
     use crate::local_peer::LocalPeer;
-    use crate::rotation::tests::{edge, synced, target_thing};
+    use crate::rotation::tests::{grant, synced, target_thing};
     use osis_base::{Role, Tid};
 
     /// Admins H (peer 1) and X (peer 2) of g (peer 0's); X removes H, every peer holding it.
@@ -302,7 +302,7 @@ mod tests {
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
         let g = target_thing(&mut lp, 0);
         for i in [1, 2] {
-            lp.peers[0].engine.grant(&g, &tids[i], &edge(Role::Admin)).unwrap();
+            lp.peers[0].engine.grant(&g, &tids[i], &grant(Role::Admin)).unwrap();
         }
         lp.sync_all().unwrap();
         lp.advance(1_000);
@@ -323,7 +323,7 @@ mod tests {
         lp.advance(1_000);
         // the writer's check refuses a removed admin's lowering: written past it
         let mut m = crate::Mutation::new();
-        lp.peers[1].engine.run(|tx| crate::flows::edges::removal(tx, &mut m, g, tids[2])).unwrap();
+        lp.peers[1].engine.run(|tx| crate::flows::grants::removal(tx, &mut m, g, tids[2])).unwrap();
         m.frontier(osis_perm::Frontier::new(Vec::<osis_base::CommitId>::new()));
         m.unchecked();
         lp.peers[1].engine.core.skip_writer_rules = true;

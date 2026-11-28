@@ -91,12 +91,12 @@ impl Engine {
         })
     }
 
-    /// The things `actor` holds a current edge on.
+    /// The things `actor` holds a current grant on.
     pub fn grants_of(&self, actor: &Tid) -> Vec<Tid> {
         let Some(tl) = self.core.timelines().get(actor) else { return Vec::new() };
         let ts = self.acting_ts();
-        let edges = tl.edges_at(At::now(ts).point);
-        let mut out: Vec<Tid> = edges.targets(actor).copied().collect();
+        let grants = tl.edges_at(At::now(ts).point);
+        let mut out: Vec<Tid> = grants.targets(actor).copied().collect();
         out.retain(|t| self.roster(t).contains_key(actor));
         out
     }

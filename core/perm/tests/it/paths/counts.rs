@@ -39,7 +39,7 @@ fn records() -> BTreeMap<Tid, Holder> {
 }
 
 /// A commit of one grant write by `signer` at `ts` (whole ms) on `on` along `path`, setting
-/// `holder`'s edge to `role` (none: a removal listing nothing).
+/// `holder`'s grant to `role` (none: a removal listing nothing).
 fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role: Option<Role>) -> Commit {
     let frontier = Some(Arc::new(List::default()));
     let ew = GrantWrite { holder: Holder::Thing(t(holder)), value: role.map(Grant::new), frontier };
@@ -61,8 +61,8 @@ fn delta(a: Counts, b: Counts) -> Counts {
 }
 
 /// H rewrites its own record grant on `on` unchanged at ts 0 (a self-removal that lowers nothing):
-/// that edge is then set, so every later part by H on `on`, resting on it, joins one component.
-/// Parts resting on no edge a held part sets are components of their own.
+/// that grant is then set, so every later part by H on `on`, resting on it, joins one component.
+/// Parts resting on no grant a held part sets are components of their own.
 fn anchor(on: u32) -> Commit {
     write(900_000 + on as u64, H, 0, &[], on, H, Some(Role::Admin))
 }
@@ -81,7 +81,7 @@ fn cost_of(base: &[Commit], c: Commit) -> (Counts, Paths) {
 }
 
 // A part appended at the end of key order costs its own step, at any history: a grant, a write
-// through a path of two hops, and a removal (its audit reads the parts resting on its edge only).
+// through a path of two hops, and a removal (its audit reads the parts resting on its grant only).
 #[test]
 fn an_appended_part_costs_its_own_step() {
     for n in [100, 1000] {
@@ -170,9 +170,9 @@ const Y: u32 = 3;
 
 // A merge moves the smaller component's entries into the larger (notes/perm-paths.md, Merge),
 // then walks from the joining part's key: A holds 20 holders' grants, B one holder granted n
-// times (fewer edges, more entries) and A granted on B; X, granted on A, writes on B along [A]
+// times (fewer grants, more entries) and A granted on B; X, granted on A, writes on B along [A]
 // at the end, joining them: n's entries do not move. Mutation: no swap in `absorb` (the root
-// component, by edges, absorbs the other's maps whatever their size): about 3n moved.
+// component, by grants, absorbs the other's maps whatever their size): about 3n moved.
 #[test]
 fn a_merge_moves_the_smaller_components_entries() {
     let mut per = vec![];
@@ -191,7 +191,7 @@ fn a_merge_moves_the_smaller_components_entries() {
 
 // A trusted component takes an appended part in its own step: the trust set's seeds are counted
 // per part and read again only where they change (notes/perm-paths.md, Trust per component). X,
-// granted at 1, grants 5 holders at 2 (resting on X's edge); n grants follow; H's removal of X
+// granted at 1, grants 5 holders at 2 (resting on X's grant); n grants follow; H's removal of X
 // at the end is trusted. Mutation: every active trusted write's seeds read again on each update
 // (`set_active` puts every trusted write aside and back): about n + 6 steps per walk.
 #[test]
@@ -212,7 +212,7 @@ fn a_trusted_component_takes_an_appended_part_in_its_own_step() {
     }
 }
 
-// Forgetting a content commit walks nothing (no verdict of a delta is stored); forgetting an edge
+// Forgetting a content commit walks nothing (no verdict of a delta is stored); forgetting a grant
 // part replays its component from its key (notes/perm-paths.md, Forget and update): X's grant,
 // before n grants on A, walks those n beside n on B.
 #[test]
@@ -229,7 +229,7 @@ fn a_forget_replays_its_component_from_the_parts_key() {
         let before = p.counts();
         p.forget(&[cid(1)]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (n as u64, 1), "an edge part at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (n as u64, 1), "a grant part at n {n}: {d:?}");
     }
 }
 
@@ -312,10 +312,10 @@ fn a_void_check_reads_its_own_grant_chain() {
     assert!(per[3] >= 90 * per[1], "{per:?}");
 }
 
-// One void check reads each edge position once (notes/perm-paths.md, The void check): H grants X;
-// X grants F admin m times (each resting on X's edge); F grants E admin m times after them (each
-// through F's edge); E removes X listing nothing. Its drops are X's m grants of F; chasing each of
-// F's grants of E scans F's edge below it, which the check caches per position after the first
+// One void check reads each grant position once (notes/perm-paths.md, The void check): H grants X;
+// X grants F admin m times (each resting on X's grant); F grants E admin m times after them (each
+// through F's grant); E removes X listing nothing. Its drops are X's m grants of F; chasing each of
+// F's grants of E scans F's grant below it, which the check caches per position after the first
 // scan: about 2m setters (m = 10 and 100: tenfold), and the removal is void. Mutation: no cache
 // (`chk.found` never read): m², a hundredfold.
 #[test]
@@ -366,7 +366,7 @@ fn writes(n: u32) -> Vec<Commit> {
 }
 
 // spec/permissions.md §5.2: a delta appended at the end costs no walk step and its query reads its
-// path's edges alone, whatever the history.
+// path's grants alone, whatever the history.
 #[test]
 fn an_appended_delta_is_a_point_query() {
     let mut per = vec![];
@@ -382,7 +382,7 @@ fn an_appended_delta_is_a_point_query() {
 }
 
 // spec/permissions.md §5.2: a removal cutting n deltas costs its own walk step: nothing per delta
-// it cuts, and `Changed` names one cut on X's edge; each cut delta's query then reads its path and
+// it cuts, and `Changed` names one cut on X's grant; each cut delta's query then reads its path and
 // the removal naming it.
 #[test]
 fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
@@ -466,8 +466,8 @@ fn addenda_arriving_one_at_a_time_cost_linear_work() {
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
 }
 
-// spec/permissions.md §5.2: a delta's query reads one cut per hop (the edge's last), however many
-// cuts its edge holds: X's delta under k removals of X, each followed by a re-grant, reads the same
+// spec/permissions.md §5.2: a delta's query reads one cut per hop (the grant's last), however many
+// cuts its grant holds: X's delta under k removals of X, each followed by a re-grant, reads the same
 // at k = 10 and 100 (valid again by the re-grant).
 #[test]
 fn a_delta_under_k_cuts_is_a_point_query() {
@@ -487,10 +487,10 @@ fn a_delta_under_k_cuts_is_a_point_query() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
-// spec/permissions.md §5.2 (content): a delta each of k cuts of its edge answers (every removal
+// spec/permissions.md §5.2 (content): a delta each of k cuts of its grant answers (every removal
 // lists it) stands only where every one does, so its query reads each cut once: linear in the cuts
-// after it on its path's edges (5 + 2k reads: 7, 9, 25 at k = 1, 2, 10). Who can
-// force it: the edge's admins, one cut per raise and lowering.
+// after it on its path's grants (5 + 2k reads: 7, 9, 25 at k = 1, 2, 10). Who can
+// force it: the grant's admins, one cut per raise and lowering.
 #[test]
 fn a_delta_every_cut_answers_reads_each_cut_once() {
     let mut per = vec![];
@@ -525,7 +525,7 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
 // An update judges again only the addenda it reaches (notes/perm-paths.md, Addenda, by
 // reach): Y's k addenda along [A] against H's removal of X; a stranger's write that
 // applies nowhere, a grant on B and a grant on A after them judge none, at k = 100 and 1000; a
-// grant of Y backdated before them reaches every one (its edge changes before their positions):
+// grant of Y backdated before them reaches every one (its grant changes before their positions):
 // tenfold. Mutation: every addendum judged again on each update: k for the others too.
 #[test]
 fn an_update_judges_again_only_the_addenda_it_reaches() {
@@ -631,7 +631,7 @@ impl Store for Counting {
 // The walk keeps in memory only grant-class state; delta facts live in the store
 // (notes/perm-paths.md, The delta-facts seam): 10 role commits and n content deltas along them
 // keep the same in-memory entries at n = 1000 and 10,000, and adding and judging a delta
-// appended at the end costs the same store lookups at both (a few per delta, its path's edges
+// appended at the end costs the same store lookups at both (a few per delta, its path's grants
 // read from the walk). Mutation: the walk holding every commit it is given (`held` kept for a
 // content commit): the entries grow with n.
 #[test]
@@ -677,7 +677,7 @@ fn a_dispute_probe_reads_its_component_alone() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
-/// Admins of A, every part in one component (each rests on an edge a held write sets): H grants
+/// Admins of A, every part in one component (each rests on a grant a held write sets): H grants
 /// Y admin (ts 1); Y grants Z (ts 2) and W (ts 3) admin; W grants V read (ts 4); Z grants `n`
 /// holders read (ts 10..).
 fn admins_of_a(n: u32) -> Vec<Commit> {

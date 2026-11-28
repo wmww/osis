@@ -76,8 +76,8 @@ type source = enum {
     session 1 (blob),
 };
 
-/// One grant of rights to one holder (spec/permissions.md §2).
-type edge = struct {
+/// One grant of a role to one holder (spec/permissions.md §2).
+type grant = struct {
     role 0: role,
     /// When the grant ends; absent: never.
     until 1: option<timestamp>,
@@ -92,11 +92,11 @@ type edge = struct {
 };
 
 /// Who holds which rights on the thing, by holder.
-aspect roles.0: map<weak, edge>;
+aspect roles.0: map<weak, grant>;
 
 /// Which keys sign as the thing, with what grant (spec/permissions.md §1 Key grant): by key, its
 /// grant as `roles.0`'s (role, `until`, `may_grant`; never `retain` or `floor`).
-aspect signers.0: map<signing_key, edge>;
+aspect signers.0: map<signing_key, grant>;
 
 /// A set of 32-byte commit IDs.
 type frontier = struct {

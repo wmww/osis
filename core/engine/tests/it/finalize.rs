@@ -1,10 +1,10 @@
-//! Finalizing timed edges (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): an edge
+//! Finalizing timed grants (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): a grant
 //! past its `until` is no departure for keys until a node with write (an admin for an admin grant)
 //! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 is mint admin of `t` (account A),
 //! 1 and 3 write on it (W, W2), 2 is the timed guest G, whose clock lags: it reads on as long as
 //! keys let it, so what it reads shows what the writers' keys gave it.
 
-use crate::flows::{edge_of, newest_read, people, sealed_write, spread, thing_of};
+use crate::flows::{grant_of, newest_read, people, sealed_write, spread, thing_of};
 use osis_base::{Clock, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
@@ -27,10 +27,10 @@ fn shared_built(role: Role) -> (LocalPeer, Tid, Vec<Tid>, Time) {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 0, ps[0]);
     for w in [1, 3] {
-        lp.peers[0].engine.grant(&t, &ps[w], &edge_of(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &ps[w], &grant_of(Role::Write)).unwrap();
     }
     let until = Time(lp.peers[0].engine.now().0 + 5_000);
-    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(until), ..edge_of(role) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(until), ..grant_of(role) }).unwrap();
     spread(&mut lp);
     assert_eq!(sealed_write(&mut lp, 1, t, "before"), BTreeSet::from([0, 2, 3]));
     (lp, t, ps, until)
@@ -43,7 +43,7 @@ fn past(lp: &mut LocalPeer, until: Time, by: u64) {
     }
 }
 
-/// A removal of `holder`'s edge on `t` by peer `by` with no frontier (finalize-shaped), past the
+/// A removal of `holder`'s grant on `t` by peer `by` with no frontier (finalize-shaped), past the
 /// writer's own rules.
 fn raw_finalize(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) -> CommitId {
     let mut m = Mutation::new();
@@ -66,12 +66,12 @@ fn reseal(lp: &mut LocalPeer, t: Tid) {
 }
 
 // spec/permissions.md §2 (finalize), §3; spec/crypto.md §4: a writer about to write after a
-// reader's `until` finalizes the edge: its removal, with no frontier, rotates, so the guest
+// reader's `until` finalizes the grant: its removal, with no frontier, rotates, so the guest
 // reads nothing written after it, even holding its old secrets and a clock before `until`. Every
 // node applies the finalize from its stamp and held writes alone (the guest's own clock lags), and
 // no re-seal brings the guest back.
 #[test]
-fn a_writer_finalizes_an_ended_reader_edge_spec_permissions_2() {
+fn a_writer_finalizes_an_ended_reader_grant_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
     assert!(lp.peers[1].engine.departures(&t).unwrap().is_empty(), "keys read no clock");
@@ -89,11 +89,11 @@ fn a_writer_finalizes_an_ended_reader_edge_spec_permissions_2() {
     assert_eq!(sealed_write(&mut lp, 0, t, "later"), BTreeSet::from([1, 3]));
 }
 
-// spec/permissions.md §2 (Finalize), §5.1: a finalize-shaped removal of an edge not past its
+// spec/permissions.md §2 (Finalize), §5.1: a finalize-shaped removal of a grant not past its
 // `until` at the removal's stamp applies nothing, though every receiver's clock is past `until`
 // when it arrives: the guest stays, and keeps reading once re-sealed.
 #[test]
-fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
+fn a_finalize_of_an_unended_grant_does_nothing_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     raw_finalize(&mut lp, 1, t, ps[2]);
     past(&mut lp, until, 1_000);
@@ -103,14 +103,14 @@ fn a_finalize_of_an_unended_edge_does_nothing_spec_permissions_2() {
         assert!(holds(&lp, i, t, ps[2]), "peer {i}: the early removal applies nothing");
     }
     // a renewal keeps it a holder by the clock too
-    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..grant_of(Role::Read) }).unwrap();
     spread(&mut lp);
     reseal(&mut lp, t);
     assert!(sealed_write(&mut lp, 0, t, "later").contains(&2));
 }
 
-// spec/permissions.md §2: a void finalize resets the guest's entry in the state while its edge
-// stands on the timeline; an explicit removal after it still removes the edge.
+// spec/permissions.md §2: a void finalize resets the guest's entry in the state while its grant
+// stands on the timeline; an explicit removal after it still removes the grant.
 #[test]
 fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
     let (mut lp, t, ps, _) = shared(Role::Read);
@@ -128,7 +128,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
 // spec/permissions.md §2 (Finalize): an ended admin grant needs an admin: a writer neither
 // finalizes it nor has a finalize of it apply; the mint admin's does.
 #[test]
-fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
+fn a_writer_cannot_finalize_an_ended_admin_grant_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Admin);
     past(&mut lp, until, 1_000);
     let (w, _) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
@@ -153,7 +153,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
 fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(Role::Read);
     past(&mut lp, until, 1_000);
-    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..edge_of(Role::Read) }).unwrap();
+    let renewed = lp.peers[0].engine.grant(&t, &ps[2], &ct::Grant { until: Some(Time(until.0 + 3_600_000)), ..grant_of(Role::Read) }).unwrap();
     assert_eq!(renewed.commits.len(), 1, "a renewal finalizes nothing first");
     lp.peers[1].clock.set(Time(until.0 + 2_000));
     assert_eq!(sealed_write(&mut lp, 1, t, "unaware"), BTreeSet::from([0, 3]), "the writer finalized, not knowing");
@@ -166,7 +166,7 @@ fn a_renewal_before_the_finalize_wins_spec_permissions_2() {
 }
 
 // spec/permissions.md §2 (Finalize), spec/crypto.md §4 (forks): two writers finalizing the same
-// ended edge at once fork the rotation; once their commits and re-seals spread, every node reads
+// ended grant at once fork the rotation; once their commits and re-seals spread, every node reads
 // the same roster and current epochs, and the guest reads nothing new.
 #[test]
 fn concurrent_finalizes_converge_spec_permissions_2() {
@@ -214,10 +214,10 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
 }
 
 // spec/commits.md §2, spec/permissions.md §2 (Finalize): a writer never writes a removal of
-// another's edge with no frontier unless the edge is past its `until`: that would be a void
+// another's grant with no frontier unless the grant is past its `until`: that would be a void
 // finalize, a revoke by an admin that cuts off nobody.
 #[test]
-fn a_frontierless_removal_of_an_unended_edge_is_refused_spec_commits_2() {
+fn a_frontierless_removal_of_an_unended_grant_is_refused_spec_commits_2() {
     let (mut lp, t, ps, _) = shared(Role::Read);
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(ps[2])) }).unwrap();

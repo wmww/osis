@@ -1,7 +1,7 @@
 //! Flows between nodes of different accounts end to end through the product's sync, nothing
 //! carried by hand after the contact exchange (`introduce`).
 
-use crate::harness::{World, edge};
+use crate::harness::{World, grant};
 use osis_base::{Role, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
@@ -21,7 +21,7 @@ fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 3, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Admin))).unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &grant(Role::Admin))).unwrap();
     w.run();
     let _script = crate::harness::play(&mut w, &[Partition(0, 1), Partition(1, 2), Partition(1, 3), Grant(0, 0, 2, Gives::Reads), Run, Remove(1, 0, 3), Run, Heal, Run, Write(0, 0), Run], String::new());
     check(&mut w);
@@ -88,7 +88,7 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
     assert_eq!(before.len(), 2, "two writes before the grant");
     let now = w.engine(0).get(&t, &value_ak()).unwrap().expect("a current value");
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &grant(Role::Read), osis_engine::flows::grants::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(now), "the current state");
@@ -146,7 +146,7 @@ fn a_from_now_grantee_reads_a_card_written_before_its_cut_spec_crypto_4() {
     let a0 = w.node(0).account.unwrap();
     let want = w.engine(0).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).expect("node 0's card on t").1;
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &grant(Role::Read), osis_engine::flows::grants::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     let got = w.engine(1).cards_of(&a0).unwrap().into_iter().find(|(h, _)| *h == t).map(|x| x.1);
@@ -171,7 +171,7 @@ fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     let before: Vec<osis_base::CommitId> = w.history.values.values().copied().collect();
     let now = w.engine(0).get(&p, &value_ak()).unwrap().expect("a current value");
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &grant(Role::Read), osis_engine::flows::grants::History::None).and_then(|_| e.signal_grant(&t, &a1, &[]))).unwrap();
     w.run();
     let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
     assert_eq!(w.engine(1).get(&p, &value_ak()).unwrap(), Some(now), "p's current state");

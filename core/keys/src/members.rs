@@ -174,12 +174,12 @@ fn yields(keyed: &BTreeMap<Tid, Vec<Tid>>, h: Tid, a: Tid) -> bool {
     false
 }
 
-/// The strongly connected component of each actor of the directed graph `edges` (from, to), as
+/// The strongly connected component of each actor of the directed graph `grants` (from, to), as
 /// a component number (Kosaraju, iterative: chains have no depth bound).
-fn components(edges: impl Iterator<Item = (Tid, Tid)>) -> BTreeMap<Tid, usize> {
+fn components(grants: impl Iterator<Item = (Tid, Tid)>) -> BTreeMap<Tid, usize> {
     let mut out_: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
     let mut in_: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
-    for (a, b) in edges {
+    for (a, b) in grants {
         out_.entry(a).or_default().push(b);
         out_.entry(b).or_default();
         in_.entry(b).or_default().push(a);
@@ -340,7 +340,7 @@ mod tests {
     // first; grants outside cycles keep key access; the mint admin's standing wins.
     #[test]
     fn key_access_two_cycle() {
-        // edges (target, holder): Y holds X first, X holds Y later
+        // grants (target, holder): Y holds X first, X holds Y later
         let k = key_access(vec![g(1, 1, 2), g(2, 2, 1)]);
         assert_eq!(k, BTreeSet::from([(t(2), t(1))]));
         let k = key_access(vec![g(2, 1, 2), g(1, 2, 1)]);

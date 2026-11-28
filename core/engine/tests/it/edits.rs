@@ -42,7 +42,7 @@ fn net_with_built(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(d);
     for x in &ids[1..] {
-        set_edge(&mut lp.peers[0].engine, d, *x, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, d, *x, Some(grant(Role::Write)), None);
     }
     lp.sync_all().unwrap();
     lp.advance(1_000);
@@ -166,7 +166,7 @@ fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
     let v = edit(&mut lp, bob, d, r, "edited", o);
     // kick bob, keeping only the original (its frontier names it, not the edit)
     let f = ct::Frontier { commits: BTreeSet::from([o]) };
-    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 0, d), vec![(o, None, body("mine"))], "the edit fell");
     // at its writer, its own invalid part is marked and reads as itself, at its own place
@@ -184,7 +184,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     keep_in(&mut m, d, &setting(&[(log().as_str(), History::FOREVER)]));
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(d);
-    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let r = purgeable();
@@ -195,7 +195,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let o = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     let v = edit(&mut lp, 1, d, r, "two", o);
     lp.sync_all().unwrap();
@@ -209,13 +209,13 @@ fn versions_return_folded_with_their_original_spec_commits_5() {
     let (mut lp, d, ids) = net_with(3);
     let r = purgeable();
     let (bob, carol) = (1, 2);
-    set_edge(&mut lp.peers[0].engine, d, ids[carol], Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[carol], Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
     let o = fire(&mut lp, bob, d, r, "one");
     let v = edit(&mut lp, bob, d, r, "two", o);
     // carol kicks bob before receiving them, and alice removes carol before receiving her kick
-    set_edge(&mut lp.peers[carol].engine, d, ids[bob], None, Some(ct::Frontier::default()));
-    set_edge(&mut lp.peers[0].engine, d, ids[carol], None, Some(ct::Frontier::default()));
+    set_grant(&mut lp.peers[carol].engine, d, ids[bob], None, Some(ct::Frontier::default()));
+    set_grant(&mut lp.peers[0].engine, d, ids[carol], None, Some(ct::Frontier::default()));
     // bob gets the kick after alice's removal of carol
     lp.advance(1000);
     for c in [o, v] {
@@ -625,9 +625,9 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_plain_spec_commits_5()
                     if bob_in {
                         // a hand-built frontier keeps some of his writes: the rest fall
                         let keep: BTreeSet<CommitId> = fires.iter().filter(|_| g.below(2) == 0).copied().collect();
-                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], None, Some(ct::Frontier { commits: keep }));
+                        set_grant(&mut lp.peers[alice].engine, d, ids[bob], None, Some(ct::Frontier { commits: keep }));
                     } else {
-                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], Some(edge(Role::Write)), None);
+                        set_grant(&mut lp.peers[alice].engine, d, ids[bob], Some(grant(Role::Write)), None);
                     }
                     bob_in = !bob_in;
                     m = Mutation::new();

@@ -20,7 +20,7 @@
 //!   actor over `Engine::kem_due` (spec/crypto.md §3 KEM key due) notes the cause a complete pass
 //!   is wanted after; that pass's end makes the rotation.
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
-//!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
+//!   this account joined whose K's grant on its target ended (`Engine::joined_link_ended`); one
 //!   that became so is left (`Engine::leave_link`).
 //!
 //! The joiner's leave follows every thing a holder is named on (`Engine::role_things`, then its

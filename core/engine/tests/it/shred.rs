@@ -104,7 +104,7 @@ fn writable_by_0() -> (LocalPeer, Tid) {
         let mut lp = net2();
         let a = lp.peers[0].engine.tid();
         let t = new_thing(&mut lp, 1);
-        lp.peers[1].engine.grant(&t, &a, &edge(osis_base::Role::Write)).unwrap();
+        lp.peers[1].engine.grant(&t, &a, &grant(osis_base::Role::Write)).unwrap();
         lp.sync(1, 0).unwrap();
         (lp, t)
     })
@@ -1007,7 +1007,7 @@ fn fallen_snapshot_rig() -> Fallen {
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
     let x = lp.peers[2].engine.tid();
-    lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &x, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let k = ak("t:big.0");
     let (mx, my) = ("ASIDEX-MARK-5e6f", "ASIDEY-MARK-7a8b");
@@ -1265,7 +1265,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(osis_base::Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(osis_base::Role::Write)), None);
     lp.sync(0, 1).unwrap();
     let k = ak("t:map.0");
     let mut m = Mutation::new();

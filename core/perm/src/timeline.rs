@@ -1,13 +1,13 @@
 //! The role timeline (spec/permissions.md §5.1): the settled walk along stated paths
-//! (`paths::Paths`) over what a node holds, read per holder. The walk answers per edge (its
-//! applied writes, its value before a key); this layer keeps the edge state those histories
-//! end in and answers what is asked across edges: effective roles (§1), rosters, standing,
+//! (`paths::Paths`) over what a node holds, read per holder. The walk answers per grant (its
+//! applied writes, its value before a key); this layer keeps the grant state those histories
+//! end in and answers what is asked across grants: effective roles (§1), rosters, standing,
 //! the default path, at the end or just before a key.
 //!
 //! The node gives it the held commits as the walk's input (`HeldSet`), naming what moved since
 //! the last update; any order of updates reads as the walk from scratch over what is held.
 
-use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_EDGE};
+use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_GRANT};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
 use crate::types::{Grant, GrantOp, Point, RoleCommit, WriteId};
 use osis_base::format::MAX_CHAIN_DEPTH;
@@ -48,7 +48,7 @@ impl Held {
         let mut parts = self.parts.clone();
         if let Some(r) = &self.role {
             let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
-            parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Grant(paths::GrantWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
+            parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Grant(paths::GrantWrite { holder: o.holder, value: o.grant, frontier: list.clone() }) }));
         }
         paths::Commit { id: self.id, ts: self.ts, signer: self.signer, key: self.key, parts }
     }
@@ -66,8 +66,8 @@ pub trait HeldSet {
     fn commit(&self, id: &CommitId) -> Option<Held>;
 }
 
-/// When a query is evaluated: the edge state just before `point` (`None`: after every held
-/// write) with edges alive at `ts` (`None`: the end of time, where every `until` has passed).
+/// When a query is evaluated: the grant state just before `point` (`None`: after every held
+/// write) with grants alive at `ts` (`None`: the end of time, where every `until` has passed).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct At {
     pub point: Option<Point>,
@@ -79,14 +79,14 @@ impl At {
     pub fn before(p: Point) -> At {
         At { point: Some(p), ts: Some(p.ts) }
     }
-    /// The current state, edges alive at `ts`.
+    /// The current state, grants alive at `ts`.
     pub fn now(ts: Ts) -> At {
         At { point: None, ts: Some(ts) }
     }
-    /// The current state at the end of time: only edges without `until` count.
+    /// The current state at the end of time: only grants without `until` count.
     pub const END: At = At { point: None, ts: None };
     /// The current state as keys see it (spec/crypto.md §4): every `until` disregarded, a
-    /// removal's retain value (`until` 0, §2) counting as no edge.
+    /// removal's retain value (`until` 0, §2) counting as no grant.
     pub const KEYS: At = At { point: None, ts: Some(Ts::ZERO) };
 }
 
@@ -125,8 +125,8 @@ impl Changed {
     /// The grants of things (holder, target) whose value at some key changed, a record grant
     /// that came or went aside (`created`). Key grants are no part of a role (spec/permissions.md
     /// §1 Effective role): what they change is the validity `reached` names.
-    pub fn edges(&self) -> impl Iterator<Item = (Tid, Tid)> + '_ {
-        self.walk.edges.keys().filter_map(|(h, t)| h.thing().map(|h| (h, *t)))
+    pub fn grants(&self) -> impl Iterator<Item = (Tid, Tid)> + '_ {
+        self.walk.grants.keys().filter_map(|(h, t)| h.thing().map(|h| (h, *t)))
     }
 }
 
@@ -137,7 +137,7 @@ pub struct Timeline<S: Store = MemStore> {
     records: Records,
     /// The grants of things after every applied write (key grants are the walk's alone).
     now: Edges,
-    /// The applied writes on grants of things in key order, each with its edge (holder, target).
+    /// The applied writes on grants of things in key order, each with its grant (holder, target).
     log: BTreeMap<Key, (Tid, Tid)>,
     /// Per target, the things whose grant on it a held grant write sets, applied or not.
     into: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -319,7 +319,7 @@ impl<S: Store> Timeline<S> {
         for (t, h) in came.iter().chain(&went) {
             let Holder::Thing(a) = h else { continue };
             let last = self.paths.last(h, t).map(|(_, w)| w.value);
-            self.now.set(&self.records, *a, *t, last.unwrap_or(self.records.is_record_edge(a, t).then_some(RECORD_EDGE)));
+            self.now.set(&self.records, *a, *t, last.unwrap_or(self.records.is_record_grant(a, t).then_some(RECORD_GRANT)));
         }
         self.follow(&mut out);
         out
@@ -385,10 +385,10 @@ impl<S: Store> Timeline<S> {
         }
     }
 
-    /// Brings the edge state and the log to the walk after an update reporting `out.walk`, and
+    /// Brings the grant state and the log to the walk after an update reporting `out.walk`, and
     /// fills what it reaches.
     fn follow(&mut self, out: &mut Changed) {
-        for ((h, t), k) in &out.walk.edges {
+        for ((h, t), k) in &out.walk.grants {
             let Holder::Thing(h) = h else { continue };
             let stale: Vec<Key> = self.log.range(*k..).filter(|(_, e)| **e == (*h, *t)).map(|(k, _)| *k).collect();
             for k in stale {
@@ -398,7 +398,7 @@ impl<S: Store> Timeline<S> {
                 self.log.insert(key, (*h, *t));
             }
             let last = self.paths.last(&Holder::Thing(*h), t).map(|(_, w)| w.value);
-            let value = last.unwrap_or(self.records.is_record_edge(h, t).then_some(RECORD_EDGE));
+            let value = last.unwrap_or(self.records.is_record_grant(h, t).then_some(RECORD_GRANT));
             self.now.set(&self.records, *h, *t, value);
         }
         out.reached = self.paths.reached(&out.walk);
@@ -426,7 +426,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// A grant write held here: its signer, holder and target.
-    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Holder, Tid)> {
+    pub fn grant_op(&self, w: &WriteId) -> Option<(Tid, Holder, Tid)> {
         let c = self.role_commit(&w.0)?;
         let op = c.ops.get(usize::try_from(w.1).ok()?)?;
         Some((c.signer, op.holder, op.target))
@@ -471,14 +471,14 @@ impl<S: Store> Timeline<S> {
         }
     }
 
-    /// Whether held grant write `w` would apply at its key were its holder's edge `old` there, the
-    /// rest as the walk has it: its verdict over another state of its own edge, such as a second
+    /// Whether held grant write `w` would apply at its key were its holder's grant `old` there, the
+    /// rest as the walk has it: its verdict over another state of its own grant, such as a second
     /// removal of a holder another write removed first (spec/crypto.md §4, Covers).
     pub fn applies_over(&self, w: &WriteId, old: Option<Grant>) -> bool {
         self.part_of(w).is_some_and(|p| self.paths.would_apply(&p, old))
     }
 
-    /// Applied grant write `w`: what it found on its edge.
+    /// Applied grant write `w`: what it found on its grant.
     pub fn applied(&self, w: &WriteId) -> Option<paths::Applied> {
         self.paths.applied(&self.part_of(w)?).map(|x| x.1)
     }
@@ -517,7 +517,7 @@ impl<S: Store> Timeline<S> {
     pub fn key_grant(&self, key: &SignKey, thing: &Tid) -> Option<Grant> {
         match self.paths.last(&Holder::Key(*key), thing) {
             Some((_, a)) => a.value,
-            None => (self.records.holder(thing) == Some(Holder::Key(*key))).then_some(RECORD_EDGE),
+            None => (self.records.holder(thing) == Some(Holder::Key(*key))).then_some(RECORD_GRANT),
         }
     }
 
@@ -533,7 +533,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// Whether a held grant write names `t` as its holder.
-    pub fn holds_edge(&self, t: &Tid) -> bool {
+    pub fn holds_grant(&self, t: &Tid) -> bool {
         self.holders.contains(t)
     }
 
@@ -549,7 +549,7 @@ impl<S: Store> Timeline<S> {
 
     /// Whether (`holder`, `target`) as restored (§5.1) gives or lets grant more than its value
     /// now: a self-removal, a finalize or a may-grant grant lowered it with no explicit write
-    /// since. An expiry by `until` is read from the edge itself.
+    /// since. An expiry by `until` is read from the grant itself.
     pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
         let v = self.now.get(&self.records, holder, target);
         let (role, grant) = (v.map(|v| v.role), v.filter(|v| v.role == Role::Admin || v.may_grant).map(|v| v.role));
@@ -558,7 +558,7 @@ impl<S: Store> Timeline<S> {
     }
 
     /// Whether an explicit write of `new` on (`holder`, `target`) at `ts`, after every held
-    /// write, takes the edge down (§5.1): the grant as restored gives or lets grant more.
+    /// write, takes the grant down (§5.1): the grant as restored gives or lets grant more.
     pub fn audits(&self, holder: &Holder, target: &Tid, new: Option<Grant>, ts: Ts) -> bool {
         let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
         let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
@@ -566,9 +566,9 @@ impl<S: Store> Timeline<S> {
         role < r || grant < g
     }
 
-    // ---- the edge state ----
+    // ---- the grant state ----
 
-    /// The edge state just before `point` (`None`: after every applied write).
+    /// The grant state just before `point` (`None`: after every applied write).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
         let mut e = EdgesAt::new(&self.records, &self.now);
         let Some(p) = point else { return e };
@@ -582,7 +582,7 @@ impl<S: Store> Timeline<S> {
         e
     }
 
-    /// The edges at the end, each edge whose last write is a finalize (§2) as it stood just
+    /// The grants at the end, each grant whose last write is a finalize (§2) as it stood just
     /// before it: what an `until` passing alone ended (§3, Lost access).
     pub fn edges_unfinalized(&self) -> EdgesAt<'_> {
         let mut e = self.edges_at(None);
@@ -598,21 +598,21 @@ impl<S: Store> Timeline<S> {
         e
     }
 
-    /// The applied writes on the edges into `thing`, in key order: (key, holder, value).
+    /// The applied writes on the grants on `thing`, in key order: (key, holder, value).
     fn writes_on(&self, thing: &Tid) -> Vec<(Key, Tid, Option<Grant>)> {
         let mut out: Vec<(Key, Tid, Option<Grant>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(&Holder::Thing(*h), thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
         out.sort_by_key(|x| x.0);
         out
     }
 
-    /// The roster of `thing` (§5.1): its edges alive at `at`.
+    /// The roster of `thing` (§5.1): its grants alive at `at`.
     pub fn roster(&self, thing: &Tid, at: At) -> BTreeMap<Tid, Grant> {
-        let edges = self.edges_at(at.point);
-        edges.holders(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
+        let grants = self.edges_at(at.point);
+        grants.holders(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
     }
 
-    /// Each holder of `thing` whose current edge does not say retain (§2), with the point of the
-    /// write since which it has held such an edge without a break (`None`: since before every
+    /// Each holder of `thing` whose current grant does not say retain (§2), with the point of the
+    /// write since which it has held such a grant without a break (`None`: since before every
     /// write: its record grant).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
         let mut out: BTreeMap<Tid, Option<Point>> = self.records.mint_admin(thing).map(|a| (a, None)).into_iter().collect();
@@ -649,10 +649,10 @@ impl<S: Store> Timeline<S> {
         out
     }
 
-    /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
+    /// The holders whose grant on `thing`, alive at `ts`, gives a role below one an earlier write
     /// of it (or its record grant) gave: lowered, not ended (`ended`).
     pub fn lowered(&self, thing: &Tid, ts: Ts) -> BTreeSet<Tid> {
-        let mut top: BTreeMap<Tid, Role> = self.records.mint_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
+        let mut top: BTreeMap<Tid, Role> = self.records.mint_admin(thing).map(|a| (a, RECORD_GRANT.role)).into_iter().collect();
         for (_, h, v) in self.writes_on(thing) {
             if let Some(e) = v {
                 let r = top.entry(h).or_insert(e.role);
@@ -662,12 +662,12 @@ impl<S: Store> Timeline<S> {
         top.into_iter().filter(|(m, r)| self.now.get(&self.records, m, thing).is_some_and(|e| e.alive_at(Some(ts)) && e.role < *r)).map(|(m, _)| m).collect()
     }
 
-    /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: whether each
-    /// one's edge ended saying retain (`Grant::ends_retaining`), the point of its last write
-    /// (`None`: its record grant, never written) and the role the edge last gave (a removal's
+    /// The holders with no grant alive on `thing` at `ts` that the walk saw one of: whether each
+    /// one's grant ended saying retain (`Grant::ends_retaining`), the point of its last write
+    /// (`None`: its record grant, never written) and the role the grant last gave (a removal's
     /// value saying retain gives none: the role before it).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (bool, Option<Point>, Role)> {
-        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.records.mint_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();
+        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.records.mint_admin(thing).map(|a| (a, (RECORD_GRANT.ends_retaining(), None, RECORD_GRANT.role))).into_iter().collect();
         for (k, h, v) in self.writes_on(thing) {
             match (v, out.get_mut(&h)) {
                 (Some(e), x) => {
@@ -685,8 +685,8 @@ impl<S: Store> Timeline<S> {
     // ---- roles ----
 
     fn with_roles<R>(&self, node: &Tid, at: At, f: impl FnOnce(&View<'_>, &BTreeMap<Tid, Role>) -> R) -> R {
-        let edges = self.edges_at(at.point);
-        let view = View::at(&edges, at.ts);
+        let grants = self.edges_at(at.point);
+        let view = View::at(&grants, at.ts);
         f(&view, &view.roles_from(node))
     }
 
@@ -705,37 +705,37 @@ impl<S: Store> Timeline<S> {
         Arc::new(self.roles_on_without(thing, at, &BTreeSet::new()))
     }
 
-    /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
+    /// `roles_on` on the current grants at `ts`, and the earliest `until` the walk followed: the
     /// answer holds at any later ts before it.
     pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<Time>) {
-        let edges = self.edges_at(None);
-        let (r, u) = View::at(&edges, Some(ts)).roles_to(thing, &BTreeSet::new());
+        let grants = self.edges_at(None);
+        let (r, u) = View::at(&grants, Some(ts)).roles_to(thing, &BTreeSet::new());
         (Arc::new(r), u)
     }
 
-    /// `roles_on` over the edges not in `skip`, each named (target, holder).
+    /// `roles_on` over the grants not in `skip`, each named (target, holder).
     pub fn roles_on_without(&self, thing: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
-        let edges = self.edges_at(at.point);
-        View::at(&edges, at.ts).roles_to(thing, skip).0
+        let grants = self.edges_at(at.point);
+        View::at(&grants, at.ts).roles_to(thing, skip).0
     }
 
     /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`.
     pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts) -> Option<Role> {
-        let edges = self.edges_unfinalized();
-        View::at(&edges, Some(ts)).roles_to(thing, &BTreeSet::new()).0.get(node).copied()
+        let grants = self.edges_unfinalized();
+        View::at(&grants, Some(ts)).roles_to(thing, &BTreeSet::new()).0.get(node).copied()
     }
 
-    /// Every thing's way into `thing` giving `need` on the current edges at `ts`
+    /// Every thing's way into `thing` giving `need` on the current grants at `ts`
     /// (`graph::Ways`), and the earliest `until` the search followed: the answer holds at any
-    /// later ts before it, while no edge changes.
+    /// later ts before it, while no grant changes.
     pub fn ways_now(&self, thing: &Tid, need: Need, ts: Ts) -> (crate::graph::Ways, Option<Time>) {
-        let edges = self.edges_at(None);
-        View::at(&edges, Some(ts)).ways_to(thing, need)
+        let grants = self.edges_at(None);
+        View::at(&grants, Some(ts)).ways_to(thing, need)
     }
 
     /// `node`'s roles over every grant the walk applied, the ended ones included: what it
     /// reached by the paths the held writes show (spec/crypto.md §4 Holders for keys: removals,
-    /// finalizes and a retain value end a path; `until` is disregarded). A path may join edges
+    /// finalizes and a retain value end a path; `until` is disregarded). A path may join grants
     /// that never stood at once. O(the applied writes).
     pub fn roles_ever(&self, node: &Tid) -> BTreeMap<Tid, Role> {
         let mut ever = Edges::default();
@@ -750,10 +750,10 @@ impl<S: Store> Timeline<S> {
         View::new(&self.records, &ever, Some(Ts::ZERO)).roles_from(node)
     }
 
-    /// `roles_of` over the edges not in `skip`, each named (target, holder).
+    /// `roles_of` over the grants not in `skip`, each named (target, holder).
     pub fn roles_without(&self, node: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
-        let edges = self.edges_at(at.point);
-        View::at(&edges, at.ts).roles_from_without(node, skip)
+        let grants = self.edges_at(at.point);
+        View::at(&grants, at.ts).roles_from_without(node, skip)
     }
 }
 
@@ -761,8 +761,8 @@ impl<S: Store> Timeline<S> {
 fn merge(w: &mut paths::Changed, o: paths::Changed) {
     let had = w.parts.clone();
     w.parts.extend(o.parts);
-    for (e, k) in o.edges {
-        let at = w.edges.entry(e).or_insert(k);
+    for (e, k) in o.grants {
+        let at = w.grants.entry(e).or_insert(k);
         *at = (*at).min(k);
     }
     for (e, k) in o.cuts {

@@ -100,7 +100,7 @@ impl Engine {
     }
 
     /// The holders each `roles.0` or `secrets.0` part of applied role commit `c` is about
-    /// (spec/sync-inbox.md §5), by part index: those whose edge a `roles.0` delta writes, those a
+    /// (spec/sync-inbox.md §5), by part index: those whose grant a `roles.0` delta writes, those a
     /// `secrets.0` piece's box records are keyed with (one per piece, none for the rest). Empty
     /// for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
@@ -122,7 +122,7 @@ impl Engine {
             let f = d.fragment();
             let named: Vec<Tid> = match a.ak.as_str() {
                 // a key's grant names no holder (nothing is sealed to a key)
-                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, f).into_iter().filter_map(|h| h.thing()).collect(),
+                "roles.0" => crate::apply::validity::grant_holders(&self.core, &a.tid, crate::apply::validity::Grants::Things, f).into_iter().filter_map(|h| h.thing()).collect(),
                 // the holders its records are keyed with, puts and removals: of a piece, its
                 // holder (spec/wire.md §4 Pieces)
                 _ => f.field_keys(0).into_iter().filter_map(osis_commit::box_holder).collect(),
@@ -139,7 +139,7 @@ impl Engine {
 
     /// What read thing `g`'s sync IDs carry beside bodies (spec/permissions.md §4 Evidence of a
     /// sync ID), from `ev` holding `g` as a sync ID: its required copies; the records of both ends
-    /// of each edge its evidence reads; the records and mintings `shared` adds; and the public
+    /// of each grant its evidence reads; the records and mintings `shared` adds; and the public
     /// key records of `g`'s holders, with their evidence; and the stubs `g`'s unit carries, each
     /// cut to its readers (`stub_certificates`). The records its role entries' evidence names are
     /// its `role_records` (`role_records_into`).
@@ -150,7 +150,7 @@ impl Engine {
         for (c, x) in &req {
             self.add_cut(c, x, Cut::Evidence { step: stepped.contains(&(*c, *x)) }, &mut out);
         }
-        // a key has no record: its edge's target's is the one read
+        // a key has no record: its grant's target's is the one read
         for (a, b) in ev.edges(g).into_iter().flatten() {
             out.records.extend(a.thing());
             out.records.insert(*b);
@@ -216,20 +216,20 @@ impl Engine {
                 if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
                     out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Sync));
                 }
-                self.record_edge_into(ev, g, &x, out);
+                self.record_grant_into(ev, g, &x, out);
             }
         }
     }
 
     /// Where `x`'s record names `g` or a thing of `g`'s unit M its mint admin, `g`'s keys not
     /// opening `x` (spec/permissions.md §4 Stub, a record grant's writes): each held commit writing
-    /// M's edge on `x`, cut to the stub for readers opening M and `g`, with its evidence, and
+    /// M's grant on `x`, cut to the stub for readers opening M and `g`, with its evidence, and
     /// `x`'s public key record. So a reader of `g` holding `x`'s record learns that `x` is
     /// independent and what became of the record grant, and of `x`'s roster nothing else.
-    fn record_edge_into(&mut self, ev: &Ev, g: &Tid, x: &Tid, out: &mut Certs) {
+    fn record_grant_into(&mut self, ev: &Ev, g: &Tid, x: &Tid, out: &mut Certs) {
         let Some(m) = crate::sync::units::record_admin(&self.core, crate::sync::units::Ctx::Read(*g), g, x) else { return };
         let on_m = |rc: &osis_perm::RoleCommit| rc.ops.iter().any(|op| op.target == *x && op.holder.thing() == Some(m));
-        let cs: Vec<CommitId> = self.core.ix.held.edge_commits(x).iter().filter(|rc| on_m(rc)).map(|rc| rc.id).collect();
+        let cs: Vec<CommitId> = self.core.ix.held.grant_commits(x).iter().filter(|rc| on_m(rc)).map(|rc| rc.id).collect();
         let open = BTreeSet::from([*g, m]);
         let mut seeds = BTreeSet::new();
         for c in cs {
@@ -252,19 +252,19 @@ impl Engine {
     fn stub_parts(&mut self, c: &CommitId, x: &Tid, open: &BTreeSet<Tid>) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
         let named = self.holders_named(c);
-        let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
+        let grant = |ak: &str| crate::apply::validity::grant_ak(ak);
         let mut out = Parts::new();
         for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
             let take = match a.ak.as_str() {
                 "secrets.0" => named.get(&i).is_none_or(|hs| hs.is_empty() || hs.iter().any(|h| open.contains(h))),
-                ak => edge(ak) || ak == "sync.0",
+                ak => grant(ak) || ak == "sync.0",
             };
             if take {
                 out.insert(i);
             }
         }
         if !out.is_empty() {
-            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
+            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && grant(a.ak.as_str())).map(|(i, _)| i));
         }
         out
     }
@@ -312,13 +312,13 @@ impl Engine {
     /// A stub's cut: `stub_parts`.
     pub(crate) fn cut_parts(&mut self, c: &CommitId, x: &Tid, cut: Cut) -> Parts {
         let Some(h) = self.header(c) else { return Parts::new() };
-        let edge = |ak: &str| crate::apply::validity::edge_ak(ak);
+        let grant = |ak: &str| crate::apply::validity::grant_ak(ak);
         let mut out = Parts::new();
         let mut boxes = false;
         for (i, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x) {
             let ak = a.ak.as_str();
             let take = match cut {
-                Cut::Evidence { step } => edge(ak) || (step && ak == "sync.0"),
+                Cut::Evidence { step } => grant(ak) || (step && ak == "sync.0"),
                 Cut::Keys => ak == "keys.0",
             };
             if take {
@@ -327,7 +327,7 @@ impl Engine {
             }
         }
         if boxes {
-            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && edge(a.ak.as_str())).map(|(i, _)| i));
+            out.extend(h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *x && grant(a.ak.as_str())).map(|(i, _)| i));
         }
         out
     }
@@ -528,7 +528,7 @@ impl Engine {
 
     /// Whether this node judges the parts `parts` of commit `c` valid (spec/permissions.md
     /// §5): applied, not pending, each aspect valid, and, for a role commit, each of its
-    /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
+    /// grant ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
     pub fn judged_valid(&self, c: &CommitId, parts: &[usize]) -> bool {
         judged_valid(&self.core, c, parts)
@@ -583,7 +583,7 @@ pub(crate) fn current_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
     Ok(out)
 }
 
-/// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge
+/// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every grant
 /// write it makes is applied.
 pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[usize]) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
@@ -593,7 +593,7 @@ pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[us
     if !m.header.kind.is_role() {
         return true;
     }
-    let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+    let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::grant_ak(a.ak.as_str())).map(|a| a.tid).collect();
     targets.iter().all(|t| {
         let Some(tl) = core.timelines().get(t) else { return true };
         let Some(mc) = tl.role_commit(c) else { return true };
@@ -625,10 +625,10 @@ mod tests {
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
         lp.hold(t);
-        let edge = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        let grant = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &grant).unwrap();
         let c = lp.peers[2].engine.tid();
-        lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &grant).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);
         let mut m = Mutation::new();
@@ -651,11 +651,11 @@ mod tests {
     /// Peer 0 mints A, grants peer 1 admin on it; peer 1 rotates A to keyset k; peer 0 mints T
     /// with admin A and makes it independent. Returns the peers, A, T, k and the rotation.
     fn under_a_rotated_by_another() -> (LocalPeer, Tid, Tid, osis_crypto::Epoch, osis_base::CommitId) {
-        use crate::rotation::tests::{edge, independent_thing, synced};
+        use crate::rotation::tests::{grant, independent_thing, synced};
         let mut lp = synced(3);
         let p1 = lp.peers[1].engine.tid();
         let a = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&a, &p1, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&a, &p1, &grant(Role::Admin)).unwrap();
         lp.sync(0, 1).unwrap();
         let rot = lp.peers[1].engine.rotate_leaving_out(&a, &Role::ALL, &[]).unwrap().unwrap();
         let k = lp.peers[1].engine.epochs(&a).unwrap().read.newest_held().unwrap().0;
@@ -686,12 +686,12 @@ mod tests {
     // boxed at the older keyset).
     #[test]
     fn a_cut_holder_keyset_is_sealed_to_as_whole_spec_permissions_4() {
-        use crate::rotation::tests::edge;
+        use crate::rotation::tests::grant;
         use std::collections::BTreeSet;
         let (mut lp, a, t, k, _) = under_a_rotated_by_another();
         let p2 = lp.peers[2].engine.tid();
         lp.hold_at(2, t);
-        lp.peers[0].engine.grant(&t, &p2, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &p2, &grant(Role::Write)).unwrap();
         let e0 = lp.peers[0].engine.epochs(&t).unwrap().read.newest_held().unwrap().0;
         assert_eq!(boxed_at(&mut lp, 0, t, e0, a), Some(k), "T's admin boxes A at k");
         let on_t: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect();
@@ -717,14 +717,14 @@ mod tests {
     // its record grant while it stands, §1): T, minted with admin A, carries A's keys while A
     // holds, by its record grant alone and beside a grant; once peer 1 removes A's record grant,
     // T's certificates carry none of A's keys. Fails with the mint admin's record carried
-    // whatever its edge.
+    // whatever its grant.
     #[test]
     fn a_removed_mint_admins_keys_leave_the_certificates_spec_permissions_4() {
-        use crate::rotation::tests::edge;
+        use crate::rotation::tests::grant;
         let (mut lp, a, t, _, rot) = under_a_rotated_by_another();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T, no grant write on T");
         let p1 = lp.peers[1].engine.tid();
-        lp.peers[0].engine.grant(&t, &p1, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&t, &p1, &grant(Role::Admin)).unwrap();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T beside a grant");
         lp.sync(0, 1).unwrap();
         lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: a, new: None, retain: None }).unwrap();

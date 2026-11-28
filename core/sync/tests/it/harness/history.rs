@@ -21,7 +21,7 @@ use held_model::closure::entry;
 use osis_base::{Ak, CommitId, Ref, Role, Tid, Value};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::flows::Done;
-use osis_engine::flows::edges::Demotion;
+use osis_engine::flows::grants::Demotion;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::sync::Holding;
 use osis_engine::{Engine, Ingested, Mutation};
@@ -680,11 +680,11 @@ fn make(w: &mut World, i: usize, mint_admin: Option<usize>) -> Result<String, St
 /// (`Engine::signal_grant`, as `Osis::grant` does by default), one to a thing or the public is not.
 fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
-    let edge = Grant { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
+    let grant = Grant { role: g.role(), until: None, may_grant: false, retain: false, floor: None };
     let own = w.node(i).account == Some(holder);
     let tell = matches!(h, Holder::Node(_)) && !own;
     let inbox = if tell { w.engine(i).inbox_of(&holder).ok().flatten() } else { None };
-    let r = w.write(i, |e| e.grant(&t, &holder, &edge).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) }));
+    let r = w.write(i, |e| e.grant(&t, &holder, &grant).and_then(|d| if tell { e.signal_grant(&t, &holder, &[]).map(|_| d) } else { Ok(d) }));
     let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
     let r = r.map_err(|e| e.to_string());
     if r.is_ok() || (unknown && stands(w, i, &t, &holder, Some(g.role()))) {
@@ -776,7 +776,7 @@ pub struct Reads {
 
 pub fn reads(e: &mut Engine, t: &Tid) -> Reads {
     let value = e.get(t, &value_ak()).ok().flatten();
-    let roles = e.roster(t).into_iter().map(|(h, edge)| (h, edge.role)).collect();
+    let roles = e.roster(t).into_iter().map(|(h, grant)| (h, grant.role)).collect();
     Reads { value, roles }
 }
 

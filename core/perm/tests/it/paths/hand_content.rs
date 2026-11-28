@@ -27,7 +27,7 @@ fn a_write_the_remover_or_a_writer_received_shows_a_later_one_does_not() {
     let witnessed = w.content(X, 4, &[A], T1);
     w.content(X, 4, &[A, ORG], T2);
     w.content(X, 5, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[listed]);
     let ad = w.addendum(B, 7, &[A], T1, r, &[witnessed]);
     w.content(X, 8, &[A], T1);
     w.content(B, 8, &[A, ORG], T2);
@@ -41,15 +41,15 @@ fn a_write_the_remover_or_a_writer_received_shows_a_later_one_does_not() {
 #[test]
 fn a_write_on_a_cut_path_never_shows_by_another_path_its_signer_holds() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.content(X, 8, &[A], T1);
     let other = w.content(X, 8, &[A2], T1);
     w.content(X, 8, &[ORG], T1);
     w.content(X, 8, &[A2, A, A2], T1);
     agree_all(&w, &[r]);
-    let r2 = w.edge(K, 9, &[], A2, X, Gone, &[other]);
+    let r2 = w.grant(K, 9, &[], A2, X, Gone, &[other]);
     w.content(X, 7, &[A2], T1);
     w.content(X, 10, &[A2], T1);
     agree_all(&w, &[r, r2]);
@@ -60,10 +60,10 @@ fn a_write_on_a_cut_path_never_shows_by_another_path_its_signer_holds() {
 #[test]
 fn a_made_up_key_holds_nothing_where_the_removal_is_trusted() {
     let (mut w, gx, _) = paired();
-    w.edge(X, 2, &[], A, Z, Admin, &[]);
-    w.edge(Z, 3, &[], A, H, Gone, &[gx]);
+    w.grant(X, 2, &[], A, Z, Admin, &[]);
+    w.grant(Z, 3, &[], A, H, Gone, &[gx]);
     w.content(Z, 4, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.content(H, 8, &[A], T1);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
@@ -73,7 +73,7 @@ fn a_made_up_key_holds_nothing_where_the_removal_is_trusted() {
 #[test]
 fn a_removal_logged_only_where_the_node_wrote_leaves_a_window() {
     let (mut w, gx, _) = paired();
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let first = w.content(X, 8, &[A, ORG], T2);
     let source = Set::from([first, gx]);
     let v = View { held: evidence(&w, &Set::from([first]), &source), leaves: Some(Things::from([T2])), trust: Set::new() };
@@ -86,9 +86,9 @@ fn a_removal_logged_only_where_the_node_wrote_leaves_a_window() {
 /// X shares T1 with A2; K writes; H, who does not sync T1, removes X.
 fn shared_by_x() -> (World, Id, Id, Id, Id) {
     let (mut w, ..) = paired();
-    let gs = w.edge(X, 2, &[A], T1, A2, Write, &[]);
+    let gs = w.grant(X, 2, &[A], T1, A2, Write, &[]);
     let kc = w.content(K, 3, &[A2], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let later = w.content(K, 8, &[A2], T1);
     (w, gs, kc, r, later)
 }
@@ -115,9 +115,9 @@ fn a_grant_the_removal_does_not_list_falls_and_a_listed_one_stands() {
 #[test]
 fn a_removal_the_removed_party_made_stands_only_where_listed() {
     let (mut w, ..) = paired();
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let out = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let out = w.grant(X, 3, &[A], T1, A2, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.content(K, 8, &[A2], T1);
     agree_all(&w, &[r]);
     let (inp, p) = walk(&w, &all(&w, &[r]));
@@ -136,10 +136,10 @@ fn a_removal_the_removed_party_made_stands_only_where_listed() {
 #[test]
 fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
     let week = w.content(N5, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    w.grant(H, 8, &[], A, N5, Admin, &[]);
     w.content(N5, 9, &[A], T1);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[r]), week), Some(Content::Valid(By::Regranted)));
@@ -150,9 +150,9 @@ fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
 #[test]
 fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     let (mut w, ..) = paired();
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(X, 2, &[A], T1, A2, Write, &[]);
-    w.edge(B, 7, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
+    w.grant(X, 2, &[A], T1, A2, Write, &[]);
+    w.grant(B, 7, &[A], T1, A2, Write, &[]);
     let early = w.content(K, 4, &[A2], T1);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[r]), early), Some(Content::Valid(By::Regranted)));
@@ -164,27 +164,27 @@ fn a_backdated_grant_moves_a_current_holders_first_point_back() {
 #[test]
 fn a_re_grant_counts_from_the_latest_hops_first_point() {
     let mut w = account();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
     let early = w.content(X, 3, &[A2], T1);
-    w.edge(H, 5, &[A], T1, A2, Write, &[]);
+    w.grant(H, 5, &[A], T1, A2, Write, &[]);
     let late = w.content(X, 6, &[A2], T1);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Invalid));
     assert_eq!(verdict(&w, &all(&w, &[]), late), Some(Content::Valid(By::Held)));
 }
 
-// spec/permissions.md §5.2 Re-grant: a may-grant grant is made by right, so it is its edge's first
+// spec/permissions.md §5.2 Re-grant: a may-grant grant is made by right, so it is its grant's first
 // point: GU holds write on T1 with the flag, X (K's writer on A2, GU's mint) grants N5 write
 // through it; N5's write, cut by H's removal of N5, counts again once H grants N5 write back.
 #[test]
 fn a_may_grant_grant_is_made_by_right_for_the_re_grant() {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
-    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
     w.push(X, 2, &[A2, GU], T1, Kind::set(N5, Write));
     let early = w.content(N5, 3, &[], T1);
-    w.edge(H, 5, &[A], T1, N5, Gone, &[]);
-    w.edge(H, 7, &[A], T1, N5, Write, &[]);
+    w.grant(H, 5, &[A], T1, N5, Gone, &[]);
+    w.grant(H, 7, &[A], T1, N5, Write, &[]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Valid(By::Regranted)));
 }
@@ -194,9 +194,9 @@ fn a_may_grant_grant_is_made_by_right_for_the_re_grant() {
 #[test]
 fn a_strangers_grant_moves_no_first_point_back() {
     let mut w = account();
-    w.edge(Z, 2, &[], T1, A2, Write, &[]);
+    w.grant(Z, 2, &[], T1, A2, Write, &[]);
     let early = w.content(K, 4, &[A2], T1);
-    w.edge(H, 7, &[A], T1, A2, Write, &[]);
+    w.grant(H, 7, &[A], T1, A2, Write, &[]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Invalid));
 }
@@ -209,7 +209,7 @@ fn a_strangers_grant_moves_no_first_point_back() {
 fn an_addendum_vouches_only_after_its_removal() {
     let (mut w, ..) = paired();
     let xc = w.content(X, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.addendum(B, 5, &[A], T1, r, &[xc]);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[r]), xc), Some(Content::Invalid));
@@ -222,9 +222,9 @@ fn an_addendum_vouches_only_after_its_removal() {
 #[test]
 fn an_addendum_vouches_for_no_commit_of_its_own_signer() {
     let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(B, 2, &[A], T1, A2, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    w.grant(K, 1, &[], A2, X, Write, &[]);
+    w.grant(B, 2, &[A], T1, A2, Write, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     let back = w.content(X, 4, &[A], T1);
     w.addendum(X, 7, &[A2], T1, r, &[back]);
     agree_all(&w, &[r]);
@@ -235,11 +235,11 @@ fn an_addendum_vouches_for_no_commit_of_its_own_signer() {
 #[test]
 fn a_re_granted_writers_later_addendum_vouches() {
     let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.grant(X, 2, &[], A, N5, Admin, &[]);
     let xc = w.content(X, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.addendum(N5, 7, &[A], T1, r, &[xc]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
+    w.grant(H, 8, &[], A, N5, Admin, &[]);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[r]), xc), Some(Content::Invalid));
     w.addendum(N5, 9, &[A], T1, r, &[xc]);
@@ -268,24 +268,24 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
 fn a_purge_holds_the_right_only_through_its_own_chain() {
     let mut w = may_grant_world();
     w.content_as(K, 2, &[A2], T1, 1);
-    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
     w.purge(X, 3, &[A], T1, A2);
     agree_all(&w, &[]);
     w.purge(X, 4, &[A2], T1, A2);
     agree_all(&w, &[]);
 }
 
-// spec/permissions.md §6: a removed signer's backdated purge through the cut edge takes nothing;
+// spec/permissions.md §6: a removed signer's backdated purge through the cut grant takes nothing;
 // listed by the removal it stands.
 #[test]
 fn a_removed_signers_backdated_purge_takes_nothing() {
     let mut w = may_grant_world();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
     w.content_as(H, 2, &[A], T1, 1);
     w.content_as(K, 2, &[A2], T1, 1);
     let q = w.purge(X, 5, &[A], T1, A);
     w.purge(X, 5, &[A2], T1, A2);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
     w.edit(r, |kind| kind.listing(BTreeMap::from([(T1, Set::from([q]))])));
@@ -317,7 +317,7 @@ fn a_removal_naming_its_own_cover_keeps_what_the_cover_carries() {
     let x = w.content(X, 3, &[A], T1);
     w.push(B, 4, &[A], T1, Kind::Cover { carries: Set::from([x]) });
     let own = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
-    let r = w.edge(H, 6, &[], A, X, Gone, &[own]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[own]);
     agree(&w, &all(&w, &[r]).without(&[x]));
     w.edit(r, |k| k.listing(BTreeMap::new()));
     agree(&w, &all(&w, &[r]).without(&[x]));
@@ -330,7 +330,7 @@ fn a_fallen_cover_takes_nothing_honest() {
     let b = w.content(B, 2, &[A], T1);
     let x = w.content(X, 3, &[A], T1);
     let xc = w.push(X, 4, &[A], T1, Kind::Cover { carries: Set::from([b, x]) });
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     agree_all(&w, &[r]);
     agree(&w, &all(&w, &[r]).without(&[b, x]));
     w.edit(r, |k| k.listing(BTreeMap::from([(T1, Set::from([xc]))])));
@@ -362,9 +362,9 @@ fn masking_lowerings_removals_are_shown_together() {
 #[test]
 fn a_reader_with_the_leaves_of_its_evidence_reads_as_a_member() {
     let (mut w, ..) = paired();
-    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
+    let g5 = w.grant(X, 2, &[], A, N5, Admin, &[]);
     w.content(N5, 3, &[A], T1);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[g5]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[g5]);
     w.content(N5, 8, &[A], T1);
     let held = View::all(&w).held;
     let unit: Set = held.iter().copied().filter(|&i| w.commits[i].on == T1 || i == r).collect();
@@ -380,7 +380,7 @@ fn role_class(on: u32, path: &[u32]) -> Part {
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
-fn edge(on: u32, path: &[u32], holder: u32, value: Option<Grant>, listing: Option<&[u64]>) -> Part {
+fn grant(on: u32, path: &[u32], holder: u32, value: Option<Grant>, listing: Option<&[u64]>) -> Part {
     let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| cid(i)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
@@ -410,13 +410,13 @@ fn a_thing_writes_on_itself_as_its_only_member() {
     assert_eq!(p.content(&WriteId(cid(2), 0)), Some(Content::Invalid));
 }
 
-// spec/permissions.md §1: a record coming late gives its edge from the start: KX's grants on KA
+// spec/permissions.md §1: a record coming late gives its grant from the start: KX's grants on KA
 // and KB (minted by KX) rest on KX's key hop and record grants, which no held part sets, so each is
 // a component of its own; KX's record (its key) and the mint records arriving reads them as from
-// scratch. Undone (the late record touching only its own edge's component), they stay unapplied.
+// scratch. Undone (the late record touching only its own grant's component), they stay unapplied.
 #[test]
-fn a_late_record_reaches_every_part_resting_on_its_edge() {
-    let commits = [commit(1, ms(2), KX, vec![edge(KA, &[], KB, admin(), Some(&[]))]), commit(2, ms(3), KX, vec![edge(KT, &[], KZ, admin(), Some(&[]))])];
+fn a_late_record_reaches_every_part_resting_on_its_grant() {
+    let commits = [commit(1, ms(2), KX, vec![grant(KA, &[], KB, admin(), Some(&[]))]), commit(2, ms(3), KX, vec![grant(KT, &[], KZ, admin(), Some(&[]))])];
     let recs = super::hand_records([(t(KA), t(KX)), (t(KT), t(KX))]);
     let mut p = Paths::new(&BTreeMap::new(), BTreeSet::new());
     p.add(&commits);
@@ -430,7 +430,7 @@ fn a_late_record_reaches_every_part_resting_on_its_edge() {
     }
 }
 
-fn key_edge(on: u32, key: SignKey, value: Option<Grant>) -> Part {
+fn key_grant(on: u32, key: SignKey, value: Option<Grant>) -> Part {
     Part { on: t(on), path: vec![], direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Key(key), value, frontier: Some(Arc::new(List::default())) }) }
 }
 
@@ -443,22 +443,22 @@ fn signed(id: u64, ts: u64, key: SignKey, signer: u32, parts: Vec<Part>) -> Comm
     Commit { key, ..commit(id, ms(ts), signer, parts) }
 }
 
-// spec/permissions.md §1, §2: the key hop is an edge like any (Keys K1 to K5 of
+// spec/permissions.md §1, §2: the key hop is a grant like any (Keys K1 to K5 of
 // notes/write-path-design.md). A thing acting as itself writes its own roster and key grants by
 // its key hop alone, as any admin of it: KX's
 // record key grants KB admin on KX and a second key write; the second key signs content as KX
 // (write) but grants nothing (explicit, needs admin); the record key lowering its own grant, acting
 // as KX, is its self-removal (no hop), after which it signs nothing as KX.
 #[test]
-fn a_key_hop_is_an_edge_like_any() {
+fn a_key_hop_is_an_grant_like_any() {
     let k2 = SignKey([7; 32]);
     let rk = super::own(t(KX));
     let commits = [
-        commit(1, ms(2), KX, vec![edge(KX, &[], KB, admin(), Some(&[]))]),
-        commit(2, ms(3), KX, vec![key_edge(KX, k2, Some(Grant::new(R::Write)))]),
+        commit(1, ms(2), KX, vec![grant(KX, &[], KB, admin(), Some(&[]))]),
+        commit(2, ms(3), KX, vec![key_grant(KX, k2, Some(Grant::new(R::Write)))]),
         signed(3, 4, k2, KX, vec![role_class(KX, &[]), own_doc(KX)]),
-        signed(4, 5, k2, KX, vec![edge(KX, &[], KZ, admin(), Some(&[]))]),
-        signed(5, 6, rk, KX, vec![key_edge(KX, rk, None)]),
+        signed(4, 5, k2, KX, vec![grant(KX, &[], KZ, admin(), Some(&[]))]),
+        signed(5, 6, rk, KX, vec![key_grant(KX, rk, None)]),
         commit(6, ms(7), KX, vec![own_doc(KX)]),
         // a stranger's key holds nothing
         signed(7, 8, SignKey([9; 32]), KX, vec![own_doc(KX)]),
@@ -474,15 +474,15 @@ fn a_key_hop_is_an_edge_like_any() {
     assert_eq!(p.content(&WriteId(cid(6), 0)), Some(Content::Invalid));
     assert_eq!(p.content(&WriteId(cid(7), 0)), Some(Content::Invalid));
     // a thing's own grant on itself is still a grant write whose holder is its target
-    let own = [commit(8, ms(2), KX, vec![edge(KX, &[], KX, None, Some(&[]))])];
+    let own = [commit(8, ms(2), KX, vec![grant(KX, &[], KX, None, Some(&[]))])];
     assert_eq!(Paths::evaluate(&recs(), BTreeSet::new(), &own).status(&WriteId(cid(8), 0)), Some(Status::Unapplied));
 }
 
 // spec/permissions.md §1: a grant write whose holder is its target is not applied, whoever
-// writes it: KA's mint admin granting KA admin on KA sets no edge.
+// writes it: KA's mint admin granting KA admin on KA sets no grant.
 #[test]
-fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
-    let commits = [commit(1, ms(2), KH, vec![edge(KA, &[], KA, admin(), Some(&[]))])];
+fn an_grant_write_whose_holder_is_its_target_is_not_applied() {
+    let commits = [commit(1, ms(2), KH, vec![grant(KA, &[], KA, admin(), Some(&[]))])];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Unapplied));
     assert!(p.history(&Holder::Thing(t(KA)), &t(KA)).is_empty());
@@ -494,9 +494,9 @@ fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
 #[test]
 fn a_retain_removal_restores_read_as_the_draft_reads_it() {
     let commits = [
-        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, ms(5), KH, vec![edge(KA, &[], KX, Some(Grant::kept_end()), Some(&[]))]),
-        commit(3, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(1, ms(1), KH, vec![grant(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(5), KH, vec![grant(KA, &[], KX, Some(Grant::kept_end()), Some(&[]))]),
+        commit(3, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[]))]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     let w = p.writes(&Holder::Thing(t(KX)), &t(KA));
@@ -519,13 +519,13 @@ fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
 fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
     const KN: u32 = 4;
     let base = vec![
-        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, ms(1), KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(3, ms(1), KH, vec![edge(KA, &[], KN, Some(Grant::new(R::Write)), Some(&[]))]),
+        commit(1, ms(1), KH, vec![grant(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(1), KH, vec![grant(KA, &[], KB, admin(), Some(&[]))]),
+        commit(3, ms(1), KH, vec![grant(KA, &[], KN, Some(Grant::new(R::Write)), Some(&[]))]),
         commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(5, ms(2), KX, vec![role_class(KT, &[KA])]),
         commit(6, ms(2), KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
-        commit(7, ms(5), KH, vec![edge(KA, &[], KX, Some(Grant::new(R::Write)), Some(&[]))]),
+        commit(7, ms(5), KH, vec![grant(KA, &[], KX, Some(Grant::new(R::Write)), Some(&[]))]),
     ];
     let by = |signer, id| commit(id, ms(6), signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]);
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base.clone(), vec![by(KN, 8)]].concat());
@@ -542,11 +542,11 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
 #[test]
 fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     let base = vec![
-        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, ms(1), KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
+        commit(1, ms(1), KH, vec![grant(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(1), KH, vec![grant(KA, &[], KB, admin(), Some(&[]))]),
         commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
         commit(5, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
-        commit(7, ms(5), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(7, ms(5), KH, vec![grant(KA, &[], KX, None, Some(&[]))]),
         commit(8, ms(6), KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &base);
@@ -579,7 +579,7 @@ fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
 
 /// H grants each of `who` admin on A at 1 (commit IDs 100 on).
 fn admins(who: &[u32]) -> Vec<Commit> {
-    (0u64..).zip(who).map(|(i, &k)| commit(100 + i, ms(1), KH, vec![edge(KA, &[], k, admin(), Some(&[]))])).collect()
+    (0u64..).zip(who).map(|(i, &k)| commit(100 + i, ms(1), KH, vec![grant(KA, &[], k, admin(), Some(&[]))])).collect()
 }
 
 fn verdicts(commits: &[Commit]) -> Paths {
@@ -592,7 +592,7 @@ fn verdicts(commits: &[Commit]) -> Paths {
 #[test]
 fn an_addendum_vouches_for_nothing_stamped_after_its_removal() {
     let mut w = admins(&[KX, KB]);
-    w.push(commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]));
+    w.push(commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[]))]));
     w.push(commit(8, ms(8), KX, vec![plain(KT)]));
     w.push(commit(9, ms(9), KB, vec![addendum(KT, 7, &[8])]));
     assert_eq!(verdicts(&w).content(&WriteId(cid(8), 0)), Some(Content::Invalid));
@@ -602,7 +602,7 @@ fn an_addendum_vouches_for_nothing_stamped_after_its_removal() {
 // addendum on S names X's write on T in vain; the same on T vouches.
 #[test]
 fn an_addendum_vouches_only_on_its_own_thing() {
-    let base = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    let base = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[]))])]].concat();
     let on = |thing| verdicts(&[base.clone(), vec![commit(9, ms(7), KB, vec![addendum(thing, 7, &[4])])]].concat()).content(&WriteId(cid(4), 0));
     assert_eq!(on(KS), Some(Content::Invalid));
     assert_eq!(on(KT), Some(Content::Valid(By::Vouched)));
@@ -615,7 +615,7 @@ fn an_addendum_vouches_only_on_its_own_thing() {
 #[test]
 fn a_snapshot_names_and_copies_only_its_own_thing_and_aspect() {
     let with = |s: Part| {
-        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(5, ms(3), KB, vec![s]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(5, ms(3), KB, vec![s]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[5]))])]].concat();
         verdicts(&w).content(&WriteId(cid(4), 0))
     };
     assert_eq!(with(snapshot(KT, "other.0", &[4])), Some(Content::Invalid));
@@ -627,7 +627,7 @@ fn a_snapshot_names_and_copies_only_its_own_thing_and_aspect() {
 // invalid whatever B's addendum lists.
 #[test]
 fn an_addendum_vouches_for_no_snapshot() {
-    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![snapshot(KT, "doc.0", &[])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, ms(7), KB, vec![addendum(KT, 7, &[4])])]].concat();
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![snapshot(KT, "doc.0", &[])]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[]))]), commit(9, ms(7), KB, vec![addendum(KT, 7, &[4])])]].concat();
     assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Invalid));
 }
 
@@ -641,11 +641,11 @@ fn validity_passes_along_a_chain_of_addenda() {
         admins(&[KX, KB, KY, KZ]),
         vec![
             commit(10, ms(2), KX, vec![plain(KT)]),
-            commit(11, ms(5), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+            commit(11, ms(5), KH, vec![grant(KA, &[], KX, None, Some(&[]))]),
             commit(12, ms(6), KY, vec![addendum(KT, 11, &[10])]),
-            commit(13, ms(7), KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
+            commit(13, ms(7), KH, vec![grant(KA, &[], KY, None, Some(&[]))]),
             commit(14, ms(8), KZ, vec![addendum(KT, 13, &[12])]),
-            commit(15, ms(9), KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+            commit(15, ms(9), KH, vec![grant(KA, &[], KZ, None, Some(&[]))]),
         ],
     ]
     .concat();
@@ -667,8 +667,8 @@ fn addenda_naming_each_other_support_nothing() {
         vec![
             commit(12, ms(5), KY, vec![addendum(KT, 15, &[14])]),
             commit(14, ms(5), KZ, vec![addendum(KT, 13, &[12])]),
-            commit(13, ms(6), KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
-            commit(15, ms(6), KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+            commit(13, ms(6), KH, vec![grant(KA, &[], KY, None, Some(&[]))]),
+            commit(15, ms(6), KH, vec![grant(KA, &[], KZ, None, Some(&[]))]),
         ],
     ]
     .concat();
@@ -683,7 +683,7 @@ fn addenda_naming_each_other_support_nothing() {
 fn no_snapshot_carries_a_role_commit() {
     let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([cid(4)]), stated: BTreeMap::new(), own: false });
     let snap = Part { kind: PartKind::Delta(Delta { needs: R::Admin, ..match snap.kind { PartKind::Delta(d) => d, _ => unreachable!() } }), ..snap };
-    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![role_class(KT, &[KA])]), commit(5, ms(3), KB, vec![snap]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![role_class(KT, &[KA])]), commit(5, ms(3), KB, vec![snap]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[5]))])]].concat();
     let p = verdicts(&w);
     assert_eq!(p.content(&WriteId(cid(5), 0)), Some(Content::Valid(By::Held)));
     assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
@@ -699,7 +699,7 @@ fn a_snapshot_reports_what_it_carries_as_named_only_where_a_list_names_it() {
     let write = WriteId(cid(4), 0);
     let snap = commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", &[4])]);
     for (list, with) in [(&[][..], Content::Copied), (&[5][..], Content::Valid(By::Listed))] {
-        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(list))])]].concat();
+        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(list))])]].concat();
         let mut p = verdicts(&w);
         assert_eq!(p.content(&write), Some(Content::Invalid));
         for (add, now) in [(true, with), (false, Content::Invalid)] {
@@ -718,7 +718,7 @@ fn a_snapshot_reports_what_it_carries_as_named_only_where_a_list_names_it() {
 #[test]
 fn a_commit_arriving_after_its_snapshot_is_carried_by_it() {
     let (write, s) = (commit(4, ms(2), KX, vec![plain(KT)]), WriteId(cid(5), 0));
-    let rest = |carries: &[u64]| [admins(&[KX, KB]), vec![commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", carries)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+    let rest = |carries: &[u64]| [admins(&[KX, KB]), vec![commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", carries)]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[5]))])]].concat();
     let mut p = verdicts(&rest(&[]));
     assert!(!p.reads(&write, &[s]));
     let ch = p.sync(&[], &[], &[], std::slice::from_ref(&write), &BTreeMap::from([(cid(4), vec![s])]));
@@ -739,9 +739,9 @@ fn a_commit_arriving_after_its_snapshot_is_carried_by_it() {
 // cut by it, whatever the signers' tids; listed, it stands.
 #[test]
 fn a_role_class_delta_in_its_removals_millisecond_is_ordered_before_it() {
-    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[]))])]].concat();
     assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Invalid));
-    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[4]))])]].concat();
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![grant(KA, &[], KX, None, Some(&[4]))])]].concat();
     assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Valid(By::Listed)));
 }
 
@@ -752,8 +752,8 @@ const CT: Thing = 43;
 /// Z holds write on A (H's grant at 1); A holds write on CT (M's grant at 2, M CT's mint).
 fn cut_twice() -> World {
     let mut w = World::new(&[(H, A), (M, CT)]);
-    w.edge(H, 1, &[], A, Z, Write, &[]);
-    w.edge(M, 2, &[], CT, A, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
+    w.grant(M, 2, &[], CT, A, Write, &[]);
     w
 }
 
@@ -763,13 +763,13 @@ fn cut_twice() -> World {
 #[test]
 fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
     let mut w = cut_twice();
-    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    w.grant(M, 4, &[], CT, A, Gone, &[]);
     let c = w.content(Z, 5, &[A], CT);
-    let r = w.edge(H, 7, &[], A, Z, Gone, &[c]);
+    let r = w.grant(H, 7, &[], A, Z, Gone, &[c]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
-    w.edge(H, 1, &[], A, B, Write, &[]);
+    w.grant(H, 1, &[], A, B, Write, &[]);
     w.addendum(B, 8, &[A], CT, r, &[c]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
@@ -777,35 +777,35 @@ fn a_cuts_list_keeps_a_write_from_that_cut_alone() {
 
 // spec/permissions.md §5.2 (content): Z's write, stamped after both removals and listed by both
 // (backdated removals: an honest remover's clock passes what it received, spec/crdt.md HLC
-// rules), stands where each cut lists it; where only M lists it H's cut, the edge's last
+// rules), stands where each cut lists it; where only M lists it H's cut, the grant's last
 // write before it, refuses it.
 #[test]
 fn a_write_after_two_cuts_stands_where_each_lists_it() {
     for both in [true, false] {
         let mut w = cut_twice();
         let c = w.content(Z, 5, &[A], CT);
-        w.edge(M, 4, &[], CT, A, Gone, &[c]);
+        w.grant(M, 4, &[], CT, A, Gone, &[c]);
         let list = if both { vec![c] } else { vec![] };
-        w.edge(H, 4, &[], A, Z, Gone, &list);
+        w.grant(H, 4, &[], A, Z, Gone, &list);
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if both { Content::Valid(By::Listed) } else { Content::Invalid }), "both {both}");
     }
 }
 
-// spec/permissions.md §5.2 (content): two cuts of one edge after the write, the first listing it
+// spec/permissions.md §5.2 (content): two cuts of one grant after the write, the first listing it
 // or not: it stands only where each cut is answered, an addendum answering the cut it is against
 // alone. Mutations: an addendum answering any cut, a list answering every cut, fail it.
 #[test]
-fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
+fn a_write_stands_only_where_every_later_cut_of_its_grant_answers_it() {
     for listed in [true, false] {
         let mut w = World::new(&[(H, A)]);
-        w.edge(H, 1, &[], A, Z, Write, &[]);
-        w.edge(H, 1, &[], A, B, Write, &[]);
+        w.grant(H, 1, &[], A, Z, Write, &[]);
+        w.grant(H, 1, &[], A, B, Write, &[]);
         let c = w.content(Z, 2, &[], A);
         let list = if listed { vec![c] } else { vec![] };
-        let r1 = w.edge(H, 4, &[], A, Z, Gone, &list);
-        w.edge(H, 5, &[], A, Z, Write, &[]);
-        let r2 = w.edge(H, 6, &[], A, Z, Gone, &[]);
+        let r1 = w.grant(H, 4, &[], A, Z, Gone, &list);
+        w.grant(H, 5, &[], A, Z, Write, &[]);
+        let r2 = w.grant(H, 6, &[], A, Z, Gone, &[]);
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
         let mut w1 = w.clone();
@@ -827,38 +827,38 @@ fn a_write_stands_only_where_every_later_cut_of_its_edge_answers_it() {
 fn a_list_gives_no_role_the_path_never_gave() {
     let mut w = World::new(&[(H, A)]);
     let c = w.content(Z, 1, &[], A);
-    w.edge(H, 2, &[], A, Z, Write, &[]);
-    w.edge(H, 4, &[], A, Z, Gone, &[c]);
+    w.grant(H, 2, &[], A, Z, Write, &[]);
+    w.grant(H, 4, &[], A, Z, Gone, &[c]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
 }
 
-// spec/permissions.md §5.2 (content): the edge before an answering cut is read at the write's
+// spec/permissions.md §5.2 (content): the grant before an answering cut is read at the write's
 // `ts`: a grant ended by then gives nothing back. Mutation: read at the cut's `ts` fails it.
 #[test]
-fn an_answered_cut_gives_back_only_what_the_edge_gave_at_the_write() {
+fn an_answered_cut_gives_back_only_what_the_grant_gave_at_the_write() {
     for until in [true, false] {
         let mut w = World::new(&[(H, A)]);
         w.push(H, 1, &[], A, if until { Kind::set(Z, Write).until(3) } else { Kind::set(Z, Write) });
         let c = w.content(Z, 5, &[], A);
-        w.edge(H, 2, &[], A, Z, Gone, &[c]);
+        w.grant(H, 2, &[], A, Z, Gone, &[c]);
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if until { Content::Invalid } else { Content::Valid(By::Listed) }), "until {until}");
     }
 }
 
-// spec/permissions.md §5.2 (content): an edge cut, re-granted and cut again, the second cut listing
+// spec/permissions.md §5.2 (content): a grant cut, re-granted and cut again, the second cut listing
 // both of Z's writes: the one after the re-grant stands by it, the one the first cut refused stays
 // refused.
 #[test]
-fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
+fn a_second_cut_of_an_grant_answers_only_what_the_first_left_standing() {
     let mut w = World::new(&[(H, A)]);
-    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
     let c0 = w.content(Z, 2, &[], A);
-    w.edge(H, 3, &[], A, Z, Gone, &[]);
-    w.edge(H, 4, &[], A, Z, Write, &[]);
+    w.grant(H, 3, &[], A, Z, Gone, &[]);
+    w.grant(H, 4, &[], A, Z, Write, &[]);
     let c1 = w.content(Z, 5, &[], A);
-    w.edge(H, 6, &[], A, Z, Gone, &[c0, c1]);
+    w.grant(H, 6, &[], A, Z, Gone, &[c0, c1]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), c0), Some(Content::Invalid));
     assert_eq!(verdict(&w, &all(&w, &[]), c1), Some(Content::Valid(By::Listed)));
@@ -870,12 +870,12 @@ fn a_second_cut_of_an_edge_answers_only_what_the_first_left_standing() {
 fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
     for listed in [true, false] {
         let mut w = World::new(&[(H, A)]);
-        w.edge(H, 1, &[], A, Z, Write, &[]);
-        w.edge(H, 1, &[], A, B, Write, &[]);
+        w.grant(H, 1, &[], A, Z, Write, &[]);
+        w.grant(H, 1, &[], A, B, Write, &[]);
         let c = w.content(Z, 2, &[], A);
-        let r1 = w.edge(H, 4, &[], A, Z, Gone, &[]);
+        let r1 = w.grant(H, 4, &[], A, Z, Gone, &[]);
         let a = w.addendum(B, 5, &[], A, r1, &[c]);
-        w.edge(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
+        w.grant(H, 7, &[], A, B, Gone, &if listed { vec![a] } else { vec![] });
         agree_all(&w, &[]);
         assert_eq!(verdict(&w, &all(&w, &[]), c), Some(if listed { Content::Valid(By::Vouched) } else { Content::Invalid }), "listed {listed}");
     }
@@ -887,10 +887,10 @@ fn an_addendum_keeps_a_write_while_it_stands_against_its_witness_removal() {
 #[test]
 fn an_addendum_answers_the_cut_it_is_against_alone() {
     let mut w = cut_twice();
-    w.edge(M, 1, &[], CT, W, Write, &[]);
+    w.grant(M, 1, &[], CT, W, Write, &[]);
     let c = w.content(Z, 3, &[A], CT);
-    let rm = w.edge(M, 4, &[], CT, A, Gone, &[]);
-    let rh = w.edge(H, 5, &[], A, Z, Gone, &[]);
+    let rm = w.grant(M, 4, &[], CT, A, Gone, &[]);
+    let rh = w.grant(H, 5, &[], A, Z, Gone, &[]);
     w.addendum(W, 6, &[], CT, rh, &[c]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), c), Some(Content::Invalid));
@@ -905,9 +905,9 @@ fn an_addendum_answers_the_cut_it_is_against_alone() {
 fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
     let mut w = cut_twice();
     let parts = w.split(Z, 3, Z, &[(&[A], CT), (&[], A)]);
-    w.edge(M, 4, &[], CT, A, Gone, &[]);
+    w.grant(M, 4, &[], CT, A, Gone, &[]);
     let honest = w.through((Z, A), |_| true);
-    w.edge(H, 5, &[], A, Z, Gone, &honest);
+    w.grant(H, 5, &[], A, Z, Gone, &honest);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), parts[0]), Some(Content::Invalid));
     assert_eq!(verdict(&w, &all(&w, &[]), parts[1]), Some(Content::Valid(By::Listed)));
@@ -920,16 +920,16 @@ fn a_commits_parts_answer_the_cuts_of_their_own_paths() {
 #[test]
 fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let (mut w, ..) = paired();
-    w.edge(H, 1, &[], A, Z, Write, &[]);
+    w.grant(H, 1, &[], A, Z, Write, &[]);
     let parts = w.split(Z, 2, Z, &[(&[A], T1), (&[], A)]);
     let (on_t1, on_a) = (parts[0], parts[1]);
     let mut w2 = w.clone();
-    w.edge(H, 4, &[], A, Z, Gone, &[on_t1]);
+    w.grant(H, 4, &[], A, Z, Gone, &[on_t1]);
     agree_all(&w, &[]);
     assert_eq!(verdict(&w, &all(&w, &[]), on_t1), Some(Content::Valid(By::Listed)));
     assert_eq!(verdict(&w, &all(&w, &[]), on_a), Some(Content::Invalid));
     let honest = w2.through((Z, A), |_| true);
-    w2.edge(H, 4, &[], A, Z, Gone, &honest);
+    w2.grant(H, 4, &[], A, Z, Gone, &honest);
     agree_all(&w2, &[]);
     assert_eq!(verdict(&w2, &all(&w2, &[]), on_a), Some(Content::Valid(By::Listed)));
 }
@@ -938,10 +938,10 @@ fn a_list_entry_names_its_part_on_its_leafs_thing_alone() {
 // commit granting on T1 through [A] and on A, listed in T1's leaf alone, keeps the grant on T1 and
 // drops the one on A. Mutation: `List::names` reading every leaf fails it.
 #[test]
-fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
+fn a_list_entry_keeps_an_grant_class_part_on_its_leafs_thing_alone() {
     for both in [false, true] {
         let mut w = World::new(&[(H, A), (A, T1)]);
-        w.edge(H, 1, &[], A, X, Admin, &[]);
+        w.grant(H, 1, &[], A, X, Admin, &[]);
         let on_t1 = w.push(X, 2, &[A], T1, Kind::set(K, Write));
         let on_a = w.push(X, 2, &[], A, Kind::set(B, Write));
         w.group(&[on_t1, on_a]);

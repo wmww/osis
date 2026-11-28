@@ -51,7 +51,7 @@ fn rd(holder: Id, role: Role, epoch: u32) -> BoxAt {
 }
 
 fn grant(id: Cid, s: Id, g: Id, role: Role, may_grant: bool, boxes: Vec<BoxAt>) -> Commit {
-    Commit { id, signer: s, ts: id, roles: Some(vec![Edge { holder: g, role: Some(role), may_grant }]), boxes, step: None, history: None }
+    Commit { id, signer: s, ts: id, roles: Some(vec![Grant { holder: g, role: Some(role), may_grant }]), boxes, step: None, history: None }
 }
 
 /// XA grants H read with the may-grant flag; H grants T read, with a junk box to O1 beside T's.
@@ -137,7 +137,7 @@ fn granted_after_a_removal(sync_only: bool) -> World {
     let commits = vec![
         Commit { id: 1, signer: XA, ts: 1, roles: None, boxes: vec![], step: Some((0, true)), history: None },
         grant(2, XA, O1, Role::Read, false, vec![rd(O1, Role::Sync, 0), rd(O1, Role::Read, 0)]),
-        Commit { id: 3, signer: XA, ts: 3, roles: Some(vec![Edge { holder: O1, role: None, may_grant: false }]), boxes: vec![], step: None, history: None },
+        Commit { id: 3, signer: XA, ts: 3, roles: Some(vec![Grant { holder: O1, role: None, may_grant: false }]), boxes: vec![], step: None, history: None },
         Commit { id: 4, signer: XA, ts: 4, roles: None, boxes: vec![rd(XA, Role::Sync, 1), rd(XA, Role::Read, 1)], step: None, history: history(1, &[Role::Sync, Role::Read], &[O1]) },
         Commit { id: 5, signer: XA, ts: 5, roles: None, boxes: vec![], step: Some((1, true)), history: None },
         Commit { history: history(1, roles, &[O1]), ..grant(6, XA, T, role, false, roles.iter().map(|r| rd(T, *r, 1)).collect()) },
@@ -173,7 +173,7 @@ fn removed_by_another_admin() -> World {
         Commit { id: 1, signer: XA, ts: 1, roles: None, boxes: vec![], step: Some((0, true)), history: None },
         grant(2, XA, T, Role::Sync, false, vec![rd(T, Role::Sync, 0)]),
         grant(3, XA, H, Role::Admin, false, vec![rd(H, Role::Sync, 0), rd(H, Role::Read, 0)]),
-        Commit { id: 4, signer: H, ts: 4, roles: Some(vec![Edge { holder: T, role: None, may_grant: false }]), boxes: vec![], step: None, history: None },
+        Commit { id: 4, signer: H, ts: 4, roles: Some(vec![Grant { holder: T, role: None, may_grant: false }]), boxes: vec![], step: None, history: None },
         Commit { id: 5, signer: H, ts: 5, roles: None, boxes: vec![rd(XA, Role::Sync, 1), rd(XA, Role::Read, 1)], step: None, history: history(1, &[Role::Sync, Role::Read], &[T]) },
         Commit { id: 6, signer: XA, ts: 6, roles: None, boxes: vec![], step: Some((1, true)), history: None },
     ];
@@ -213,7 +213,7 @@ fn forged_read() -> World {
 /// sync holder learns). Control: judged whatever their validity,
 /// the forged writes send T's pieces with headers and evidence, naming its granter H.
 #[test]
-fn a_forged_edge_write_giving_read_changes_nothing_a_sync_holder_learns_spec_sync_ids_2() {
+fn a_forged_grant_write_giving_read_changes_nothing_a_sync_holder_learns_spec_sync_ids_2() {
     let w = forged_read();
     assert!(!w.reads(Rule::Spec) && w.reads(Rule::AnyValidity));
     let s = seen(&w, Rule::Spec, false);

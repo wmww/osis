@@ -31,7 +31,7 @@ fn writers(n: usize, shared: bool, ws: &[usize]) -> (LocalPeer, Tid) {
     let t = if shared { new_shared(&mut lp, 0) } else { new_thing(&mut lp, 0) };
     for &p in ws {
         let w = lp.peers[p].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, t, w, Some(grant(Role::Write)), None);
     }
     lp.sync_all().unwrap();
     (lp, t)
@@ -427,7 +427,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "a lagging later snapshot is not covered");
     // Y removed, its snapshot listed by nothing: invalid, and still not covered
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
+    let gone = set_grant(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
     let gp = package_for(&mut lp, 0, 1, gone);
     lp.deliver(1, &gp).unwrap();
     let e = &mut lp.peers[1].engine;

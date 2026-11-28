@@ -1,7 +1,7 @@
 //! Entering a granted thing over real connections (spec/sync-set.md §2, spec/sync-inbox.md §5):
 //! the grantee holds the thing by a strong, syncs its sync ID and reads it.
 
-use crate::harness::{World, contacts, edge, fixture_with};
+use crate::harness::{World, contacts, grant, fixture_with};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -33,7 +33,7 @@ fn granted() -> (World, Tid) {
         let mut w = contacts();
         let t = make(&mut w, 0, "hi");
         let bob = w.node(1).account.unwrap();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         w.run();
         (w, t)
     })
@@ -122,7 +122,7 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     let a0 = w.node(0).account.unwrap();
     assert!(w.engine(1).inbox_of(&a0).unwrap().is_some(), "node 1 knows account 0's inbox");
     let t = make(&mut w, 1, "hi");
-    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
+    w.write(1, |e| e.grant(&t, &a0, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 0, t, true);
     assert_eq!(w.engine(0).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "the grant reached account 0");
@@ -184,10 +184,10 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     for lowered in [false, true] {
         let (mut w, t) = held(Role::Read);
         let bob = w.node(1).account.unwrap();
-        let new = lowered.then_some(edge(Role::Sync));
-        w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();
+        let new = lowered.then_some(grant(Role::Sync));
+        w.write(0, |e| e.demote(&t, &osis_engine::flows::grants::Demotion { holder: bob, new, retain: None })).unwrap();
         w.run();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         w.run();
         w.write(0, |e| {
             let mut m = Mutation::new();
@@ -204,7 +204,7 @@ fn granted_told(tell: bool) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| if tell { e.signal_grant(&t, &bob, &[]) } else { Ok(()) })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| if tell { e.signal_grant(&t, &bob, &[]) } else { Ok(()) })).unwrap();
     w.run();
     (w, t)
 }
@@ -261,7 +261,7 @@ fn a_signal_on_an_inbox_holding_no_targets_is_not_followed_spec_sync_inbox_5() {
     w.run();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
     w.run();
     let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), None, "not followed");
@@ -289,7 +289,7 @@ fn an_accepted_signals_peers_are_dial_hints_spec_sync_inbox_5() {
     let bob = w.node(1).account.unwrap();
     let peer = w.node(0).key.0;
     let hints = osis_blob::link_peers(peer, &w.net.reach.items(0), &w.node(0).node.config().dial);
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &hints))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &hints))).unwrap();
     w.run();
     let hinted = |w: &World| w.dials(1).why(&peer).contains(&Why::Hint);
     assert!(!hinted(&w), "held, not accepted: no dial hint");
@@ -310,7 +310,7 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     let mut w = crate::harness::history::world_of(0, 3, 3);
     let t = make(&mut w, 0, "hi");
     let (carol, bob) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
-    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &carol, &grant(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 1, t, true);
     root_strong(&mut w, 2, t, true);
@@ -318,7 +318,7 @@ fn a_grantee_gets_in_at_a_store_with_no_reader_online_spec_sync_ids_3() {
     assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "Carol's node keeps T unread");
     // the grant reaches Carol's store; Alice's node goes off as soon as Bob's holds the signal
     let claims = w.store(1).head_claim_keys(&s).unwrap().len();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
     while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claim_keys(&s).unwrap().len() == claims {
         assert!(w.step_or_wake(), "the signal reaches Bob");
     }
@@ -341,7 +341,7 @@ fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_
     let mut w = crate::harness::history::world_of(0, 4, 4);
     let t = make(&mut w, 0, "before");
     let [carol, bob, dave] = [1, 2, 3].map(|i| w.node(i).account.unwrap());
-    w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &carol, &grant(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
     w.run();
     for i in 1..4 {
         root_strong(&mut w, i, t, true);
@@ -351,7 +351,7 @@ fn a_rotation_boxing_more_holders_than_a_page_lets_each_in_at_a_store_spec_wire_
     // from here every entry of Bob and Dave is in a page: a grant's 2 pad to 4
     w.write(0, |e| e.set_claim_page(2));
     for h in [bob, dave] {
-        w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
+        w.write(0, |e| e.grant(&t, &h, &grant(Role::Read))).unwrap();
     }
     w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync, Role::Read, Role::Write, Role::Admin], &[])).unwrap().expect("a rotation");
     w.write(0, |e| {
@@ -392,7 +392,7 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
         let mut w = crate::harness::history::world_of(0, 3, 3);
         let t = make(&mut w, 0, "hi");
         let (carol, bob) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
-        w.write(0, |e| e.grant(&t, &carol, &edge(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
+        w.write(0, |e| e.grant(&t, &carol, &grant(Role::Sync)).and_then(|_| e.signal_grant(&t, &carol, &[]))).unwrap();
         w.run();
         root_strong(&mut w, 1, t, true);
         root_strong(&mut w, 2, t, true);
@@ -403,7 +403,7 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
                 let me = e.tid();
                 let x = e.new_thing(&mut m, me);
                 e.commit(m).unwrap();
-                e.grant(&t, &x, &edge(Role::Read)).unwrap();
+                e.grant(&t, &x, &grant(Role::Read)).unwrap();
             });
         }
         w.run();
@@ -414,7 +414,7 @@ fn an_open_at_a_store_costs_at_most_linear_in_holders_spec_sync_ids_3() {
         let beacons = w.node(2).node.opens().work().beacons;
         osis_base::costs::take();
         let claims = w.store(1).head_claim_keys(&s).unwrap().len();
-        w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         while w.engine(2).sync_holder(&s).unwrap().is_none() || w.store(1).head_claim_keys(&s).unwrap().len() == claims {
             assert!(w.step_or_wake(), "the signal reaches Bob");
         }

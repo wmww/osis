@@ -2,7 +2,7 @@
 //! `Rules::purging` (purge rights by class, copies, own covers;
 //! A1 steps 3 and 4: notes/perm-paths.md; spec/permissions.md §1, §2,
 //! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
-//! its trust set) both read: every grant-class part's status, every edge's history, the final
+//! its trust set) both read: every grant-class part's status, every grant's history, the final
 //! roles and may-grants, the trusted writes left void, every delta's validity, the copies valid
 //! snapshots show, the purged deltas and copies, what a request could hold, and the dispute set.
 //! spec/permissions.md §5.1, §5.2.
@@ -169,7 +169,7 @@ pub fn input(w: &World, v: &View) -> Input {
             let k = &w.commits[i];
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
-                Kind::Edge { holder, role: r, until, frontier, may_grant, finalize } => {
+                Kind::Grant { holder, role: r, until, frontier, may_grant, finalize } => {
                     let value = role(*r).map(|v| Grant { role: v, until: until.map(|u| Time(u as u64)), may_grant: *may_grant, retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), model_cid(w, j))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
@@ -228,7 +228,7 @@ pub fn as_known(w: &World, v: &View) -> World {
 fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mut Paths, disputes: bool) -> Option<String> {
     let back: BTreeMap<WriteId, Id> = inp.ids.iter().map(|(&i, &id)| (id, i)).collect();
     for (&i, id) in &inp.ids {
-        if !w.edge_class(i) {
+        if !w.grant_class(i) {
             let (a, b) = (rd.valid.contains(&i), p.content(id));
             if a != matches!(b, Some(Content::Valid(_))) {
                 return Some(format!("delta {i}: model valid {a}, walk {b:?}"));
@@ -264,7 +264,7 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
             }
         }
     }
-    // histories: the applied writes on each edge, in key order
+    // histories: the applied writes on each grant, in key order
     let mine: BTreeMap<(Holder, Tid), Vec<Id>> = p
         .histories()
         .into_iter()
@@ -367,8 +367,8 @@ pub fn rows(rows: &[Row]) {
 /// The model's A with H (mint), X and B paired by H at 1.
 pub fn paired() -> (World, Id, Id) {
     let mut w = m::account();
-    let gx = w.edge(m::H, 1, &[], m::A, m::X, roles_model::Role::Admin, &[]);
-    let gb = w.edge(m::H, 1, &[], m::A, m::B, roles_model::Role::Admin, &[]);
+    let gx = w.grant(m::H, 1, &[], m::A, m::X, roles_model::Role::Admin, &[]);
+    let gb = w.grant(m::H, 1, &[], m::A, m::B, roles_model::Role::Admin, &[]);
     (w, gx, gb)
 }
 
@@ -378,7 +378,7 @@ pub fn may_grant_world() -> World {
     let mut w = m::account();
     w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::A2, roles_model::Role::Write));
     w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::GU, roles_model::Role::Read).may_grant());
-    w.edge(m::K, 1, &[], m::A2, m::X, roles_model::Role::Write, &[]);
+    w.grant(m::K, 1, &[], m::A2, m::X, roles_model::Role::Write, &[]);
     w
 }
 

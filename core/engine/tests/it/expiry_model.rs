@@ -97,7 +97,7 @@ fn six() -> (LocalPeer, Tid) {
         let mut lp = net(6, 0);
         let t = new_thing(&mut lp, 0);
         let w = lp.peers[1].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
         // the others read t: content of a thing outside a node closure waits (spec/commits.md §4)
         crate::common::share(&mut lp, 0, t);
         lp.sync_all().unwrap();
@@ -250,8 +250,8 @@ fn expiry_takes_its_commits_writes_spec_crdt_4_7() {
 /// carries none of it). Every peer holds it: Alice 0, Mallory 1, reader 2. The copied keys.
 fn forged_copies(lp: &mut LocalPeer, t: Tid, copy: &Value) -> Vec<Value> {
     let (m_id, r_id) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, m_id, Some(edge(osis_base::Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, r_id, Some(edge(osis_base::Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, m_id, Some(grant(osis_base::Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, r_id, Some(grant(osis_base::Role::Read)), None);
     lp.sync_all().unwrap();
     let k = big();
     // Mallory's filler pages the map

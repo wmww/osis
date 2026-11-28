@@ -48,7 +48,7 @@ pub struct PSetup {
     pub b_saw_own: bool,
     /// A destruction of T1 at 9 by B.
     pub destroy: bool,
-    /// Two cuts on two edges of one path (notes/evidence-model-findings.md 26): ORG (M's) holds
+    /// Two cuts on two grants of one path (notes/evidence-model-findings.md 26): ORG (M's) holds
     /// admin on T1 (B's grant at 1) and X admin on ORG (M's grant at 1); B removes ORG from T1 at
     /// 3, listing what it received through it; the thief requests or destroys along [ORG] after
     /// that, and M, hoodwinked, removes X from ORG at the removal listing everything X made
@@ -148,10 +148,10 @@ impl PWorld {
             }
         }
     }
-    /// An addendum per honest writer of T1 against removal `r` of `who`'s edge `h`, listing what
+    /// An addendum per honest writer of T1 against removal `r` of `who`'s grant `h`, listing what
     /// it received through `h` on T1 by `r`'s `ts` that `r` does not list: content, and purge
     /// requests under `purge_addenda`.
-    fn answer(&mut self, r: Id, h: Edge, rules: &Rules, rng: &mut Rng) {
+    fn answer(&mut self, r: Id, h: Grant, rules: &Rules, rng: &mut Rng) {
         let rts = self.w.commits[r].ts;
         for n in [H, B, W, K] {
             if n == self.w.commits[r].signer || n == h.0 {
@@ -435,10 +435,10 @@ fn reaches(w: &World, q: Id, d: Id, admin: bool, write: bool) -> bool {
 }
 
 /// A store that cannot judge acts on a request that could hold the right (spec/commits.md §4
-/// Could hold the right): each edge of its path a record grant or set at `r` or above by some held
+/// Could hold the right): each grant of its path a record grant or set at `r` or above by some held
 /// grant write, whatever its validity.
 pub fn could_hold(w: &World, held: &Set, q: Id, r: Role) -> bool {
-    w.well(q) && w.hops(q).iter().all(|e| w.records.contains(e) || held.iter().any(|&j| w.sets(j) == Some(*e) && matches!(w.commits[j].kind, Kind::Edge { role, .. } if role >= r)))
+    w.well(q) && w.hops(q).iter().all(|e| w.records.contains(e) || held.iter().any(|&j| w.sets(j) == Some(*e) && matches!(w.commits[j].kind, Kind::Grant { role, .. } if role >= r)))
 }
 
 /// The properties at every node's final reading, and the bodies erased along the way (counted).

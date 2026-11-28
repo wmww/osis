@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use crate::local_peer::LocalPeer;
-use crate::rotation::tests::{edge, synced};
+use crate::rotation::tests::{grant, synced};
 use crate::Mutation;
 use osis_base::{Ak, Role, SyncId, Tid, Value};
 use osis_schema::RawKey;
@@ -99,7 +99,7 @@ fn a_signal_is_followed_where_its_holder_is_read_spec_sync_inbox_5() {
     let inbox = own_thing(&mut lp, 1, true);
     signal(&mut lp, 1, inbox, x, s, g);
     assert_eq!(synced_under(&mut lp, 1, &s), None, "G not read: X not followed");
-    lp.peers[0].engine.grant(&g, &n, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &n, &grant(Role::Read)).unwrap();
     lp.hold_at(1, g);
     lp.sync_all().unwrap();
     lp.peers[1].engine.take_carried().unwrap();

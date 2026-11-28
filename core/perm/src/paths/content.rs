@@ -1,4 +1,4 @@
-//! Content (draft §5.2): a delta's validity derived at read from the walk's per-edge state,
+//! Content (draft §5.2): a delta's validity derived at read from the walk's per-grant state,
 //! its first points and what names the delta (notes/perm-paths.md, Step 3b design).
 //! Delta facts are read through the `Store` seam the engine backs with its store index
 //! (notes/perm-paths.md, The delta-facts seam); in memory stay only role commits' facts and the
@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
-/// An edge: (holder, target).
+/// A grant: (holder, target).
 pub type Pair = (Holder, Tid);
 
 /// A held delta's facts: everything content reads of it.
@@ -30,7 +30,7 @@ pub struct Fact {
     pub aspect: Ak,
     pub needs: Role,
     pub class: FactClass,
-    /// Its path's edges (none where its members name a thing twice).
+    /// Its path's grants (none where its members name a thing twice).
     pub hops: Vec<Pair>,
     /// Its members name no thing twice and its purge author index is within its path.
     pub well: bool,
@@ -121,7 +121,7 @@ pub trait Store {
     /// stored right (`set_right`) gives `holding`: a delta's purge is a point lookup, whatever
     /// the number of requests naming it.
     fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts>;
-    /// The requests with edge `e` on their path, positioned within (`from`, `to`).
+    /// The requests with grant `e` on their path, positioned within (`from`, `to`).
     fn requests_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
     /// A request's stored right (none until set).
     fn right(&self, id: &WriteId) -> Right;
@@ -129,9 +129,9 @@ pub trait Store {
     fn set_right(&mut self, id: &WriteId, right: Right);
     /// The own covers signed by `signer`.
     fn own_covers(&self, signer: &Tid) -> Vec<WriteId>;
-    /// The addenda with edge `e` on their path, positioned within (`from`, `to`).
+    /// The addenda with grant `e` on their path, positioned within (`from`, `to`).
     fn addenda_through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
-    /// Every delta with edge `e` on its path, positioned within (`from`, `to`): the index that
+    /// Every delta with grant `e` on its path, positioned within (`from`, `to`): the index that
     /// turns `Changed` into the deltas to judge again.
     fn through(&self, e: &Pair, from: Bound<Key>, to: Bound<Key>) -> Vec<WriteId>;
     fn valid_addendum(&self, id: &WriteId) -> bool;
@@ -176,8 +176,8 @@ fn in_range(m: &BTreeMap<Pair, BTreeSet<(Key, WriteId)>>, e: &Pair, from: Bound<
 }
 
 impl MemStore {
-    /// Every index entry `f` has: (commit, thing), what it lists, its request edges, its addenda
-    /// edges, an own cover's signer (a request's named key follows its right; what a snapshot
+    /// Every index entry `f` has: (commit, thing), what it lists, its request grants, its addenda
+    /// grants, an own cover's signer (a request's named key follows its right; what a snapshot
     /// carries follows `carry`).
     fn index(&mut self, f: &Fact, add: bool) {
         set(&mut self.by_commit_on, (f.commit(), f.on), f.id, add);
@@ -317,7 +317,7 @@ pub(super) struct CommitFacts {
     signer: Tid,
     /// Its grant writes' frontiers.
     lists: Vec<(WriteId, Arc<List>)>,
-    /// The edges its grant writes set, each with the role it sets (spec/commits.md §4
+    /// The grants its grant writes set, each with the role it sets (spec/commits.md §4
     /// Could hold the right).
     sets: Vec<(Pair, Role)>,
 }
@@ -330,7 +330,7 @@ pub(super) struct Facts<S> {
     /// Per (commit, thing), the frontiers (grant writes) whose leaf of the thing lists it; under
     /// no thing, those naming the commit whole (`List::whole`).
     named: BTreeMap<(CommitId, Option<Tid>), BTreeSet<WriteId>>,
-    /// Per edge, how many held grant writes set it at each role (`Role::ALL`'s order), whatever
+    /// Per grant, how many held grant writes set it at each role (`Role::ALL`'s order), whatever
     /// their validity: what a node that cannot judge reads (Could hold the right).
     ever: BTreeMap<Pair, [u32; 4]>,
     pub store: S,
@@ -367,7 +367,7 @@ impl<S: Store> Facts<S> {
         self.commits.contains_key(c) || !self.store.of_commit(c, None).is_empty()
     }
 
-    /// Entries kept in memory: role commits, the frontiers' names, the edges role writes set.
+    /// Entries kept in memory: role commits, the frontiers' names, the grants role writes set.
     pub(super) fn footprint(&self) -> u64 {
         (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.ever.len()) as u64
     }
@@ -608,7 +608,7 @@ impl<S: Store> Facts<S> {
         out
     }
 
-    /// Whether `id` is an applied cut, below `r`, of an edge of `hops`: that edge and its key.
+    /// Whether `id` is an applied cut, below `r`, of a grant of `hops`: that grant and its key.
     fn cut_on(tl: &Walk, id: &WriteId, r: Role, hops: &[Pair]) -> Option<(Pair, Key)> {
         tl.applied_write(id).filter(|(e, a)| a.cuts(r) && hops.contains(e)).map(|(e, a)| (e, a.key))
     }
@@ -692,7 +692,7 @@ impl<S: Store> Facts<S> {
         tl.parts_of(removal).into_iter().filter(|id| Self::cut_on(tl, id, d.needs, &d.hops).is_some_and(|(_, k)| k >= d.pos && k < a.pos)).collect()
     }
 
-    /// (d): its path is re-granted for `r` and it is positioned after the latest of each edge's
+    /// (d): its path is re-granted for `r` and it is positioned after the latest of each grant's
     /// first write giving `r` made by right (a record grant: from the start).
     fn regranted(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         let mut bound: Option<Key> = None;
@@ -914,13 +914,13 @@ impl<S: Store> Facts<S> {
     }
 
     /// Judges again the rights of the requests an update reached, as it reaches any delta (an
-    /// edge of its path in `edges` before its position, in `cuts` at or after it, in `regrant`;
+    /// grant of its path in `grants` before its position, in `cuts` at or after it, in `regrant`;
     /// its commit in `named`), and of those `fresh`; stores each right that changed. The scopes
     /// of the requests whose right changed (a fresh one: that holds one).
     pub(super) fn rights_update(&mut self, tl: &Walk, ch: &Changed, fresh: &[WriteId]) -> BTreeSet<Scope> {
         let mut counts = Counts::default();
         let mut f: BTreeSet<WriteId> = fresh.iter().copied().collect();
-        for (e, k) in &ch.edges {
+        for (e, k) in &ch.grants {
             f.extend(self.store.requests_through(e, Bound::Excluded(*k), Bound::Unbounded));
         }
         for (e, k) in &ch.cuts {
@@ -961,7 +961,7 @@ impl<S: Store> Facts<S> {
         out
     }
 
-    /// Whether held request `id` could hold role `r`: each edge of its path a record grant or
+    /// Whether held request `id` could hold role `r`: each grant of its path a record grant or
     /// set at `r` or above by some held grant write (spec/commits.md §4 Could hold the right).
     pub(super) fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
         let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
@@ -985,15 +985,15 @@ impl<S: Store> Facts<S> {
     // ---- addenda: the least fixpoint, by reach ----
 
     /// Judges again the addenda an update reached (notes/perm-paths.md, Addenda, by
-    /// reach): those `ch` reaches as it reaches any delta (an edge of its path in
-    /// `edges` before its position, in `cuts` at or after it, in `regrant`; its commit in
+    /// reach): those `ch` reaches as it reaches any delta (a grant of its path in
+    /// `grants` before its position, in `cuts` at or after it, in `regrant`; its commit in
     /// `named`), those `fresh`, and every addendum their lists name, in turn (F). F leaves the
     /// valid set; its members valid by (a), (b), (d) or by a valid namer outside F join it again
     /// and vouch in turn. Outside F no read changed. The addenda whose validity changed.
     pub(super) fn addenda_update(&mut self, tl: &Walk, ch: &Changed, fresh: &[WriteId]) -> BTreeSet<WriteId> {
         let mut counts = Counts::default();
         let mut f: BTreeSet<WriteId> = fresh.iter().copied().collect();
-        for (e, k) in &ch.edges {
+        for (e, k) in &ch.grants {
             f.extend(self.store.addenda_through(e, Bound::Excluded(*k), Bound::Unbounded));
         }
         for (e, k) in &ch.cuts {
@@ -1066,13 +1066,13 @@ impl<S: Store> Facts<S> {
         }
     }
 
-    /// The deltas `ch` reaches whose validity may have moved (a hop in `edges` before its
+    /// The deltas `ch` reaches whose validity may have moved (a hop in `grants` before its
     /// position, in `cuts` at or after it, in `regrant`; its commit in `named`; reported in
     /// `parts`), and those an addendum reported names: an addendum is the one namer validity
     /// reads (snapshots and requests move copies and purges alone).
     pub(super) fn reached(&self, ch: &Changed) -> BTreeSet<WriteId> {
         let mut out: BTreeSet<WriteId> = BTreeSet::new();
-        for (e, k) in &ch.edges {
+        for (e, k) in &ch.grants {
             out.extend(self.store.through(e, Bound::Excluded(*k), Bound::Unbounded));
         }
         for (e, k) in &ch.cuts {

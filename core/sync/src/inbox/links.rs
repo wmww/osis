@@ -18,7 +18,7 @@
 //! One rule says whether there is anything to write: the account holding K by a grant
 //! (`Engine::joined_link`, a join by this node or a sibling). Then `redeem` answers `Done` at once,
 //! with no row, and a redeem under way is forgotten. A link that ends before the join (the held
-//! role history shows L's edge on K, or K's on the target, removed or past `until`) is forgotten
+//! role history shows L's grant on K, or K's on the target, removed or past `until`) is forgotten
 //! the same way, and redeeming it again answers `Never`. So is a link not joined within the node's
 //! follow time (`Policy::follow_link_ms`, from the redeem's start kept in its row, judged on the
 //! engine's clock, whose wake comes through `Engine::clock_next`): a sharer that never answers is

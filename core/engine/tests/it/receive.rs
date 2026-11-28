@@ -79,7 +79,7 @@ fn pending_until_created_spec_commits_4() {
         sync(&mut lp, 1, 0);
     }
     let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, r, Some(grant(Role::Read)), None);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
     lp.peers[0].commit(m).unwrap();
@@ -121,11 +121,11 @@ fn pending_until_created_spec_commits_4() {
 }
 
 // spec/commits.md §4 (Unjudgeable): a held grant write ordered before a part, a removal as a grant,
-// makes that edge of its stated path arrived. 1 makes t and u, u's mint admin t, removes from t
+// makes that grant of its stated path arrived. 1 makes t and u, u's mint admin t, removes from t
 // the grant 0 never had, then grants 0 read; 0 forges one commit granting 2 admin on both, each
-// along its own edge on the thing. At a node holding all but the grant, the removal is the held
-// write on 0's edge on t: the forgery's part on t is held, invalid; its part on u waits (the path
-// it states to u is 0's own edge on u, which no write set: the record grant from t to u is no edge
+// along its own grant on the thing. At a node holding all but the grant, the removal is the held
+// write on 0's grant on t: the forgery's part on t is held, invalid; its part on u waits (the path
+// it states to u is 0's own grant on u, which no write set: the record grant from t to u is no grant
 // of it, §1 Path), the grant changing neither. Both rosters stay as 1 wrote them.
 #[test]
 fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
@@ -139,7 +139,7 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     let t = new_thing(&mut lp, 1);
     // 2 reads t
     let r = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[1].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[1].engine, t, r, Some(grant(Role::Read)), None);
     let mut m = Mutation::new();
     let u = lp.peers[1].engine.new_thing(&mut m, t);
     m.set(u, &REG, &s("u")).unwrap();
@@ -165,7 +165,7 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     }
     let before = rosters(&mut lp);
     lp.deliver(2, &forged).unwrap();
-    assert!(lp.peers[2].engine.commit_ids().contains(&forged.id), "the removal is the held write on 0's edge on t");
+    assert!(lp.peers[2].engine.commit_ids().contains(&forged.id), "the removal is the held write on 0's grant on t");
     let on_u = lp.peers[2].engine.header(&forged.id).unwrap().aspects.iter().position(|x| x.tid == u).unwrap();
     let waits = Some(std::collections::BTreeSet::from([on_u]));
     assert_eq!(lp.peers[2].engine.pending_parts(&forged.id).unwrap(), waits, "its part on u waits");
@@ -181,11 +181,11 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
 // spec/commits.md §4 (Unjudgeable), spec/permissions.md §1 Path (nothing but the stated path
 // judges a part: another path that would also give the role does not): 0 makes x and o, both its
 // own, so its record chain leads to each; it shares x with 1 and writes x stating its path through
-// o, which holds nothing on x. No write is held on o's edge on x, so 1 cannot judge the write: it
+// o, which holds nothing on x. No write is held on o's grant on x, so 1 cannot judge the write: it
 // pends, whatever else leads from 0 to x. 0's grant of write on x to o, stamped after the write,
 // is no write ordered before it: it still pends.
 #[test]
-fn a_part_waits_for_the_edges_of_its_stated_path_spec_commits_4() {
+fn a_part_waits_for_the_grants_of_its_stated_path_spec_commits_4() {
     let mut lp = net(2, 0);
     let x = new_shared(&mut lp, 0);
     let o = new_thing(&mut lp, 0);
@@ -198,9 +198,9 @@ fn a_part_waits_for_the_edges_of_its_stated_path_spec_commits_4() {
     let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     sync(&mut lp, 0, 1);
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.pending().iter().any(|(id, r)| *id == c && matches!(r, Reason::MissingChain(_))), "no write held on o's edge on x: {:?}", e1.pending());
+    assert!(e1.pending().iter().any(|(id, r)| *id == c && matches!(r, Reason::MissingChain(_))), "no write held on o's grant on x: {:?}", e1.pending());
     assert_eq!(e1.get(&x, &REG.name()).unwrap(), Some(s("before")));
-    edge_write(&mut lp.peers[0].engine, x, o, Some(edge(Role::Write)), None);
+    grant_write(&mut lp.peers[0].engine, x, o, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let e1 = &mut lp.peers[1].engine;
     assert!(e1.pending().iter().any(|(id, r)| *id == c && matches!(r, Reason::MissingChain(_))), "a grant ordered after it: {:?}", e1.pending());
@@ -362,12 +362,12 @@ fn a_pending_commit_keeps_its_evidence_spec_commits_5() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let r = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, r, Some(grant(Role::Read)), None);
     for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let w = ["one", "two"].map(|v| {
         let mut m = Mutation::new();
@@ -402,12 +402,12 @@ fn grantee_waits_for_grant_spec_commits_4() {
     let t = new_thing(&mut lp, 0);
     // peer 2 reads t first
     let r = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, r, Some(grant(Role::Read)), None);
     for pk in packages_to(&mut lp, 0, 2) {
         lp.deliver(2, &pk).unwrap();
     }
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("from b")).unwrap();
@@ -431,11 +431,11 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     let (mut lp, ps) = crate::flows::people(3);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
     lp.peers[0].engine.make_independent(&t).unwrap();
-    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::grant_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::grant_of(Role::Write)).unwrap();
     // 2 reads t
     lp.hold_at(2, t);
-    lp.peers[0].engine.grant(&t, &ps[2], &crate::flows::edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[2], &crate::flows::grant_of(Role::Read)).unwrap();
     let pks = packages_to(&mut lp, 0, 2);
     let c = creation_of(&mut lp, &pks, t);
     let roles: Vec<_> = pks[c + 1..].iter().filter(|p| is_role(&lp.peers[0].engine, &p.id)).cloned().collect();

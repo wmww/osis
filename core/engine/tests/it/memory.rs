@@ -28,7 +28,7 @@ fn eph_net() -> (LocalPeer, usize, usize, Tid) {
     let mut lp = crate::common::net(2, 0);
     let t = crate::common::new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
-    crate::common::set_edge(&mut lp.peers[0].engine, t, b, Some(crate::common::edge(Role::Write)), None);
+    crate::common::set_grant(&mut lp.peers[0].engine, t, b, Some(crate::common::grant(Role::Write)), None);
     lp.sync_all().unwrap();
     (lp, 1, 0, t)
 }

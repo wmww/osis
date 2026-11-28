@@ -2,10 +2,10 @@
 //! worlds hold grant writes alone, so these are drawn here over the model's `World` and judged by
 //! the model as the oracle. Account A (H's) mints T1, A2 is K's; at 1 H pairs B, X and N5, shares
 //! T1 with A2 at write, and K gives Z write on A2; halfway H removes X. Parties (X one in three)
-//! write A's edges (admin or none,
-//! each listing earlier commits at random), T1's edges along [A] (A2's grant: write or
+//! write A's grants (admin or none,
+//! each listing earlier commits at random), T1's grants along [A] (A2's grant: write or
 //! none), content on T1 along [A] or [A2] (a purge author of the signer or the listed thing),
-//! one commit writing an edge on A and A2's on T1 (write, admin or none), addenda against an
+//! one commit writing a grant on A and A2's on T1 (write, admin or none), addenda against an
 //! earlier lowering, covers carrying earlier content and purges by author.
 //! spec/permissions.md §5.1, §5.2, §6.
 
@@ -28,10 +28,10 @@ pub fn world(i: u64) -> (World, View) {
     let mut w = m::account();
     // H pairs B, X and N5 on A, shares T1 with A2 at write; K gives Z write on A2
     for h in [m::B, m::X, m::N5] {
-        w.edge(m::H, 1, &[], m::A, h, Role::Admin, &[]);
+        w.grant(m::H, 1, &[], m::A, h, Role::Admin, &[]);
     }
-    w.edge(m::H, 1, &[m::A], m::T1, m::A2, Role::Write, &[]);
-    w.edge(m::K, 1, &[], m::A2, m::Z, Role::Write, &[]);
+    w.grant(m::H, 1, &[m::A], m::T1, m::A2, Role::Write, &[]);
+    w.grant(m::K, 1, &[], m::A2, m::Z, Role::Write, &[]);
     let n = 4 + (i % 12) as usize;
     let pick = |rng: &mut Rng, xs: &[Id]| -> Option<Id> { (!xs.is_empty()).then(|| xs[rng.below(xs.len())]) };
     let mut removal: Option<Id> = None;
@@ -39,7 +39,7 @@ pub fn world(i: u64) -> (World, View) {
         // halfway, H removes X from A at the middle tick, listing each earlier commit by one half
         if step == n / 2 {
             let l: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-            removal = Some(w.edge(m::H, 2 + (n / 2) as u32, &[], m::A, m::X, Role::None, &l));
+            removal = Some(w.grant(m::H, 2 + (n / 2) as u32, &[], m::A, m::X, Role::None, &l));
         }
         // X, the removed party, signs one in three
         let s = if rng.below(3) == 0 { m::X } else { PARTIES[rng.below(PARTIES.len())] };
@@ -57,22 +57,22 @@ pub fn world(i: u64) -> (World, View) {
                 let h = PARTIES[rng.below(PARTIES.len())];
                 let role = if rng.below(2) == 0 { Role::Admin } else { Role::None };
                 let l = list(&mut rng, &|_| true);
-                w.edge(s, ts, &[], m::A, h, role, &l);
+                w.grant(s, ts, &[], m::A, h, role, &l);
             }
             2 => {
                 let role = if rng.below(2) == 0 { Role::Write } else { Role::None };
                 let l = list(&mut rng, &|_| true);
                 if rng.below(2) == 0 {
-                    w.edge(s, ts, &[m::A], m::T1, m::A2, role, &l);
+                    w.grant(s, ts, &[m::A], m::T1, m::A2, role, &l);
                 } else {
-                    // one commit writing two things: a holder's edge on A and A2's on T1 (admin one
+                    // one commit writing two things: a holder's grant on A and A2's on T1 (admin one
                     // time in two)
                     let h = PARTIES[rng.below(PARTIES.len())];
                     let a = if rng.below(2) == 0 { Role::Admin } else { Role::None };
                     let role = if role == Role::Write && rng.below(2) == 0 { Role::Admin } else { role };
                     let (fa, ft) = (w.cut(&l), w.cut(&list(&mut rng, &|_| true)));
                     // in the commit's part order (spec/permissions.md §5.1 step 1): the signer's
-                    // own edge on A is a hop of the path stated for T1, so its part comes last
+                    // own grant on A is a hop of the path stated for T1, so its part comes last
                     let on_a = |w: &mut World| w.push(s, ts, &[], m::A, Kind::set(h, a).listing(fa.clone()));
                     let on_t = |w: &mut World| w.push(s, ts, &[m::A], m::T1, Kind::set(m::A2, role).listing(ft.clone()));
                     let ids = if h == s { [on_t(&mut w), on_a(&mut w)] } else { [on_a(&mut w), on_t(&mut w)] };

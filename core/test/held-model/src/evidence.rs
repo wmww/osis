@@ -6,7 +6,7 @@
 //! Judging is roles-model `paths` (`Rules::fixed`, the rule A1 builds): a commit states a path,
 //! judged along it; a lowering lists a frontier; addenda, re-grants as there. On top:
 //! - **Pending** (`pend`, spec/commits.md §4 Unjudgeable): a commit pends at a node while a hop it
-//!   rests on (`paths::World::rests`: its key hop, then its path's edges) that is no record hop has
+//!   rests on (`paths::World::rests`: its key hop, then its path's grants) that is no record hop has
 //!   no held grant write ordered before it that does not itself pend, or while a part of its commit
 //!   removing a holder resets an entry whose creation (`creation`, named by the reset: the entry in
 //!   force in its writer's walk) is not held (spec/permissions.md §2). A pending grant write applies
@@ -18,13 +18,13 @@
 //! - **Bodies.** A commit's body is under every sync ID whose unit holds the thing it writes
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
-//!   (`paths::evidence`: every held grant write on a seed's key hop, on an edge of its path and on
-//!   each edge its commit's grant writes on its thing set, closed under the same for what it adds:
+//!   (`paths::evidence`: every held grant write on a seed's key hop, on a grant of its path and on
+//!   each grant its commit's grant writes on its thing set, closed under the same for what it adds:
 //!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies, and the chain stubs'
 //!   role entries (spec/sync-set.md §2 Stubs: every holder on a chain by which S's keys open
-//!   a thing of S's unit is a stub in it): each grant write on an edge of such a chain, a path of
-//!   read edges from S's thing to a thing of the unit (a held write giving read that the node
-//!   judges valid over what it holds, at any time, or a record: `World::read_edges`; an edge
+//!   a thing of S's unit is a stub in it): each grant write on a grant of such a chain, a path of
+//!   read grants from S's thing to a thing of the unit (a held write giving read that the node
+//!   judges valid over what it holds, at any time, or a record: `World::read_grants`; a grant
 //!   giving no more than sync brings the sync-only cut, which this model has no role for;
 //!   held-model `box_cut` judges what that holds). What of it lies on things outside the unit is a
 //!   copy, the rest bodies. A removal is in it only as evidence of a body (notes/write-path-design.md
@@ -64,7 +64,7 @@
 //! as a step of its own, multi-thing role commits, how units are computed
 //! (an input: `closure` checks the walk).
 
-use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
+use roles_model::paths::{self, Grant, Id, Kind, Rules, Set, Thing, Things, View};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,17 +105,17 @@ pub enum Lists {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
-    /// Chain stubs: a grant write on an edge of a chain by which S's keys open a thing of S's
-    /// unit is a seed of S (read edges and records at any time: `ROLE_KEEP` read as for good).
+    /// Chain stubs: a grant write on a grant of a chain by which S's keys open a thing of S's
+    /// unit is a seed of S (read grants and records at any time: `ROLE_KEEP` read as for good).
     /// False: the control (bodies alone).
     pub chain_stubs: bool,
-    /// A grant write in the closure brings every held grant write on each edge its commit's edge
+    /// A grant write in the closure brings every held grant write on each grant its commit's grant
     /// writes on its thing set (spec/permissions.md §4 Evidence of a commit; finding 9: a commit's
     /// grant writes apply together, and a removal waits for the creations its resets name). False:
     /// the control (its commit's other parts on the thing alone).
-    pub commit_edges: bool,
-    /// Record grants are edges of the read graph (each a mint admin's admin grant on the thing it
-    /// minted, at any time: `World::chain_edges`): keys open through them (spec/sync-set.md §2).
+    pub commit_grants: bool,
+    /// Record grants are grants of the read graph (each a mint admin's admin grant on the thing it
+    /// minted, at any time: `World::chain_grants`): keys open through them (spec/sync-set.md §2).
     /// False: the control (grants only), which under-reads (record grants open keys as grants do: spec/sync-set.md §2).
     pub records: bool,
     pub lists: Lists,
@@ -129,10 +129,10 @@ pub struct Rule {
 
 impl Rule {
     /// The spec's rule (spec/permissions.md §4; notes/a2-spec/README.md Open 2: E1): every held
-    /// grant write on a stated path's edges and on the edges its commit sets, lazy delivery, chain
+    /// grant write on a stated path's grants and on the grants its commit sets, lazy delivery, chain
     /// stubs, lists whole.
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, chain_stubs: true, commit_edges: true, records: true, lists: Lists::Whole, keysets: true, deposit: false }
+        Rule { placement: Placement::Function, chain_stubs: true, commit_grants: true, records: true, lists: Lists::Whole, keysets: true, deposit: false }
     }
     /// The control of chain stubs: a unit carries its bodies' evidence alone.
     pub fn bodies_only() -> Rule {
@@ -282,34 +282,34 @@ impl World {
     }
     fn holder(&self, i: Id) -> Option<Thing> {
         match &self.w.commits[i].kind {
-            Kind::Edge { holder, .. } => Some(*holder),
+            Kind::Grant { holder, .. } => Some(*holder),
             _ => None,
         }
     }
     /// A removal: a grant write giving below write at its own `ts` (none, read, or an `until`
     /// passed), but a finalize. (`paths::World::lowers` counts every write below admin, a fresh
     /// grant of write included.) A demotion from admin to write is not one here.
-    pub fn removes(&self, i: Id) -> Option<Edge> {
+    pub fn removes(&self, i: Id) -> Option<Grant> {
         match &self.w.commits[i].kind {
-            Kind::Edge { holder, role, until, finalize: false, .. } if paths::alive((*role, *until), self.w.commits[i].ts) < Role::Write => Some((*holder, self.on(i))),
+            Kind::Grant { holder, role, until, finalize: false, .. } if paths::alive((*role, *until), self.w.commits[i].ts) < Role::Write => Some((*holder, self.on(i))),
             _ => None,
         }
     }
     /// A lowering that takes something away: a grant write below admin at its own `ts`
     /// (`paths::World::lowers`: no finalize), on a record hop or ordered (by key) after a write on
-    /// its edge giving more at its own `ts`. What lazy delivery may leave behind (`undelivered`).
+    /// its grant giving more at its own `ts`. What lazy delivery may leave behind (`undelivered`).
     pub fn takes_away(&self, i: Id) -> bool {
         let Some(e) = self.w.lowers(i) else { return false };
         let at = |j: Id| match &self.w.commits[j].kind {
-            Kind::Edge { role, until, .. } => paths::alive((*role, *until), self.w.commits[j].ts),
+            Kind::Grant { role, until, .. } => paths::alive((*role, *until), self.w.commits[j].ts),
             _ => Role::None,
         };
         self.w.is_record(e) || (0..self.w.commits.len()).any(|j| self.w.sets(j) == Some(e) && self.w.key(j) < self.w.key(i) && at(j) > at(i))
     }
     /// A held grant write giving write or above (any `until`).
-    pub fn gives_write(&self, i: Id) -> Option<Edge> {
+    pub fn gives_write(&self, i: Id) -> Option<Grant> {
         match &self.w.commits[i].kind {
-            Kind::Edge { holder, role, .. } if *role >= Role::Write => Some((*holder, self.on(i))),
+            Kind::Grant { holder, role, .. } if *role >= Role::Write => Some((*holder, self.on(i))),
             _ => None,
         }
     }
@@ -317,9 +317,9 @@ impl World {
     // ---- What a sync ID requires ----
 
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and under
-    /// `chain_stubs` the grant writes on the edges of a chain from S's thing to a thing of the unit.
-    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Edge>) -> Set {
-        let chain = if rule.chain_stubs { self.chain_edges(rule, s, unit, reads) } else { BTreeSet::new() };
+    /// `chain_stubs` the grant writes on the grants of a chain from S's thing to a thing of the unit.
+    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set, reads: &BTreeSet<Grant>) -> Set {
+        let chain = if rule.chain_stubs { self.chain_grants(rule, s, unit, reads) } else { BTreeSet::new() };
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| chain.contains(&(hd, self.on(i))))).collect();
         if rule.keysets {
             // a held keyset's carried demotions are evidence of it, each whole
@@ -330,26 +330,26 @@ impl World {
     }
     /// S's required set over held set `h` with units `units`: bodies and copies.
     pub fn req(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Set {
-        self.req_with(rule, s, units, h, &self.read_edges(h))
+        self.req_with(rule, s, units, h, &self.read_grants(h))
     }
-    /// `req` with `h`'s read graph edges (`read_edges`) given: judged once per held set, not per
+    /// `req` with `h`'s read graph grants (`read_grants`) given: judged once per held set, not per
     /// sync ID.
-    fn req_with(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set, reads: &BTreeSet<Edge>) -> Set {
+    fn req_with(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set, reads: &BTreeSet<Grant>) -> Set {
         self.closure(rule, &self.seeds(rule, s, &units[&s], h, reads), h)
     }
-    /// The edges of the chains by which S's keys open a thing of `unit`: read graph edges `reads`
+    /// The grants of the chains by which S's keys open a thing of `unit`: read graph grants `reads`
     /// and record grants (`Rule::records`) on a path from S's thing to a thing of the unit, at any
     /// time. A record grant opens as a grant of admin from the mint admin to the thing it minted
     /// (spec/sync-set.md §2 T's keys open: effective role over paths that climb record grants; a
     /// dependent's secrets derive from its mint admin's), standing since the thing's creation,
     /// ordered before every write (spec/crypto.md §4 Key access), and read at any time as grants
     /// are: a record grant removed later still opens (as a grant removed later does).
-    fn chain_edges(&self, rule: &Rule, s: Sid, unit: &Things, reads: &BTreeSet<Edge>) -> BTreeSet<Edge> {
-        let edges: BTreeSet<Edge> = self.w.records.iter().copied().filter(|_| rule.records).chain(reads.iter().copied()).collect();
+    fn chain_grants(&self, rule: &Rule, s: Sid, unit: &Things, reads: &BTreeSet<Grant>) -> BTreeSet<Grant> {
+        let grants: BTreeSet<Grant> = self.w.records.iter().copied().filter(|_| rule.records).chain(reads.iter().copied()).collect();
         let reach = |from: Things, fwd: bool| {
             let mut seen = from;
             loop {
-                let more: Vec<Thing> = edges.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
+                let more: Vec<Thing> = grants.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
                 if more.is_empty() {
                     return seen;
                 }
@@ -357,22 +357,22 @@ impl World {
             }
         };
         let (from, to) = (reach(Things::from([s]), true), reach(unit.clone(), false));
-        edges.into_iter().filter(|(x, y)| from.contains(x) && to.contains(y)).collect()
+        grants.into_iter().filter(|(x, y)| from.contains(x) && to.contains(y)).collect()
     }
     /// A grant write giving read or above (any `until`): a link by which keys open, once valid.
-    fn gives_read(&self, i: Id) -> Option<Edge> {
+    fn gives_read(&self, i: Id) -> Option<Grant> {
         match &self.w.commits[i].kind {
-            Kind::Edge { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
+            Kind::Grant { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
             _ => None,
         }
     }
-    /// The read graph's grant edges over held set `h`: each set by a write of `h` giving read that
+    /// The read graph's grant grants over held set `h`: each set by a write of `h` giving read that
     /// `h` judges valid (a node's own view, its lists whole), so no invalid or pending write
     /// opens keys or brings a chain stub.
-    pub fn read_edges(&self, h: &Set) -> BTreeSet<Edge> {
+    pub fn read_grants(&self, h: &Set) -> BTreeSet<Grant> {
         self.reads_valid(h).into_iter().filter_map(|i| self.gives_read(i)).collect()
     }
-    /// The writes of `h` giving read that `h` judges valid (`read_edges`).
+    /// The writes of `h` giving read that `h` judges valid (`read_grants`).
     pub fn reads_valid(&self, h: &Set) -> Set {
         let ids: Set = h.iter().copied().filter(|&i| self.gives_read(i).is_some()).collect();
         if ids.is_empty() {
@@ -390,20 +390,20 @@ impl World {
 
     // ---- The closure ----
 
-    /// A grant: a grant write setting its edge (no self-removal, no finalize) to a role, `until`
+    /// A grant: a grant write setting its grant (no self-removal, no finalize) to a role, `until`
     /// disregarded.
     pub fn grant(&self, i: Id) -> bool {
-        matches!(&self.w.commits[i].kind, Kind::Edge { role, finalize: false, .. } if *role > Role::None) && !self.w.leave(i)
+        matches!(&self.w.commits[i].kind, Kind::Grant { role, finalize: false, .. } if *role > Role::None) && !self.w.leave(i)
     }
     /// Grant write `i` leaves its holder no grant (no role, or `until` 0: a removal, a self-removal,
     /// a finalize): a commit with one applies none of its grant writes on its thing until the
     /// creation of the entry it resets is held; a reset beside a put of a live grant is not waited
     /// for (spec/permissions.md §2 Grant writes; finding 25).
     pub fn ends_grant(&self, i: Id) -> bool {
-        matches!(&self.w.commits[i].kind, Kind::Edge { role, until, .. } if *role == Role::None || *until == Some(0))
+        matches!(&self.w.commits[i].kind, Kind::Grant { role, until, .. } if *role == Role::None || *until == Some(0))
     }
     /// The creation of the entry grant write `i` resets, as its writer names it (spec/permissions.md
-    /// §2 Grant writes): the entry of the write in force on its edge in its writer's walk, the last
+    /// §2 Grant writes): the entry of the write in force on its grant in its writer's walk, the last
     /// applied write on it there, where that write put an entry (a grant); None where none did (a
     /// record grant, a grant already removed: `i` resets an entry of its own, never waited for). The
     /// writer's walk is over everything written before `i`'s commit (it can know no later write).
@@ -439,21 +439,21 @@ impl World {
     /// `j` is ordered before `i` as `i`'s verdict reads it: by key for a grant-class `i`, by `ts`
     /// (the start of its `ts`) for content.
     fn before(&self, j: Id, i: Id) -> bool {
-        if self.w.edge_class(i) {
+        if self.w.grant_class(i) {
             self.w.key(j) < self.w.key(i)
         } else {
             self.w.commits[j].ts < self.w.commits[i].ts
         }
     }
     /// The evidence closure of `seeds` over `avail`: the seeds, the other parts of a member's
-    /// commit on its thing, every grant write on a member's key hop and on an edge of its stated
-    /// path (E1), and under `commit_edges` on each edge its commit's parts on its thing set:
+    /// commit on its thing, every grant write on a member's key hop and on a grant of its stated
+    /// path (E1), and under `commit_grants` on each grant its commit's parts on its thing set:
     /// `paths::evidence`, but for path entries opening late (`hidden`) and the control.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
-        if rule.commit_edges && self.opens.is_empty() {
+        if rule.commit_grants && self.opens.is_empty() {
             return paths::evidence(&self.w, seeds, avail);
         }
-        let mut edges = BTreeSet::new();
+        let mut grants = BTreeSet::new();
         let mut s = seeds.clone();
         let mut done = Set::new();
         loop {
@@ -461,10 +461,10 @@ impl World {
                 done.insert(m);
                 // a part whose path entry has not opened brings nothing of its path
                 if !self.hidden(avail, m) {
-                    edges.extend(self.w.rests(m).iter().copied());
+                    grants.extend(self.w.rests(m).iter().copied());
                 }
-                if rule.commit_edges && self.w.edge_class(m) {
-                    edges.extend(self.w.part_ids(self.w.cid(m)).filter(|&p| self.on(p) == self.on(m)).filter_map(|p| self.w.sets(p)));
+                if rule.commit_grants && self.w.grant_class(m) {
+                    grants.extend(self.w.part_ids(self.w.cid(m)).filter(|&p| self.on(p) == self.on(m)).filter_map(|p| self.w.sets(p)));
                 }
             }
             let cids: std::collections::BTreeSet<(Id, Thing)> = s.iter().map(|&i| (self.w.cid(i), self.on(i))).collect();
@@ -475,7 +475,7 @@ impl World {
                 .filter(|&i| {
                     cids.contains(&(self.w.cid(i), self.on(i)))
                         || match &self.w.commits[i].kind {
-                            Kind::Edge { .. } => self.w.sets(i).is_some_and(|e| edges.contains(&e)),
+                            Kind::Grant { .. } => self.w.sets(i).is_some_and(|e| grants.contains(&e)),
                             _ => false,
                         }
                 })
@@ -622,7 +622,7 @@ impl World {
             let mut held: Set = st.held[n].iter().chain(&own).copied().chain(sy.iter().flat_map(|s| st.entries[s].iter().copied())).filter(|i| !st.forgotten.contains(i)).collect();
             // keep only what a synced sync ID requires, and its own writes
             let reads = loop {
-                let reads = self.read_edges(&held);
+                let reads = self.read_grants(&held);
                 let keep: Set = sy.iter().flat_map(|&s| self.req_with(rule, s, &st.units, &held, &reads)).chain(own.iter().copied()).filter(|i| held.contains(i)).collect();
                 if keep == held {
                     break reads;
@@ -696,7 +696,7 @@ impl World {
         if self.hidden(h, i) || self.keysets.get(&i).is_some_and(|c| !c.is_subset(h)) {
             return true;
         }
-        if self.w.edge_class(i) && self.w.part_ids(self.w.cid(i)).any(|p| h.contains(&p) && self.on(p) == self.on(i) && self.ends_grant(p) && self.creation(p).is_some_and(|c| !h.contains(&c))) {
+        if self.w.grant_class(i) && self.w.part_ids(self.w.cid(i)).any(|p| h.contains(&p) && self.on(p) == self.on(i) && self.ends_grant(p) && self.creation(p).is_some_and(|c| !h.contains(&c))) {
             return true;
         }
         self.w.rests(i).iter().copied().filter(|&e| !self.w.is_record(e)).any(|e| {
@@ -710,13 +710,13 @@ impl World {
     /// commit's grant writes).
     pub fn verdicts(&self, s: &Seen, ids: &Set) -> BTreeMap<Id, Verdict> {
         let mut memo = BTreeMap::new();
-        let waiting: Set = s.v.held.iter().copied().filter(|&i| self.w.edge_class(i) && self.pend_with(&s.v.held, i, &mut memo)).collect();
+        let waiting: Set = s.v.held.iter().copied().filter(|&i| self.w.grant_class(i) && self.pend_with(&s.v.held, i, &mut memo)).collect();
         let held: Set = s.v.held.difference(&waiting).copied().collect();
         let trust = s.v.trust.intersection(&held).copied().collect();
         let rd = paths::judge(&self.w, &self.rules, &View { held, leaves: s.v.leaves.clone(), trust });
         ids.iter()
             .map(|&i| {
-                let ok = if self.w.edge_class(i) { rd.applied.contains(&i) } else { rd.valid.contains(&i) || rd.copied.contains(&i) };
+                let ok = if self.w.grant_class(i) { rd.applied.contains(&i) } else { rd.valid.contains(&i) || rd.copied.contains(&i) };
                 let waits = self.pend_with(&s.v.held, i, &mut memo);
                 (i, if waits { Verdict::Pending } else if ok { Verdict::Valid } else { Verdict::Invalid })
             })
@@ -748,7 +748,7 @@ impl World {
     /// syncing S that can stamp it, or with `Rule::deposit` (D4) any honest node syncing it.
     pub fn undelivered(&self, rule: &Rule, st: &State, s: Sid) -> Set {
         let sources: Vec<usize> = (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && self.syncs(n, &st.units).contains(&s) && (rule.deposit || self.stamps(n, s))).collect();
-        st.written.iter().copied().filter(|&i| !st.forgotten.contains(&i) && self.w.edge_class(i) && !st.entries[&s].contains(&i) && !sources.iter().any(|&n| st.held[n].contains(&i))).collect()
+        st.written.iter().copied().filter(|&i| !st.forgotten.contains(&i) && self.w.grant_class(i) && !st.entries[&s].contains(&i) && !sources.iter().any(|&n| st.held[n].contains(&i))).collect()
     }
     /// What a reader of S is judged against (without `without`): the node holding everything
     /// written but what lazy delivery has not brought S (`undelivered`).
@@ -996,16 +996,16 @@ impl World {
     pub fn signers(&self, st: &State) -> Things {
         st.written.iter().map(|&i| self.w.commits[i].signer).filter(|a| !self.sids.contains(a)).collect()
     }
-    /// The edges a reading gives a role on (records included): the read graph paths run over.
-    fn role_edges(&self, rd: &paths::Reading) -> BTreeSet<Edge> {
+    /// The grants a reading gives a role on (records included): the read graph paths run over.
+    fn role_grants(&self, rd: &paths::Reading) -> BTreeSet<Grant> {
         rd.roles.iter().filter(|&(_, &r)| r > Role::None).map(|(&e, _)| e).chain(self.w.records.iter().copied()).collect()
     }
-    /// The holders on a path of `edges` from `a` to a thing of `unit`.
-    pub fn path_holders(edges: &BTreeSet<Edge>, a: Thing, unit: &Things) -> Things {
+    /// The holders on a path of `grants` from `a` to a thing of `unit`.
+    pub fn path_holders(grants: &BTreeSet<Grant>, a: Thing, unit: &Things) -> Things {
         let reach = |from: Things, fwd: bool| {
             let mut seen = from;
             loop {
-                let more: Vec<Thing> = edges.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
+                let more: Vec<Thing> = grants.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
                 if more.is_empty() {
                     return seen;
                 }
@@ -1015,8 +1015,8 @@ impl World {
         let (f, b) = (reach(Things::from([a]), true), reach(unit.clone(), false));
         f.intersection(&b).copied().filter(|&x| x != a).collect()
     }
-    /// Holder `h`'s stub at `st`, cut to the edges into it from `from` (the signer and the
-    /// holders on its paths): its grant writes on those edges as its own sync ID carries them, with
+    /// Holder `h`'s stub at `st`, cut to the grants on it from `from` (the signer and the
+    /// holders on its paths): its grant writes on those grants as its own sync ID carries them, with
     /// their evidence there; the signer's (no sync ID in the model: its node's own) every written
     /// grant write on it, with their evidence.
     pub fn stub(&self, rule: &Rule, st: &State, h: Thing, from: &Things) -> Set {
@@ -1024,17 +1024,17 @@ impl World {
             Some(e) => (e.iter().copied().filter(|&i| self.on(i) == h && self.holder(i).is_some_and(|g| from.contains(&g))).collect(), e.clone()),
             None => {
                 let all = self.full(st, &Set::new()).v.held;
-                (all.iter().copied().filter(|&i| self.on(i) == h && self.w.edge_class(i)).collect(), all)
+                (all.iter().copied().filter(|&i| self.on(i) == h && self.w.grant_class(i)).collect(), all)
             }
         };
         self.closure(rule, &seeds, &avail)
     }
     /// What a node acting as `a` and syncing `s` holds: S's entries, and under `j` the stubs of
-    /// the holders on the paths of `edges` and its own role entries.
-    pub fn joint_held(&self, rule: &Rule, st: &State, s: Sid, a: Thing, edges: &BTreeSet<Edge>, j: Joint) -> Set {
+    /// the holders on the paths of `grants` and its own role entries.
+    pub fn joint_held(&self, rule: &Rule, st: &State, s: Sid, a: Thing, grants: &BTreeSet<Grant>, j: Joint) -> Set {
         let mut held = st.entries[&s].clone();
         if j != Joint::Unit {
-            let holders = Self::path_holders(edges, a, &st.units[&s]);
+            let holders = Self::path_holders(grants, a, &st.units[&s]);
             let from: Things = holders.iter().copied().chain([a]).collect();
             for h in holders.into_iter().chain([a]) {
                 held.extend(self.stub(rule, st, h, &from).into_iter().filter(|&i| j != Joint::Grants || self.removes(i).is_none()));
@@ -1042,14 +1042,14 @@ impl World {
         }
         held
     }
-    /// The simple paths of `edges` from `a` to `t` with at most three hops, as a write states them
+    /// The simple paths of `grants` from `a` to `t` with at most three hops, as a write states them
     /// (the things between).
-    fn candidate_paths(edges: &BTreeSet<Edge>, a: Thing, t: Thing) -> Vec<Vec<Thing>> {
+    fn candidate_paths(grants: &BTreeSet<Grant>, a: Thing, t: Thing) -> Vec<Vec<Thing>> {
         let mut out = vec![];
         let mut todo = vec![vec![a]];
         while let Some(p) = todo.pop() {
             let at = *p.last().unwrap_or(&a);
-            for &(_, y) in edges.range((at, 0)..=(at, Thing::MAX)) {
+            for &(_, y) in grants.range((at, 0)..=(at, Thing::MAX)) {
                 if y == t {
                     out.push(p[1..].to_vec());
                 } else if !p.contains(&y) && p.len() < 3 {
@@ -1071,7 +1071,7 @@ impl World {
     pub fn joint(&self, rule: &Rule, st: &State, j: Joint) -> Vec<Fail> {
         let full = self.full(st, &Set::new());
         let rd = paths::judge(&self.w, &self.rules, &full.v);
-        let edges = self.role_edges(&rd);
+        let grants = self.role_grants(&rd);
         let fv = self.verdicts(&full, &st.written);
         let ts = self.w.commits.iter().map(|c| c.ts).max().unwrap_or(0) + 1;
         let seen = |held: Set| {
@@ -1086,10 +1086,10 @@ impl World {
                 // the paths it would write along: the world's, and those its own reading shows,
                 // each holder's stub on any of them held (every path, found by what it holds),
                 // until its reading shows no path more
-                let mut cand = edges.clone();
+                let mut cand = grants.clone();
                 let held = loop {
                     let held = self.joint_held(rule, st, s, a, &cand, j);
-                    let more = self.role_edges(&paths::judge(&self.w, &self.rules, &seen(held.clone()).v));
+                    let more = self.role_grants(&paths::judge(&self.w, &self.rules, &seen(held.clone()).v));
                     if more.is_subset(&cand) || j == Joint::WorldPaths {
                         cand.extend(more);
                         break held;
@@ -1267,19 +1267,19 @@ pub fn family(sh: Shape) -> World {
         _ => {}
     }
     let member = if sh.grant { Role::Admin } else { Role::Write };
-    w.write(x, |p| p.edge(X, 1, &[], A, K, member, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, member, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, member, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, member, &[]));
     let on_d = if sh.raised { Role::Read } else { Role::Write };
     let (holder, last) = if sh.via_org || sh.mint == 2 { (O, D) } else { (A, D) };
     if sh.via_org && o_mint != A {
-        w.write(o, |p| p.edge(o_mint, 2, &[], O, A, Role::Write, &[]));
+        w.write(o, |p| p.grant(o_mint, 2, &[], O, A, Role::Write, &[]));
     }
     // D's admin: Y, or X by descent where D is minted down A's chain (its stated path the records)
     let (dn, ds) = if d_mint == Y { (y, Y) } else { (x, X) };
     if d_mint == Y {
-        w.write(y, |p| p.edge(Y, 2, &[], last, holder, on_d, &[]));
+        w.write(y, |p| p.grant(Y, 2, &[], last, holder, on_d, &[]));
     } else if sh.raised {
-        w.write(x, |p| p.edge(X, 2, &[], last, holder, Role::Read, &[]));
+        w.write(x, |p| p.grant(X, 2, &[], last, holder, Role::Read, &[]));
     }
     let first = if sh.raised { None } else { Some(w.write(k, |p| p.content(K, 3, &path, D))) };
     match sh.units {
@@ -1290,14 +1290,14 @@ pub fn family(sh: Shape) -> World {
     }
     let zn = w.node(true, &[]);
     w.stamps_only(zn, &[]);
-    let gz = if sh.grant { Some(w.write(k, |p| p.edge(K, 4, &[], A, Z, Role::Write, &[]))) } else { None };
+    let gz = if sh.grant { Some(w.write(k, |p| p.grant(K, 4, &[], A, Z, Role::Write, &[]))) } else { None };
     if gz.is_some() {
         w.write(zn, |p| p.content(Z, 5, &path, D));
     }
     let listed: Vec<Id> = if sh.listed { first.into_iter().collect() } else { vec![] };
-    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &listed));
+    let r = w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &listed));
     if sh.raised {
-        w.write(dn, |p| p.edge(ds, 7, &[], last, holder, Role::Write, &[]));
+        w.write(dn, |p| p.grant(ds, 7, &[], last, holder, Role::Write, &[]));
     }
     if sh.addendum {
         if let Some(f) = first {
@@ -1308,7 +1308,7 @@ pub fn family(sh: Shape) -> World {
         w.write(k, |p| p.content(K, 8, &path, D));
     }
     if sh.regrant {
-        w.write(x, |p| p.edge(X, 9, &[], A, K, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 9, &[], A, K, Role::Write, &[]));
     }
     w
 }
@@ -1319,12 +1319,12 @@ pub fn family(sh: Shape) -> World {
 /// removing or re-granting a member (a random frontier of what it could have received) or two in
 /// one commit, K
 /// granting Z, Q writing an addendum against a held removal, Y or W raising or
-/// lowering A's or O's edge, retags among the four things, a member's grant write on A or O to any
+/// lowering A's or O's grant, retags among the four things, a member's grant write on A or O to any
 /// holder (junk where it holds no admin), content along [A, R] (A writing R half the time, R
 /// holding nothing on D) or [O, A]; random node sync sets beside each mint admin syncing its
 /// things. A third of the worlds have A mint O, and half of those O mint D (record grants on routes):
 /// records on the members' paths in place of the starting grants, changed later by the moves
-/// that change A's or O's edge (by X, their admin by descent).
+/// that change A's or O's grant (by X, their admin by descent).
 pub fn random(seed: u64, len: usize) -> World {
     use names::*;
     let mut rng = roles_model::Rng::thread(seed, 0);
@@ -1357,17 +1357,17 @@ pub fn random(seed: u64, len: usize) -> World {
     let roles = [Role::Read, Role::Write, Role::Admin];
     let up = |rng: &mut roles_model::Rng| roles[1 + rng.below(2)];
     let (rk, rq) = (up(&mut rng), up(&mut rng));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, rk, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, rq, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, rk, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, rq, &[]));
     for (on, hd) in [(D, A), (O, A), (D, O)] {
         if !records.contains(&(hd, on)) {
             let (a, n) = admin(on);
-            w.write(n, |p| p.edge(a, 1, &[], on, hd, Role::Write, &[]));
+            w.write(n, |p| p.grant(a, 1, &[], on, hd, Role::Write, &[]));
         }
     }
     if rng.below(2) == 0 {
         // A writes R, which holds nothing on D: [A, R] is a path to D no grant joins
-        w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+        w.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
     }
     let mut ts = 2;
     for _ in 0..len {
@@ -1391,22 +1391,22 @@ pub fn random(seed: u64, len: usize) -> World {
                 let m = [K, Q, Z][rng.below(3)];
                 let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
                 let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(m, A)) && rng.below(2) == 0).collect();
-                w.write(x, |p| p.edge(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
+                w.write(x, |p| p.grant(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
             }
             5 => {
-                w.write(k, |p| p.edge(K, bts, &[], A, Z, Role::Write, &[]));
+                w.write(k, |p| p.grant(K, bts, &[], A, Z, Role::Write, &[]));
             }
             6 if !removals.is_empty() => {
                 let r = removals[rng.below(removals.len())];
                 let list: Vec<Id> = (0..w.by.len()).filter(|&j| j != r && rng.below(2) == 0).collect();
-                let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == D).collect();
+                let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.grant_class(j) && w.on(j) == D).collect();
                 w.write(q, |p| p.addendum(Q, bts, &[A], D, r, &adds));
             }
             7 => {
                 let role = [Role::None, Role::Read, Role::Write][rng.below(3)];
                 let (on, hd) = [(D, A), (D, O), (O, A)][rng.below(3)];
                 let (a, n) = admin(on);
-                w.write(n, |p| p.edge(a, bts, &[], on, hd, role, &[]));
+                w.write(n, |p| p.grant(a, bts, &[], on, hd, role, &[]));
             }
             8 => {
                 // D's admin rotates D (D2): its keyset carries X's removals on A (A reaches D: the
@@ -1422,7 +1422,7 @@ pub fn random(seed: u64, len: usize) -> World {
                 let on = [A, O][rng.below(2)];
                 let h = [K, Q, Z, D, R, O, A][rng.below(7)];
                 if h != on {
-                    w.write(n, |p| p.edge(sg, bts, &[], on, h, roles[rng.below(3)], &[]));
+                    w.write(n, |p| p.grant(sg, bts, &[], on, h, roles[rng.below(3)], &[]));
                 }
             }
             11 => {
@@ -1465,9 +1465,9 @@ pub struct Wide {
 /// K, Q, Z), W mints O and H, Y mints D and R; the five things ordered A, O, H, D, R, each holding
 /// a random role on each later one (a random graph of routes), members sometimes granted directly
 /// on another thing (a second route); then `len` moves: a member's content (K's half the time)
-/// along a route (`wide_route`: mostly along edges written, else any increasing path; sometimes
+/// along a route (`wide_route`: mostly along grants written, else any increasing path; sometimes
 /// backdated), K removed or re-granted on any thing it has a route on, X removing
-/// or re-granting a member (a random frontier) or two in one commit, an admin's churn on any edge
+/// or re-granting a member (a random frontier) or two in one commit, an admin's churn on any grant
 /// between the things (a removal with a random frontier), junk grant writes by members on any thing
 /// to any holder, K granting Z, Q's addenda, direct routes granted and removed, retags
 /// among the five, A granted read alone on a thing with the thief writing through that hop
@@ -1510,14 +1510,14 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
     let up = |rng: &mut roles_model::Rng| roles[1 + rng.below(2)];
     for &(m, _) in &members[..2 + rng.below(2)] {
         let r = up(&mut rng);
-        w.write(x, |p| p.edge(X, 1, &[], A, m, r, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, m, r, &[]));
     }
     for i in 0..things.len() {
         for j in i + 1..things.len() {
             if rng.below(2) == 0 && !recs.contains(&(things[i], things[j])) {
                 let (a, n) = admin(things[j]);
                 let r = [Role::Write, Role::Write, Role::Read, Role::Admin][rng.below(4)];
-                w.write(n, |p| p.edge(a, 1, &[], things[j], things[i], r, &[]));
+                w.write(n, |p| p.grant(a, 1, &[], things[j], things[i], r, &[]));
             }
         }
     }
@@ -1526,7 +1526,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
         if rng.below(3) == 0 {
             let on = things[1 + rng.below(4)];
             let (a, n) = admin(on);
-            w.write(n, |p| p.edge(a, 1, &[], on, m, Role::Write, &[]));
+            w.write(n, |p| p.grant(a, 1, &[], on, m, Role::Write, &[]));
         }
     }
     let mut pending: Vec<(Id, Thing)> = vec![];
@@ -1548,13 +1548,13 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let role = if rng.below(3) == 0 { up(&mut rng) } else { Role::None };
                 let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(K, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
-                w.write(n, |p| p.edge(a, bts, &[], on, K, role, if role == Role::None { &front } else { &[] }));
+                w.write(n, |p| p.grant(a, bts, &[], on, K, role, if role == Role::None { &front } else { &[] }));
             }
             4 => {
                 let m = [K, Q, Z][rng.below(3)];
                 let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
                 let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(m, A)) && rng.below(2) == 0).collect();
-                w.write(x, |p| p.edge(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
+                w.write(x, |p| p.grant(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
             }
             5 => {
                 let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
@@ -1562,13 +1562,13 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 w.write_parts(x, |p| p.commit(X, bts, &[], A, vec![paths::Kind::set(a, role), paths::Kind::set(b, role)]));
             }
             6 => {
-                // churn on an edge between two things, by the target's admin
+                // churn on a grant between two things, by the target's admin
                 let j = 1 + rng.below(things.len() - 1);
                 let (hd, on) = (things[rng.below(j)], things[j]);
                 let role = [Role::None, Role::Read, Role::Write, Role::Admin][rng.below(4)];
                 let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.rests(c).contains(&(hd, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
-                w.write(n, |p| p.edge(a, bts, &[], on, hd, role, if role == Role::None { &front } else { &[] }));
+                w.write(n, |p| p.grant(a, bts, &[], on, hd, role, if role == Role::None { &front } else { &[] }));
             }
             7 => {
                 // a member's grant write on any thing to any holder: junk where it holds no admin
@@ -1577,14 +1577,14 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let hd = [K, Q, Z, A, O, H, D, R][rng.below(8)];
                 if hd != on && !path.contains(&hd) {
                     let r = roles[rng.below(3)];
-                    w.write(n, |p| p.edge(sg, bts, &path, on, hd, r, &[]));
+                    w.write(n, |p| p.grant(sg, bts, &path, on, hd, r, &[]));
                 }
             }
             8 if !removals.is_empty() => {
                 let r = removals[rng.below(removals.len())];
                 let list: Vec<Id> = (0..w.by.len()).filter(|&j| j != r && rng.below(2) == 0).collect();
                 let t = things[3 + rng.below(2)];
-                let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == t).collect();
+                let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.grant_class(j) && w.on(j) == t).collect();
                 w.write(q, |p| p.addendum(Q, bts, &[A], t, r, &adds));
             }
             9 => {
@@ -1592,7 +1592,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let hd = [K, Q, Z][rng.below(3)];
                 if hd != sg {
                     let r = up(&mut rng);
-                    w.write(n, |p| p.edge(sg, bts, &[], A, hd, r, &[]));
+                    w.write(n, |p| p.grant(sg, bts, &[], A, hd, r, &[]));
                 }
             }
             10 => {
@@ -1624,7 +1624,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let role = if rng.below(3) == 0 { Role::None } else { up(&mut rng) };
                 let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.rests(c).contains(&(m, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
-                w.write(n, |p| p.edge(a, bts, &[], on, m, role, if role == Role::None { &front } else { &[] }));
+                w.write(n, |p| p.grant(a, bts, &[], on, m, role, if role == Role::None { &front } else { &[] }));
             }
             13 if opt.late => {
                 let (sg, n) = members[rng.below(3)];
@@ -1638,16 +1638,16 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 // yet, T write on a thing U no honest node syncs together with T or A (an honest
                 // bridge would carry the read grant), and the thief writing U through [A, T]:
                 // invalid everywhere; the thief logs no grant below write
-                let gives_write = |w: &World, e: Edge| recs.contains(&e) || (0..w.by.len()).any(|c| w.w.sets(c) == Some(e) && w.gives_write(c).is_some());
+                let gives_write = |w: &World, e: Grant| recs.contains(&e) || (0..w.by.len()).any(|c| w.w.sets(c) == Some(e) && w.gives_write(c).is_some());
                 let bridged = |w: &World, t: Thing, u: Thing| (0..w.nodes.len()).any(|n| w.nodes[n].honest && { let sy = w.syncs(n, &w.units); sy.contains(&u) && (sy.contains(&t) || sy.contains(&A)) }) || w.units[&u].contains(&t) || w.units[&u].contains(&A);
                 let pairs: Vec<(Thing, Thing)> = things[1..].iter().flat_map(|&t| things[1..].iter().map(move |&u| (t, u))).filter(|&(t, u)| t != u && !gives_write(&w, (A, t)) && !bridged(&w, t, u)).collect();
                 if !pairs.is_empty() {
                     let (t, u) = pairs[rng.below(pairs.len())];
                     let (a, n) = admin(t);
-                    w.write(n, |p| p.edge(a, bts, &[], t, A, Role::Read, &[]));
+                    w.write(n, |p| p.grant(a, bts, &[], t, A, Role::Read, &[]));
                     if !gives_write(&w, (t, u)) {
                         let (a, n) = admin(u);
-                        w.write(n, |p| p.edge(a, bts, &[], u, t, Role::Write, &[]));
+                        w.write(n, |p| p.grant(a, bts, &[], u, t, Role::Write, &[]));
                     }
                     w.write(k, |p| p.content(K, bts + 1, &[A, t], u));
                 }
@@ -1679,17 +1679,17 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
 }
 
 /// A path for `signer` in a `wide` world and the thing written at its end: three times in four a
-/// walk from `signer` along edges some grant write set (granted, removed or junk; one to five
+/// walk from `signer` along grants some grant write set (granted, removed or junk; one to five
 /// things), else a random increasing subset of the things before a random target.
 fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thing>, Thing) {
     use names::*;
     let things = [A, O, H, D, R];
     if rng.below(4) != 0 {
-        let edges: BTreeSet<Edge> = (0..w.by.len()).filter_map(|i| w.w.sets(i)).chain(w.w.records.iter().copied()).filter(|e| things.contains(&e.1)).collect();
+        let grants: BTreeSet<Grant> = (0..w.by.len()).filter_map(|i| w.w.sets(i)).chain(w.w.records.iter().copied()).filter(|e| things.contains(&e.1)).collect();
         let mut path: Vec<Thing> = vec![];
         let mut cur = signer;
         loop {
-            let next: Vec<Thing> = edges.iter().filter(|e| e.0 == cur && !path.contains(&e.1)).map(|e| e.1).collect();
+            let next: Vec<Thing> = grants.iter().filter(|e| e.0 == cur && !path.contains(&e.1)).map(|e| e.1).collect();
             if next.is_empty() {
                 break;
             }
@@ -1729,14 +1729,14 @@ pub struct Cost {
 }
 
 /// `cost`, with `churn` more re-grants by X of K's grant on the first holder thing (role churn
-/// on a used edge), D in the units of `carried` sync IDs (its own and `carried - 1` others, R_j
+/// on a used grant), D in the units of `carried` sync IDs (its own and `carried - 1` others, R_j
 /// holding nothing else).
 pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usize) -> Cost {
     use names::*;
     assert!(outside <= k && k <= 4 && carried >= 1);
     let hs: Vec<Thing> = (0..k as Thing).map(|j| 20 + j).collect();
     let rs: Vec<Thing> = (1..carried as Thing).map(|j| 40 + j).collect();
-    let mut recs: Vec<Edge> = hs.iter().chain(&rs).map(|&h| (X, h)).collect();
+    let mut recs: Vec<Grant> = hs.iter().chain(&rs).map(|&h| (X, h)).collect();
     recs.push((X, D));
     let pw = paths::World::new(&recs);
     let mut sids = hs.clone();
@@ -1752,13 +1752,13 @@ pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usiz
     let x = w.node(true, &sids);
     if let Some(&h0) = hs.first() {
         for c in 0..=churn {
-            w.write(x, |p| p.edge(X, 1 + c as u32, &[], h0, K, Role::Write, &[]));
+            w.write(x, |p| p.grant(X, 1 + c as u32, &[], h0, K, Role::Write, &[]));
         }
     }
     for j in 0..k {
         let next = hs.get(j + 1).copied().unwrap_or(D);
         let h = hs[j];
-        w.write(x, |p| p.edge(X, 1, &[], next, h, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], next, h, Role::Write, &[]));
     }
     let t0 = 2 + churn as u32;
     for c in 0..n {

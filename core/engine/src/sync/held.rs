@@ -88,7 +88,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 /// trigger names a holder whose `keys.0` it writes (its keysets are what Seal boxes that holder
 /// at: a holder actor left out is re-sealed once one exists, spec/crypto.md §4 Seal; a holder's
 /// routine re-key makes no pass of the things it is named on due), and each dependent thing
-/// it writes an edge to (a holder that may be due secrets of its own, spec/permissions.md §3),
+/// it writes a grant to (a holder that may be due secrets of its own, spec/permissions.md §3),
 /// its record held, gives its actor (`reader_of`: a dependent thing's sync IDs are its
 /// independent's) the next pass place (a part on a thing whose record is not held is on nothing
 /// here).

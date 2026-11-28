@@ -2031,14 +2031,14 @@ mod tests {
             let (alice, bob, carol) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::PurgeBy::Writer;
-            let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+            let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
             // bob writes `t` by his write on its mint admin `g`, which holds it: `t` keeps g's
             // secrets
             let mut m = Mutation::new();
             let g = lp.peers[0].engine.new_thing(&mut m, alice);
             lp.peers[0].commit(m).unwrap();
             lp.hold(g);
-            lp.peers[0].engine.grant(&g, &bob, &edge(Role::Write)).unwrap();
+            lp.peers[0].engine.grant(&g, &bob, &grant(Role::Write)).unwrap();
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, g);
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
@@ -2056,8 +2056,8 @@ mod tests {
             }
             // a first holder by the flow makes `t` independent, its `keys.0` and `sync.0` in
             // that commit: bob gets the rest, then the two puts and that commit in either order
-            lp.peers[0].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
-            lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+            lp.peers[0].engine.grant(&t, &carol, &grant(Role::Read)).unwrap();
+            lp.peers[0].engine.grant(&t, &bob, &grant(Role::Write)).unwrap();
             let pks = lp.packages_to(0, 1).unwrap();
             let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
             let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
@@ -2598,12 +2598,12 @@ mod tests {
         lp.hold(t);
         let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(u);
-        let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&u, &r, &edge(Role::Admin)).unwrap();
+        let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &r, &grant(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&u, &r, &grant(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
-        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
         lp.advance(10);
         (lp, t, u, r)
     }
@@ -2731,13 +2731,13 @@ mod tests {
         let r = lp.peers[1].engine.tid();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
+        let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &r, &grant(Role::Write)).unwrap();
         let r2 = lp.peers[2].engine.tid();
-        lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&t, &r2, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
-        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
         lp.advance(10);
         let (x, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:z.0").unwrap());
         let mut m = Mutation::new();

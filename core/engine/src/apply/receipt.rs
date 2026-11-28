@@ -177,7 +177,7 @@ mod tests {
 }
 
 /// What a lowering puts in question, per signer: the things its commits resting on the lowered
-/// edges write (`scope_of`).
+/// grants write (`scope_of`).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct DemotionScope {
     /// Signer -> things whose role-class and admin-only aspects the frontier lists its commits on.
@@ -192,19 +192,19 @@ impl DemotionScope {
     }
 }
 
-/// What lowering the edges `edges` (holder, target) puts in question (spec/permissions.md §5.1
+/// What lowering the grants `grants` (holder, target) puts in question (spec/permissions.md §5.1
 /// Frontier): every commit with a part resting on one of them. Of those held, their signers and
 /// the things they write (a grant-class part by its path, a delta along it:
 /// `osis_perm::paths::Paths::resting`). Of those not held (forgotten under a cover, or never
 /// received: Own cover), who could have signed one and where: whatever reaches the holder by held
 /// grants and records, on whatever the target reaches. The frontier lists each signer's received
-/// commits on those things: every commit resting on the edges, and those of the same signers
+/// commits on those things: every commit resting on the grants, and those of the same signers
 /// there along other paths, which a list names to no effect.
 ///
 /// A key's grant (k, S) holds up only commits signed by k as S (its key hop): their signer is S.
-pub(crate) fn scope_of(core: &Core, edges: &[(osis_base::Holder, Tid)]) -> DemotionScope {
+pub(crate) fn scope_of(core: &Core, grants: &[(osis_base::Holder, Tid)]) -> DemotionScope {
     let mut scope = DemotionScope::default();
-    for (holder, target) in edges {
+    for (holder, target) in grants {
         for c in core.timelines().paths().resting(holder, target) {
             let Some(m) = core.ix.commits.get(&c) else { continue };
             let things: BTreeSet<Tid> = m.view.aspects.iter().map(|a| a.tid).collect();

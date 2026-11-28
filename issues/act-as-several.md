@@ -1,0 +1,6 @@
+# Let a node act as several things
+> Summary: The `osis` API acts as one thing per node (`author()`, its node thing); expose `Osis::act_as(actor)` so a caller can act as any thing the node holds roles on, `author()` the default.
+> Priority: low
+> Tags: api
+
+- `Osis::act_as` exists crate-internal for the client port (notes/client-port.md §3). To make it public, every call must honour it: the sharing, sync and process-wide calls (the engine's grant and demote flows act with the node's authority and take no thing to act as); a text session (`edit_text`), whose idle-commit timer holds a `WeakOsis` that keeps no acting actor, so its merge reads and commits as the node; and `on_dispute`, which filters removals by the actor's role while `disputes` lists by the node's. Pairing a second account into a node is then a flow over it (notes/accounts-switch-brief.md, Left).

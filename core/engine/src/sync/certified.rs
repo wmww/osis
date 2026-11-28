@@ -333,9 +333,9 @@ mod tests {
         m.set(t, &ak, &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.hold(t);
-        let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
-        lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
+        let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &b, &grant(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         for p in &mut lp.peers {
             check(&mut p.engine, "granted");

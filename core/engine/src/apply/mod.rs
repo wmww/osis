@@ -197,7 +197,7 @@ impl<'a> PartsRead<'a> {
 }
 
 /// A commit's examined parts. Those of role-class aspects, `created.0` and `addenda.0` are
-/// decoded whole: their readers (perm's edges, rotations, creation records, the addenda index)
+/// decoded whole: their readers (perm's grants, rotations, creation records, the addenda index)
 /// read them whole, and they hold rosters of thousands, or a frontier's worth of commit IDs, not
 /// millions of elements; the rest are streamed.
 pub(crate) struct Parts {
@@ -827,9 +827,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         };
         aside.add(wait, [p.ai]);
     }
-    // an edge part whose every write rests on an edge not arrived cannot be judged either
-    let edges = if hostile { Vec::new() } else { edge_unreached(tx.core, &h, id, &out.whole, &chain_rec) };
-    for ai in edges {
+    // a grant part whose every write rests on a grant not arrived cannot be judged either
+    let grants = if hostile { Vec::new() } else { grant_unreached(tx.core, &h, id, &out.whole, &chain_rec) };
+    for ai in grants {
         out.whole.retain(|x| x.0 != ai);
         unjudged.insert(ai, Reason::MissingChain(h.signer));
     }
@@ -971,7 +971,7 @@ fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> s
 }
 
 /// What thing `a.tid` waits for: its `created.0` record, the record chain up to its top, an
-/// grant write on each edge of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
+/// grant write on each grant of the path stated for it (spec/commits.md §4 Unjudgeable). A function of the thing, not of the part.
 fn thing_wait(
     core: &crate::engine::Core,
     h: &Header,
@@ -987,7 +987,7 @@ fn thing_wait(
     let destroyed = || {
         !crate::retention::destroy::judges_destruction(a.ak.as_str())
             || a.ak.as_str() == osis_commit::retention::CREATED
-            || !validity::edge_ak(a.ak.as_str()) && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h))
+            || !validity::grant_ak(a.ak.as_str()) && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h))
     };
     if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() {
         return Some(Reason::UnknownCreated(a.tid));
@@ -1001,11 +1001,11 @@ fn thing_wait(
             ChainStep::Up { .. } | ChainStep::Key(_) => {}
         }
     }
-    // every edge of the path stated for the thing is a record grant or has a held grant write
+    // every grant of the path stated for the thing is a record grant or has a held grant write
     // ordered before the part; an external fire needs no path (spec/permissions.md §5.2 External
-    // fires), and a path not opened here holds no part. An edge part is read here as a
+    // fires), and a path not opened here holds no part. A grant part is read here as a
     // self-removal after every grant write of its commit, the least any grant write needs (its path
-    // to the holder it ends at): `examine` reads its writes once decoded (`edge_unreached`)
+    // to the holder it ends at): `examine` reads its writes once decoded (`grant_unreached`)
     let (along, direct) = path.filter(|_| !a.ak.external())?;
     // every listed thing's record and those up its chain first (spec/commits.md §4
     // Unjudgeable): a wait by record wakes, and learns, the record a record blob brings
@@ -1021,25 +1021,25 @@ fn thing_wait(
             }
         }
     }
-    let edge = validity::edge_ak(a.ak.as_str());
-    let at = if edge { validity::Place::Write(osis_perm::Point { ts: h.ts, node: h.signer, commit: *id }, None) } else { validity::Place::Start(h.ts) };
-    validity::unreached(core, h.signer, h.key, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
+    let grant = validity::grant_ak(a.ak.as_str());
+    let at = if grant { validity::Place::Write(osis_perm::Point { ts: h.ts, node: h.signer, commit: *id }, None) } else { validity::Place::Start(h.ts) };
+    validity::unreached(core, h.signer, h.key, along, direct, &a.tid, grant, grant, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
 }
 
 /// The decoded `roles.0` parts among `whole` whose every grant write is unjudgeable
 /// (spec/commits.md §4, `validity::writes_unreached`). `skip`: parts held before, read by what the
 /// index holds of them (`Indexes::unresolved`).
-fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: &[(usize, Decoded)], chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>) -> Vec<usize> {
+fn grant_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: &[(usize, Decoded)], chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>) -> Vec<usize> {
     if !matches!(h.path, osis_commit::Paths::One(_)) {
         return Vec::new();
     }
     // nothing written on a thing too deep applies (spec/permissions.md §1): judged as it is
     let deep = |t: &Tid| matches!(osis_base::record_chain(*t, |x| chain_rec(x, core).map(|r| r.record_link())).end(), ChainStep::TooDeep);
-    let whole: Vec<(usize, Decoded)> = whole.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()) && !deep(&a.tid))).cloned().collect();
+    let whole: Vec<(usize, Decoded)> = whole.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| validity::grant_ak(a.ak.as_str()) && !deep(&a.tid))).cloned().collect();
     let perm = validity::PermParts::of(h, &whole);
-    let known = !core.ix.unresolved.contains(id) && perm.edges.iter().all(|(ai, es)| validity::resolved(core, h, id, *ai, es));
+    let known = !core.ix.unresolved.contains(id) && perm.grants.iter().all(|(ai, es)| validity::resolved(core, h, id, *ai, es));
     let record = |t: &Tid| chain_rec(t, core);
-    perm.edges.iter().filter(|(ai, es)| validity::writes_unreached(core, h, id, *ai, es, known, &record)).map(|x| x.0).collect()
+    perm.grants.iter().filter(|(ai, es)| validity::writes_unreached(core, h, id, *ai, es, known, &record)).map(|x| x.0).collect()
 }
 
 /// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
@@ -1568,7 +1568,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
 pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commit::Signed, received: Time) -> Result<()> {
     let id = blob.id();
     let mut b = blob.clone();
-    // a path stating an edge nobody granted its signer gives it nothing (`thing_wait`)
+    // a path stating a grant nobody granted its signer gives it nothing (`thing_wait`)
     let h = blob.header.clone();
     let ungranted = |ai: usize| Error::Permission { tid: h.aspects.get(ai).map_or(h.signer, |a| a.tid), needs: osis_base::Role::Write };
     match examine(tx, &mut b, &id, &BTreeSet::new(), Origin::Local, &mut Some(signed))? {
@@ -2396,7 +2396,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let _s = osis_base::costs::span("open: adapt");
         // perm's inputs: the grant writes of the role commits, oldest first, from what the
         // index keeps of their bodies
-        let mut edges = crate::engine::index::load_perm(tx)?;
+        let mut grants = crate::engine::index::load_perm(tx)?;
         let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
@@ -2404,7 +2404,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let Some((v, path)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.header.path.clone())) else { continue };
             // every row is what its record reads now (rewritten with it: late parts, drops;
             // `Engine::check_index` compares them)
-            let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
+            let parts = grants.remove(&id).ok_or(Error::Corrupt("grants row missing"))?;
             validity::hold_role_commit(tx.core, &v, &path, &id, &parts);
         }
         // what each addendum says, from its row
@@ -2688,7 +2688,7 @@ pub(crate) fn perm_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::Per
 
 /// `perm_parts` of a commit record's blob (`h`: its resolved header).
 pub(crate) fn perm_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<validity::PermParts> {
-    let perm = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    let perm = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::grant_ak(a.ak.as_str())));
     Ok(validity::PermParts::of(h, &examine_stored(tx, h, perm, id)?))
 }
 
@@ -3072,7 +3072,7 @@ mod tests {
         let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();
         let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
-        // a writer of X gets no admin on what it creates below X: no edges there
+        // a writer of X gets no admin on what it creates below X: no grants there
         let adm = ct::Grant { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
         for depth in [1, 3] {
             let p1 = &mut lp.peers[1];

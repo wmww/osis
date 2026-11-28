@@ -20,7 +20,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     // An unknown agility case is newer data: parked.
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
-    // An unknown role case in a holder edge: parked, with the path.
+    // An unknown role case in a holder grant: parked, with the path.
     let mut m = ROLES.encode(&BTreeMap::from([(tid(1).into(), Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Weak(tid(1))).unwrap();

@@ -53,14 +53,14 @@ fn independent_of_0(lp: &mut osis_engine::local_peer::LocalPeer) -> osis_base::T
 // sibling signs as the node: only a key holding a grant on the node thing does.
 #[test]
 fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
-    use crate::common::edge;
+    use crate::common::grant;
     use osis_schema::Codec;
     let mut lp = crate::common::net(3, 0);
     let (acc, _) = osis_engine::local_peer::make_account(&mut lp.peers[0].engine).unwrap();
     let a = acc.thing;
     let [n0, n1, n2] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
-    lp.peers[0].engine.grant(&a, &n1, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&a, &n2, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &n1, &grant(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&a, &n2, &grant(Role::Write)).unwrap();
     lp.hold_at(1, a);
     lp.hold_at(2, a);
     lp.sync_all().unwrap();
@@ -93,7 +93,7 @@ fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
 // X, G carries none of it. Fails with G's grant travelling as a certificate copy.
 #[test]
 fn a_units_stub_is_carried_as_its_sync_only_cut_spec_sync_set_2() {
-    use crate::common::edge;
+    use crate::common::grant;
     use std::collections::BTreeSet;
     let mut lp = crate::common::net(1, 0);
     let [g, x, z] = [(); 3].map(|_| independent_of_0(&mut lp));
@@ -110,8 +110,8 @@ fn a_units_stub_is_carried_as_its_sync_only_cut_spec_sync_set_2() {
         let aks: BTreeSet<String> = c.commits.iter().filter_map(|(id, parts)| Some((e.header(id)?, parts))).flat_map(|(h, parts)| parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == x).map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()).collect();
         (aks, c.sync_cuts.contains_key(&x))
     };
-    e.grant(&x, &z, &edge(Role::Read)).unwrap();
+    e.grant(&x, &z, &grant(Role::Read)).unwrap();
     assert_eq!(on_x(e), (BTreeSet::new(), false), "no role on X: no stub");
-    e.grant(&x, &g, &edge(Role::Sync)).unwrap();
+    e.grant(&x, &g, &grant(Role::Sync)).unwrap();
     assert_eq!(on_x(e), (BTreeSet::new(), true), "X's sync-only cut, no header of a commit on X");
 }

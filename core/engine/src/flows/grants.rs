@@ -2,10 +2,10 @@
 //! removals and demotions carrying the target's rotation, may-grant grants and self-removals,
 //! the frontier (spec/crypto.md §5).
 
-use super::{Done, now_ts, put_edge, put_secrets};
+use super::{Done, now_ts, put_grant, put_secrets};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::apply::validity::perm_edge;
+use crate::apply::validity::perm_grant;
 use crate::rotation;
 use crate::Mutation;
 use crate::apply::validity::Grants;
@@ -16,7 +16,7 @@ use osis_perm::{At, Grant as PermGrant};
 use osis_schema::core_types::{self as ct, Grant};
 use std::collections::BTreeSet;
 
-/// A role-lowering grant write: `holder`'s new edge on the target (`None` removes it).
+/// A role-lowering grant write: `holder`'s new grant on the target (`None` removes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Demotion {
     pub holder: Tid,
@@ -26,7 +26,7 @@ pub struct Demotion {
     pub retain: Option<bool>,
 }
 
-/// What `d` writes on the holder's edge on `target`, standing at `old`: `d.new`, or for a removal
+/// What `d` writes on the holder's grant on `target`, standing at `old`: `d.new`, or for a removal
 /// saying retain the value that says so (spec/permissions.md §3, Retain).
 fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermGrant>, d: &Demotion) -> Result<Option<Grant>> {
     if d.new.is_some() {
@@ -47,27 +47,27 @@ pub enum History {
     /// Everything this node holds (the history boxes of each epoch it boxes).
     All,
     /// Nothing: the grant's commit is a cut, a read rotation whose history box carries no earlier
-    /// secret, and the edge's floor is the cut's n.
+    /// secret, and the grant's floor is the cut's n.
     None,
 }
 
-/// A grant or a raise of `holder`'s edge on `target` by `who` (its node thing, or a held link key
+/// A grant or a raise of `holder`'s grant on `target` by `who` (its node thing, or a held link key
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
-/// `who`'s effective may-grant allows it and the holder has no current edge. `leave`: the signer's
-/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
+/// `who`'s effective may-grant allows it and the holder has no current grant. `leave`: the signer's
+/// own grant removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed_then`). `history`:
 /// what it hands the holder of what was written before it.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Grant, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
+pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, grant: &Grant, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
-    if edge.until == Some(osis_base::Time(0)) {
+    if grant.until == Some(osis_base::Time(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
     // the writer's check on a grant to the public (spec/permissions.md §2; no validity rule):
     // at most read, never may-grant. Nothing acts through the public, and every party opens its
     // boxes, so a write secret boxed to it would hand every party the secret for nothing
-    if holder.is_public() && (edge.role > Role::Read || edge.may_grant) {
+    if holder.is_public() && (grant.role > Role::Read || grant.may_grant) {
         return Err(Error::Misuse("the public is granted at most read, without may-grant"));
     }
     let role = tx.core.role_now(&who, &target);
@@ -76,15 +76,15 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let ts = now_ts(tx.core);
     let old = tx.core.timelines().get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let may_grant = tx.core.timelines().get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
-    // below the holder's edge for keys (one past its `until` included, still in the state) a
+    // below the holder's grant for keys (one past its `until` included, still in the state) a
     // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
     // §3): a demotion makes it
-    let below = tx.core.timelines().get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
+    let below = tx.core.timelines().get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(grant.role));
     if admin && below {
-        return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
+        return Err(Error::Misuse("a grant below the holder's grant lowers it (use demote)"));
     }
     if !admin {
-        let ok = old.is_none() && may_grant.is_some_and(|i| edge.role <= i);
+        let ok = old.is_none() && may_grant.is_some_and(|i| grant.role <= i);
         if !ok || below || history == History::None {
             return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
@@ -96,7 +96,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // the granter's check (spec/permissions.md §2), first half: write on the holder or a card
     // of it; the public needs neither
     if !holder.is_public() {
-        rotation::kem::grant_holder(tx, holder, edge.role)?;
+        rotation::kem::grant_holder(tx, holder, grant.role)?;
     }
     let mut done = Done::default();
     // a thing is made a holder only once independent; a target gets them on its first
@@ -120,10 +120,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
         // the granter's check (spec/permissions.md §2), second half: KEM keys at every role the
         // grant boxes it at, rotated in here where missing
-        rotation::kem::grant_keys(tx, holder, edge.role, &mut done)?;
+        rotation::kem::grant_keys(tx, holder, grant.role, &mut done)?;
     }
-    let mut roles = roles_up_to(edge.role);
-    // a renewal of an ended edge is not finalized first: the grant writes it anew
+    let mut roles = roles_up_to(grant.role);
+    // a renewal of an ended grant is not finalized first: the grant writes it anew
     rotation::ensure_rotated_but(tx, who, target, &[holder], &BTreeSet::new(), &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let keyless = rotation::grant_keyless(tx.core, &target, &holder);
@@ -132,18 +132,18 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // keyset is not granted (its boxes would say nothing)
     let rcpt = match keyless {
         true => None,
-        false => match rotation::sealed_granted(tx, &who, &target, &holder, edge.role)? {
+        false => match rotation::sealed_granted(tx, &who, &target, &holder, grant.role)? {
             // boxed at the floor this grant gives (spec/crypto.md §4, A party's floor): its own
             // (a change keeping it), at least its author's
-            rotation::Sealed::Boxed(r) => Some(osis_keys::Recipient { floor: edge.floor.unwrap_or(0).max(rotation::floors::holder_floor(tx.core, &target, &who)), ..r }),
+            rotation::Sealed::Boxed(r) => Some(osis_keys::Recipient { floor: grant.floor.unwrap_or(0).max(rotation::floors::holder_floor(tx.core, &target, &who)), ..r }),
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
         },
     };
     let mut m = Mutation::new();
     reset_current(tx, &mut m, target, holder)?;
     // a grant without history: the cut, a read rotation boxing every current holder and the
-    // grantee, carrying no earlier secret; the edge's floor is its n (spec/crypto.md §4, Floors)
-    let mut edge = edge.clone();
+    // grantee, carrying no earlier secret; the grant's floor is its n (spec/crypto.md §4, Floors)
+    let mut grant = grant.clone();
     let cut = match history {
         History::All => None,
         History::None => {
@@ -157,7 +157,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
             }
             let rotated = BTreeSet::from([Role::Read]);
             let rot = rotation::cut_into(tx, &mut m, target, &rotated, &epochs, &boxing, rotation::Departs::No, true, None)?;
-            edge.floor = rot.role(Role::Read).map(|x| x.epoch.n());
+            grant.floor = rot.role(Role::Read).map(|x| x.epoch.n());
             // a re-add: boxes at each epoch the holder's removal's rotation listed that this node
             // holds (what its earlier nodes read before it left), below its floor; a holder that
             // holds the rest boxes them (the tip add)
@@ -178,8 +178,8 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         }
         _ => None,
     };
-    let edge = &edge;
-    put_edge(&mut m, target, holder, edge)?;
+    let grant = &grant;
+    put_grant(&mut m, target, holder, grant)?;
     if leave {
         removal(tx, &mut m, target, who)?;
     }
@@ -223,7 +223,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
 
 /// `holder`'s current entry on `target`: the one the grant write in force there in this node's
 /// walk created (spec/permissions.md §2), whatever the `roles.0` state says of it (a void
-/// finalize resets it in the state while the edge stands). At most one: a role commit creates
+/// finalize resets it in the state while the grant stands). At most one: a role commit creates
 /// one entry per holder.
 fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Holder) -> Option<(osis_crdt::Dot, osis_base::Value)> {
     let c = tx.core.timelines().get(target)?.in_force(holder, target)?;
@@ -243,8 +243,8 @@ pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: 
     Ok(true)
 }
 
-/// The removal of `holder`'s edge on `target` in `m`: a reset of its current entry. A holder
-/// with none (a mint admin's record grant, stored nowhere, or an edge already removed) gets an
+/// The removal of `holder`'s grant on `target` in `m`: a reset of its current entry. A holder
+/// with none (a mint admin's record grant, stored nowhere, or a grant already removed) gets an
 /// entry of this delta reset in it: a removal naming the holder whose creation every reader
 /// holds (spec/permissions.md §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl Into<Holder>) -> Result<()> {
@@ -262,9 +262,9 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl I
 /// target is needed
 /// (the rotation supersedes every current epoch, held or not; a holder of one it lacks adds it
 /// to the history). A self-removal carries no frontier and no rotation (the next node that may
-/// rotate does), and the leaver drops what it lost. An explicit removal of an absent edge resets
+/// rotate does), and the leaver drops what it lost. An explicit removal of an absent grant resets
 /// its dead entries (spec/permissions.md §2). With `others`, an explicit removal of those
-/// holders' edges too, under the same frontier and one rotation (spec/commits.md §2).
+/// holders' grants too, under the same frontier and one rotation (spec/commits.md §2).
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
     let holder = d.holder;
@@ -272,16 +272,16 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let tl = tx.core.timelines().get(&target).ok_or(Error::UnknownThing(target))?;
     let old = tl.edges_at(None).get(&holder, &target).copied();
     let new = written(tx.core, &target, old.as_ref(), d)?;
-    let new_p = new.as_ref().map(perm_edge);
+    let new_p = new.as_ref().map(perm_grant);
     if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
-    // the other holders removed in the same commit: distinct present edges, not the author's
+    // the other holders removed in the same commit: distinct present grants, not the author's
     let mut gone: Vec<(Tid, PermGrant)> = Vec::new();
     for o in others {
-        let e = tl.edges_at(None).get(o, &target).copied().ok_or(Error::Misuse("no edge to remove"))?;
+        let e = tl.edges_at(None).get(o, &target).copied().ok_or(Error::Misuse("no grant to remove"))?;
         if d.new.is_some() || *o == holder || *o == who || gone.iter().any(|(x, _)| x == o) {
-            return Err(Error::Misuse("a removal of several holders removes distinct edges of others"));
+            return Err(Error::Misuse("a removal of several holders removes distinct grants of others"));
         }
         gone.push((*o, e));
     }
@@ -297,11 +297,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.sign_as(s);
     }
     if old.is_none() && d.new.is_some() {
-        return Err(Error::Misuse("no edge to lower"));
+        return Err(Error::Misuse("no grant to lower"));
     }
     removal(tx, &mut m, target, holder)?;
     if let Some(n) = &new {
-        put_edge(&mut m, target, holder, n)?;
+        put_grant(&mut m, target, holder, n)?;
     }
     for (o, _) in &gone {
         removal(tx, &mut m, target, *o)?;
@@ -314,7 +314,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let mut departs = rotation::Departs::No;
     let mut skip = Vec::new();
     // departures for keys: roles with `until` disregarded (spec/crypto.md §4), so a removal of an
-    // edge past its `until` is the departure and rotates
+    // grant past its `until` is the departure and rotates
     let new_role = rotation::key_role(new_p.as_ref());
     let mut left: BTreeSet<Role> = BTreeSet::new();
     let mut pending = Vec::new();
@@ -333,7 +333,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     if !selfr && !left.is_empty() && tx.core.is_independent(&target) {
         // boxing to the remaining holders encrypts under their keysets: the cascade first (no
-        // finalize of an edge this commit removes; no rotation of a role of the target the
+        // finalize of a grant this commit removes; no rotation of a role of the target the
         // holders leave, which would box them at it: this commit rotates it)
         rotation::ensure_rotated_but(tx, who, target, &removing, &left, &mut done)?;
         roles = rotation::departure_rotates(tx, &who, &target, left);
@@ -351,13 +351,13 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     Ok(done)
 }
 
-/// The edges on `target` that `who` (its node thing, or a link key it signs as) may finalize now
+/// The grants on `target` that `who` (its node thing, or a link key it signs as) may finalize now
 /// (spec/permissions.md §2), each with whether its finalize says retain: past their `until` by
-/// this node's clock (an edge the timeline holds with every applied write in effect), of a role
+/// this node's clock (a grant the timeline holds with every applied write in effect), of a role
 /// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).
 pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermGrant, bool)> {
     let ts = now_ts(core);
-    // read by the edges into `target` and what reaches it (`Timelines::on`, `role`)
+    // read by the grants on `target` and what reaches it (`Timelines::on`, `role`)
     let Some(on) = core.timelines().on(target) else { return Vec::new() };
     let role = core.timelines().role(who, target, At::now(ts));
     if role < Some(Role::Write) {
@@ -372,7 +372,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
     ended.into_iter().map(|(m, e)| (m, e, e.retain)).collect()
 }
 
-/// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
+/// A finalize by `who` of the grants `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying retain or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit, none of `kept`
 /// (the roles a removal of the same act rotates, `rotation::Keep`). The cascade below
@@ -387,7 +387,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Grant { role: Role::Read, until: Some(Time(0)), may_grant: false, retain: false, floor: None })?;
+            put_grant(&mut m, target, *x, &Grant { role: Role::Read, until: Some(Time(0)), may_grant: false, retain: false, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -415,19 +415,19 @@ impl Engine {
         crate::apply::validity::retain_default(&self.core, t)
     }
 
-    /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
+    /// Grants `holder` the grant `grant` on `target`, or raises its grant (spec/permissions.md §2),
     /// as an admin of the target or by a may-grant. Gives the target (and a dependent holder) secrets of
     /// their own first where needed. Sends the holder a grant signal where `signal_grants` says so
     /// (spec/sync-inbox.md §5).
-    pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Grant) -> Result<Done> {
-        self.grant_with(target, holder, edge, History::All)
+    pub fn grant(&mut self, target: &Tid, holder: &Tid, grant: &Grant) -> Result<Done> {
+        self.grant_with(target, holder, grant, History::All)
     }
 
     /// `grant` handing `history` of what was written before it (spec/crypto.md §4, Floors): a
     /// grant without it is a cut, so `holder` reads only what is written under its epoch and
     /// those after it. An admin's grant to a holder holding no role on the target.
-    pub fn grant_with(&mut self, target: &Tid, holder: &Tid, edge: &Grant, history: History) -> Result<Done> {
-        let done = self.grant_signed_then(None, *target, *holder, edge, false, history, |_| Ok(()))?;
+    pub fn grant_with(&mut self, target: &Tid, holder: &Tid, grant: &Grant, history: History) -> Result<Done> {
+        let done = self.grant_signed_then(None, *target, *holder, grant, false, history, |_| Ok(()))?;
         if self.core.signal_grants {
             self.signal_grant(target, holder, &[])?;
         }
@@ -441,24 +441,24 @@ impl Engine {
         self.core.signal_grants = on;
     }
 
-    /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `edge`
+    /// Writes `key`'s grant on `target` (spec/permissions.md §1 Key grant, §2 Key grants): `grant`
     /// grants or changes it, `None` removes it. A grant write as any other, by this node as itself:
     /// an admin's explicit write (a lowering of the grant as restored carrying its frontier: what
     /// this node received of the commits signed as `target`, those `key` signed among them), or a
     /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
     /// delivery. `key` then signs as `target` (`Mutation::sign_as`) where its key store holds it.
-    pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, edge: Option<&Grant>) -> Result<Done> {
-        if edge.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(Time(0))) {
+    pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, grant: Option<&Grant>) -> Result<Done> {
+        if grant.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(Time(0))) {
             return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
         }
         let (t, holder) = (*target, Holder::Key(*key));
         let me = self.core.tid();
         let admin = self.core.role_now(&me, &t) == Some(Role::Admin);
-        let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, edge) {
-            true => self.demotion_frontier(t, vec![osis_perm::GrantOp { target: t, holder, edge: edge.map(perm_edge) }])?,
+        let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, grant) {
+            true => self.demotion_frontier(t, vec![osis_perm::GrantOp { target: t, holder, grant: grant.map(perm_grant) }])?,
             false => (None, Vec::new()),
         };
-        let edge = edge.cloned();
+        let grant = grant.cloned();
         let mut done = self.run(|tx| {
             let admin = crate::engine::secrets::usable_role_now(tx, &me, &t)? == Some(Role::Admin);
             // a may-grant grant: a new grant, up to the role the path gives may-grant at (§2)
@@ -466,15 +466,15 @@ impl Engine {
                 let ts = now_ts(tx.core);
                 let may = tx.core.timelines().get(&t).and_then(|tl| tl.may_grant(&me, &t, At::now(ts)));
                 let fresh = tx.core.timelines().key_grant(key, &t).is_none_or(|e| !e.alive_at(Some(ts)));
-                if !edge.as_ref().is_some_and(|e| fresh && may.is_some_and(|r| e.role <= r)) {
+                if !grant.as_ref().is_some_and(|e| fresh && may.is_some_and(|r| e.role <= r)) {
                     return Err(Error::Permission { tid: t, needs: Role::Admin });
                 }
             }
             let mut m = Mutation::new();
-            match &edge {
+            match &grant {
                 Some(e) => {
                     reset_current(tx, &mut m, t, holder)?;
-                    put_edge(&mut m, t, holder, e)?;
+                    put_grant(&mut m, t, holder, e)?;
                 }
                 None => removal(tx, &mut m, t, holder)?,
             }
@@ -494,24 +494,24 @@ impl Engine {
 
     /// `grant_history` with the frontier of what this node received when the grant audits: an admin's
     /// grant below the grant as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
-    /// away or a role below one the holder lost with no explicit write on the edge since. Invariant: an
+    /// away or a role below one the holder lost with no explicit write on the grant since. Invariant: an
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not. `then` runs in the same transaction.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Grant, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
+    pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, grant: &Grant, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         let who = signer.unwrap_or(self.core.tid());
-        let new = Some(perm_edge(edge));
-        let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
+        let new = Some(perm_grant(grant));
+        let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(grant));
         let frontier = match audits {
             true => {
-                let ops: Vec<osis_perm::GrantOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::GrantOp { target, holder: osis_base::Holder::Thing(holder), edge }).collect();
+                let ops: Vec<osis_perm::GrantOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, grant)| osis_perm::GrantOp { target, holder: osis_base::Holder::Thing(holder), grant }).collect();
                 self.demotion_frontier(target, ops)?
             }
             false => (None, Vec::new()),
         };
         let (frontier, covers) = frontier;
         let mut done = self.run(|tx| {
-            let done = grant_history(tx, signer, target, holder, edge, leave, frontier, history)?;
+            let done = grant_history(tx, signer, target, holder, grant, leave, frontier, history)?;
             then(tx)?;
             Ok(done)
         })?;
@@ -523,22 +523,22 @@ impl Engine {
         Ok(done)
     }
 
-    /// Whether an explicit write of `edge` (`None`: a removal) on `holder`'s edge on `target`,
+    /// Whether an explicit write of `grant` (`None`: a removal) on `holder`'s grant on `target`,
     /// stamped now, carries its author's frontier (spec/permissions.md §5.1 step 4): a removal
     /// always (without one it is a finalize), another write when the grant as restored exceeds it
     /// (an `until` alive then takes nothing). The writer rule refuses either way of getting it
     /// wrong (`check_content_rules`).
-    pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Grant>) -> bool {
-        self.needs_frontier_of(target, &Holder::Thing(*holder), edge)
+    pub fn needs_frontier(&self, target: &Tid, holder: &Tid, grant: Option<&Grant>) -> bool {
+        self.needs_frontier_of(target, &Holder::Thing(*holder), grant)
     }
 
     /// `needs_frontier` of a thing's grant or a key's.
-    fn needs_frontier_of(&self, target: &Tid, holder: &Holder, edge: Option<&Grant>) -> bool {
-        let new = edge.map(perm_edge);
+    fn needs_frontier_of(&self, target: &Tid, holder: &Holder, grant: Option<&Grant>) -> bool {
+        let new = grant.map(perm_grant);
         new.is_none() || self.core.timelines().get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
     }
 
-    /// The role for keys of `holder`'s edge on `target` in the state (one past its `until`
+    /// The role for keys of `holder`'s grant on `target` in the state (one past its `until`
     /// included): a grant below it would be the holder's departure, which only a demotion makes
     /// (spec/permissions.md §3).
     pub fn key_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
@@ -554,7 +554,7 @@ impl Engine {
     }
 
     /// The frontier grant writes `ops` on `target`, stamped now, carry (spec/permissions.md §5.1
-    /// Frontier): what this node received of the commits resting on the edges they lower
+    /// Frontier): what this node received of the commits resting on the grants they lower
     /// (`receipt::scope_of`), and its own cover of what it no longer holds the ID of
     /// (`own_cover`). Returns the frontier and the own covers, which the caller's `Done` carries
     /// before the lowering. `None`: an unknown target.
@@ -563,8 +563,8 @@ impl Engine {
         if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
         }
-        let edges: Vec<(Holder, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
-        let scope = crate::apply::receipt::scope_of(&self.core, &edges);
+        let grants: Vec<(Holder, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
+        let scope = crate::apply::receipt::scope_of(&self.core, &grants);
         let mut keep: BTreeSet<CommitId> = BTreeSet::new();
         let mut f = self.frontier_fitted(&scope, as_of, &keep)?;
         let named = self.own_cover(&scope)?;
@@ -575,7 +575,7 @@ impl Engine {
         Ok((Some(osis_perm::Frontier::new(f.commits)), named.into_iter().collect()))
     }
 
-    /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an
+    /// Lowers or removes `d.holder`'s grant on `target` (spec/permissions.md §2, §3, §5): an
     /// explicit demotion by an admin (with the frontier of what this node had received of the
     /// demoted nodes), or a
     /// self-removal. The rotation of the roles the holder left goes in the same commit (while Seal
@@ -584,11 +584,11 @@ impl Engine {
         self.remove_signed(None, target, d, &[])
     }
 
-    /// Whether writing `new` (`None`: a removal) on `holder`'s edge on `target` would leave
+    /// Whether writing `new` (`None`: a removal) on `holder`'s grant on `target` would leave
     /// `target` with no standing admin here, so that it is refused unless marked
     /// (`leaving_adminless`): for a caller writing several commits that checks before the first.
     pub fn leaves_no_admin(&self, target: &Tid, holder: &Tid, new: Option<&Grant>) -> bool {
-        crate::apply::validity::leaves_no_admin(&self.core, target, &[(Holder::Thing(*holder), new.map(perm_edge))])
+        crate::apply::validity::leaves_no_admin(&self.core, target, &[(Holder::Thing(*holder), new.map(perm_grant))])
     }
 
     /// `f` with the grant writes it signs allowed to leave a thing with no standing admin
@@ -615,8 +615,8 @@ impl Engine {
             None => None,
         };
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
-        let new = new.as_ref().map(perm_edge);
-        let ops: Vec<osis_perm::GrantOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::GrantOp { target: t, holder: osis_base::Holder::Thing(holder), edge }).collect();
+        let new = new.as_ref().map(perm_grant);
+        let ops: Vec<osis_perm::GrantOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, grant)| osis_perm::GrantOp { target: t, holder: osis_base::Holder::Thing(holder), grant }).collect();
         let (frontier, covers) = if audits { self.demotion_frontier(t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
         let mut done = self.run(|tx| {
@@ -629,7 +629,7 @@ impl Engine {
     }
 }
 
-/// How this node may remove a holder's edge (`Engine::may_remove`).
+/// How this node may remove a holder's grant (`Engine::may_remove`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Removal {
     /// A self-removal through admin on the holder: no frontier, no rotation, no pre-sync.
@@ -639,7 +639,7 @@ pub enum Removal {
 }
 
 impl Engine {
-    /// How this node may remove `holder`'s edge on `target` now, if at all: a self-removal
+    /// How this node may remove `holder`'s grant on `target` now, if at all: a self-removal
     /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
     /// explicit demotion (admin on the target, `usable_role`). Reads the clock up to the next
     /// `until` or role commit of the target's and the holder's components (an authority ending by

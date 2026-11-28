@@ -4,7 +4,7 @@
 //! not M) and writes "w" under e_R. What M observes: whether it reads "w".
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{commit_ids, edge, granted, newest_read, rotate_leaving_out, send_skipping};
+use super::tests::{commit_ids, grant, granted, newest_read, rotate_leaving_out, send_skipping};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::{LocalPeer, SealedPackage};
@@ -63,7 +63,7 @@ fn shape_at_v() -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, Comm
 fn build_shape(n: usize, demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
     let (mut lp, g, tids) = granted(n, &[(A2, Role::Admin), (M, Role::Read), (R, Role::Admin), (V, Role::Admin)]);
     if demoted {
-        lp.peers[A].engine.demote(&g, &Demotion { holder: tids[A2], new: Some(edge(Role::Write)), retain: None }).unwrap();
+        lp.peers[A].engine.demote(&g, &Demotion { holder: tids[A2], new: Some(grant(Role::Write)), retain: None }).unwrap();
     }
     lp.peers[A2].clock.advance(5_000);
     let before = commit_ids(&mut lp, A2);
@@ -569,10 +569,10 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
     let h = super::tests::independent_thing(&mut lp, R);
     let v_tid = lp.peers[V].engine.tid();
-    lp.peers[R].engine.grant(&h, &v_tid, &edge(Role::Admin)).unwrap();
+    lp.peers[R].engine.grant(&h, &v_tid, &grant(Role::Admin)).unwrap();
     // h's actor reads g, so h's sync ID may carry w as a copy (spec/permissions.md §3: a copy of
     // content its independent may not read is not taken)
-    lp.peers[R].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.peers[R].engine.grant(&g, &h, &grant(Role::Read)).unwrap();
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     // V takes R's grant on h by its fire
     lp.pass_fires(V).unwrap();
@@ -694,7 +694,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let (a, p, n) = (0, 1, 2);
     let g = super::tests::independent_thing(&mut lp, a);
-    lp.peers[a].engine.grant(&g, &tids[p], &edge(Role::Admin)).unwrap();
+    lp.peers[a].engine.grant(&g, &tids[p], &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let w0 = put(&mut lp, a, g, "w0");
     let ra = &mut lp.peers[a].engine;
@@ -704,7 +704,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let entry = lp.sealed(a, &[w0]).unwrap();
     let s = lp.peers[p].engine.sync_id_of(&g).unwrap().unwrap();
     let copied = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
-    lp.peers[a].engine.grant_with(&g, &tids[n], &edge(Role::Read), crate::flows::edges::History::None).unwrap();
+    lp.peers[a].engine.grant_with(&g, &tids[n], &grant(Role::Read), crate::flows::grants::History::None).unwrap();
     send_skipping(&mut lp, a, p, &BTreeSet::from([w0]));
     send_skipping(&mut lp, a, n, &BTreeSet::from([w0]));
     // P takes the copy once it holds the cut: the opening is e0's, not P's newest epoch's
@@ -805,7 +805,7 @@ fn a_wrap_waits_for_a_rotation_covering_a_known_removal_spec_crypto_4() {
 fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let until = osis_base::Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..grant(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let old = newest_read(&lp, 0, g);
     lp.peers[0].clock.advance(1_000);
@@ -826,7 +826,7 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
 fn roles_at_now_move_at_an_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let until = osis_base::Time(lp.peers[0].engine.core.now().0 + 1_000);
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..grant(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<u8, Option<Role>> = osis_base::memo::Effects::new("roles at now");
     fx.want(0);
@@ -861,11 +861,11 @@ fn a_duty_down_a_holder_chain_is_due_at_its_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let m1 = super::tests::independent_thing(&mut lp, 0);
     let m2 = super::tests::independent_thing(&mut lp, 0);
-    lp.grant_through(0, g, m1, &edge(Role::Read));
-    lp.grant_through(0, m1, m2, &edge(Role::Read));
+    lp.grant_through(0, g, m1, &grant(Role::Read));
+    lp.grant_through(0, m1, m2, &grant(Role::Read));
     let e0 = &mut lp.peers[0].engine;
     let until = osis_base::Time(e0.core.now().0 + 1_000);
-    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..grant(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("duty on g");
     fx.want(());
@@ -889,11 +889,11 @@ fn access_down_a_holder_chain_is_lost_at_its_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
     let m1 = super::tests::independent_thing(&mut lp, 0);
     let m2 = super::tests::independent_thing(&mut lp, 0);
-    lp.grant_through(0, g, m1, &edge(Role::Read));
-    lp.grant_through(0, m1, m2, &edge(Role::Read));
+    lp.grant_through(0, g, m1, &grant(Role::Read));
+    lp.grant_through(0, m1, m2, &grant(Role::Read));
     let e0 = &mut lp.peers[0].engine;
     let until = osis_base::Time(e0.core.now().0 + 1_000);
-    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Read) }).unwrap();
+    e0.grant(&m2, &tids[1], &osis_schema::core_types::Grant { until: Some(until), ..grant(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
     let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("lost g");
     fx.want(());

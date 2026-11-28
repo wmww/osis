@@ -325,9 +325,9 @@ impl Address {
     }
 }
 
-/// The edge `o` grants `role` with on `t`: a timed one retains as `o` says, else as `t`'s default
+/// The grant `o` grants `role` with on `t`: a timed one retains as `o` says, else as `t`'s default
 /// now (spec/permissions.md §3, Retain).
-fn edge(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct::Grant> {
+fn grant(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct::Grant> {
     if o.until.is_none() && o.retain_copy.is_some() {
         return Err(Error::Invalid("retain_copy is for a grant with an until".into()));
     }
@@ -465,9 +465,9 @@ impl Osis {
             if cur.is_some_and(|x| role < x.role) || below_held(e, &target, &holder, role) {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
             }
-            let new = edge(e, &target, role, opts)?;
+            let new = grant(e, &target, role, opts)?;
             marked(e, opts.leave_adminless, |e| match (opts.reads, cur.map(|x| x.floor)) {
-                (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::edges::History::None).map_err(Error::from),
+                (Reads::FromNow, None) => e.grant_with(&target, &holder, &new, flows::grants::History::None).map_err(Error::from),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
                 (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Grant { floor, ..new }).map_err(Error::from),
@@ -564,9 +564,9 @@ impl Osis {
         Err(Error::Invalid(format!("{holder} still reaches {target}")))
     }
 
-    /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` and what
+    /// The grant `m` holds on `t` after lowering it to `role` (`None`: removed): `until` and what
     /// its passing says kept, `may_grant` as it is.
-    fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Grant>> {
+    fn lowered_grant(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Grant>> {
         let Some(role) = role else { return Ok(None) };
         let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
         let held = self.engine(|e| e.roster(&t).get(&m).copied());
@@ -576,7 +576,7 @@ impl Osis {
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the
     /// target's rotation, in one commit (spec/permissions.md §2, §3, §5).
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-        let new = self.lowered_edge(t, m, role)?;
+        let new = self.lowered_grant(t, m, role)?;
         let fd = flows::Demotion { holder: m, new, retain: o.retain_copy };
         self.engine(|e| marked(e, o.leave_adminless, |e| e.demote(&t, &fd)))?;
         Ok(())

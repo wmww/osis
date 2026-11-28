@@ -1,13 +1,13 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
-//! knows of, read from the role timeline (each holder's edge into the actor as this node holds
-//! it, `GrantLog`: a holder holding less now than its edge gave it) and from the `secrets.0`
+//! knows of, read from the role timeline (each holder's grant on the actor as this node holds
+//! it, `GrantLog`: a holder holding less now than its grant gave it) and from the `secrets.0`
 //! state (box holders at a current epoch that hold less than that role now), and the rotators of
 //! current epochs that hold less than that role now by any path with key access; the names rotations write
-//! (`names`), read from the same edges. A departure from a holder actor of `a` is none of `a`'s
+//! (`names`), read from the same grants. A departure from a holder actor of `a` is none of `a`'s
 //! (spec/crypto.md §4, Holder actors), but a rotator whose role ran through one holds the epoch
-//! it made: its lowering departs `a`. Departures are recomputed on demand (O(edge history)) and
-//! cached per actor (`departures`), never stored. Keys read no clock: an edge counts by its role
-//! with its `until` disregarded (`key_role`), so an edge past its `until` departs only by its
+//! it made: its lowering departs `a`. Departures are recomputed on demand (O(grant history)) and
+//! cached per actor (`departures`), never stored. Keys read no clock: a grant counts by its role
+//! with its `until` disregarded (`key_role`), so a grant past its `until` departs only by its
 //! removal (a finalize, spec/permissions.md §2).
 
 use crate::engine::{Core, On, Tx};
@@ -29,23 +29,23 @@ fn above_role(cur: Option<Role>) -> Option<Role> {
     }
 }
 
-/// The applied writes on edges into `t` in its timeline `tl`, each with its commit.
-fn edge_writes<'t>(tl: &'t Timeline, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t GrantOp)> + 't {
+/// The applied writes on grants on `t` in its timeline `tl`, each with its commit.
+fn grant_writes<'t>(tl: &'t Timeline, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t GrantOp)> + 't {
     tl.applied_on(t)
 }
 
-/// The role an edge value gives for keys (spec/crypto.md §4): its role, its `until`
+/// The role a grant value gives for keys (spec/crypto.md §4): its role, its `until`
 /// disregarded; none for a removal's value saying retain (`until` 0, spec/permissions.md §2).
 pub(crate) fn key_role(e: Option<&osis_perm::Grant>) -> Option<Role> {
     e.filter(|e| !e.says_retain()).map(|e| e.role)
 }
 
-/// The departure grant write `op` of `mc` on `t` makes, if it lowers the holder's edge for keys
+/// The departure grant write `op` of `mc` on `t` makes, if it lowers the holder's grant for keys
 /// (`key_role`): none for a key's grant, which holds nothing sealed (spec/permissions.md §1).
 fn departure_of(tl: &Timeline, t: &Tid, mc: &RoleCommit, op: &GrantOp) -> Option<Departure> {
     let holder = op.holder.thing()?;
     let old = key_role(tl.edges_at(Some(mc.point())).get(&holder, t));
-    Departure::of_change(holder, old, key_role(op.edge.as_ref()))
+    Departure::of_change(holder, old, key_role(op.grant.as_ref()))
 }
 
 /// The key (spec/permissions.md §5.1) of point `p`.
@@ -53,17 +53,17 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
     osis_keys::Key { ts: p.ts.to_u64(), node: p.node, commit: p.commit }
 }
 
-/// Each holder's edge into `a` as this node holds it (spec/crypto.md §4, Grant writes): the held
+/// Each holder's grant on `a` as this node holds it (spec/crypto.md §4, Grant writes): the held
 /// writes on it whose commits are resolved (one that is not applies nothing until it is, like
 /// one not held), in key order, each applied or not; applying nothing, whether it would over
-/// the edge the newest applied write before it giving more set (`Timeline::applies_over`: a
-/// second finalize of a removed grant), whether it would over the start or the edge any
+/// the grant the newest applied write before it giving more set (`Timeline::applies_over`: a
+/// second finalize of a removed grant), whether it would over the start or the grant any
 /// applied write before it set (it stands), and whether its author held write on `a` just before
 /// its point (`At::before`, as its authority is judged there: an author removed since still
-/// counts); its start is the edge before the first of them (the record grant). Only commits this
+/// counts); its start is the grant before the first of them (the record grant). Only commits this
 /// node holds: names are met by holding them. The timeline is read whole only for a write
-/// applying nothing (its verdicts over other edges and its author's role are judged there).
-pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, GrantLog> {
+/// applying nothing (its verdicts over other grants and its author's role are judged there).
+pub(crate) fn grant_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, GrantLog> {
     let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &'t RoleCommit, &'t GrantOp)>> = BTreeMap::new();
     for (w, mc, op) in on.held() {
         let Some(holder) = op.holder.thing() else { continue };
@@ -76,47 +76,47 @@ pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, 
         .map(|(m, mut ws)| {
             ws.sort_by_key(|x| x.0);
             let first = ws.first().map(|x| x.0);
-            let start_edge = first.and_then(|p| on.edge_at(&m, Some(p)));
-            // the applied writes so far, each with the edge it set
+            let start_grant = first.and_then(|p| on.grant_at(&m, Some(p)));
+            // the applied writes so far, each with the grant it set
             let mut set: Vec<Option<osis_perm::Grant>> = Vec::new();
             let mut writes = Vec::new();
             for (p, w, mc, op) in ws {
-                let role = key_role(op.edge.as_ref());
+                let role = key_role(op.grant.as_ref());
                 let applied = on.is_applied(&w);
                 let (takes, stands, counts) = if applied {
-                    set.push(op.edge);
+                    set.push(op.grant);
                     (true, true, false)
                 } else {
                     let tl = on.whole();
-                    let over = set.iter().rev().copied().find(|e| key_role(e.as_ref()) > role).unwrap_or(start_edge);
+                    let over = set.iter().rev().copied().find(|e| key_role(e.as_ref()) > role).unwrap_or(start_grant);
                     let takes = role < Some(Role::Admin) && tl.applies_over(&w, over);
-                    let mut edges: Vec<Option<osis_perm::Grant>> = Vec::new();
-                    for e in std::iter::once(start_edge).chain(set.iter().copied()) {
-                        if !edges.contains(&e) {
-                            edges.push(e);
+                    let mut grants: Vec<Option<osis_perm::Grant>> = Vec::new();
+                    for e in std::iter::once(start_grant).chain(set.iter().copied()) {
+                        if !grants.contains(&e) {
+                            grants.push(e);
                         }
                     }
-                    let stands = takes || edges.into_iter().any(|e| tl.applies_over(&w, e));
+                    let stands = takes || grants.into_iter().any(|e| tl.applies_over(&w, e));
                     (takes, stands, tl.role(&mc.signer, a, At::before(p)) >= Some(Role::Write))
                 };
                 writes.push(GrantWrite { key: key_of(&p), role, applied, takes, stands, counts });
             }
-            (m, GrantLog { start: key_role(start_edge.as_ref()), writes })
+            (m, GrantLog { start: key_role(start_grant.as_ref()), writes })
         })
         .collect()
 }
 
 /// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timeline of `a`:
-/// per holder's edge (`edge_logs`), each applied write lowering it and each write applying
+/// per holder's grant (`grant_logs`), each applied write lowering it and each write applying
 /// nothing that counts and gives a role (`GrantLog::names`). They are what an epoch covers
-/// (`osis_keys::pins`), read from the same edges as the departures this node knows, so its own
+/// (`osis_keys::pins`), read from the same grants as the departures this node knows, so its own
 /// epochs cover what it knows (else a rotator could never cover what it knows: a livelock).
 /// `departs`: the rotation commit itself, when it departs a holder of `a` (it cannot name its own
 /// ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut list = BTreeSet::new();
     if let Some(on) = core.timelines().on(a) {
-        for (m, log) in edge_logs(core, &on, a) {
+        for (m, log) in grant_logs(core, &on, a) {
             list.extend(log.names(m));
         }
     }
@@ -126,11 +126,11 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// The demotions a rotation of `a` carries (spec/crypto.md §4, Carried demotions): the commits
 /// of the explicit demotions on `a` held here that took a party below write or admin there, its
 /// own or through an actor below `a` at any depth (the walk records a demotion on everything the
-/// lowered edge's target reaches, spec/permissions.md §5.1 step 4), and that the party has not
+/// lowered grant's target reaches, spec/permissions.md §5.1 step 4), and that the party has not
 /// regained. A reader's removal records none: it stays hidden from what holds `a`.
 pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
     let Some(tl) = core.timelines().get(a) else { return BTreeSet::new() };
-    // the cuts (spec/permissions.md §5.2) of the edges into `a` and into what reaches it, whose
+    // the cuts (spec/permissions.md §5.2) of the grants on `a` and into what reaches it, whose
     // holder holds less on `a` at the end than the cut took
     let now = tl.roles_on(a, At::END);
     let mut out = BTreeSet::new();
@@ -146,9 +146,9 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
     out
 }
 
-/// Departures from `a` itself (spec/crypto.md §4): each holder whose edge (`edge_logs`) gave it
-/// more than the edge holds it at now and than it holds now (`Core::key_holders`), shown by that
-/// edge (a destroyed holder actor's edge stands, and its departure is its box's); and, shown by nothing (no
+/// Departures from `a` itself (spec/crypto.md §4): each holder whose grant (`grant_logs`) gave it
+/// more than the grant holds it at now and than it holds now (`Core::key_holders`), shown by that
+/// grant (a destroyed holder actor's grant stands, and its departure is its box's); and, shown by nothing (no
 /// epoch covers them until a rotation supersedes the epoch), each holder with a box of the
 /// `secrets.0` state at a current epoch of a role it holds less than now, and each rotator of a
 /// current epoch holding less than its role now (`members::role_for_keys`: through holder
@@ -161,13 +161,13 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     let mut out = BTreeSet::new();
     if let Some(on) = tx.core.timelines().on(a) {
-        for (m, log) in edge_logs(tx.core, &on, a) {
-            // the greater of what the edge holds it at now and what it holds for keys now
+        for (m, log) in grant_logs(tx.core, &on, a) {
+            // the greater of what the grant holds it at now and what it holds for keys now
             let from = above_role(current.get(&m).copied().max(log.now()));
             if let (Some(from), Some(upto)) = (from, log.most())
                 && from <= upto
             {
-                out.insert(Departure::holder(m, from).upto(upto).edge(log));
+                out.insert(Departure::holder(m, from).upto(upto).grant(log));
             }
         }
     }
@@ -204,7 +204,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 
 /// The causes (spec/crypto.md §4, Left out) of departure `d` from `x` that an epoch of role `r`
 /// does not cover, `deps` the departures from `x` known: its newest grant write a covering epoch
-/// must name (`Departure::newest_needed`), or, for a box or rotator departure no edge shows (no
+/// must name (`Departure::newest_needed`), or, for a box or rotator departure no grant shows (no
 /// epoch covers it), that of its holder's grant departure concerning `r` where there is one, else
 /// the rotation commit of each current epoch of `r` its holder holds a box at or made.
 ///
@@ -214,8 +214,8 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 /// held: the box or made epoch shows the departed party holds the secret, which only a rotation
 /// of `x` ends).
 pub(crate) fn departure_causes(tx: &mut Tx<'_>, x: &Tid, r: Role, d: &Departure, deps: &[Departure]) -> Result<BTreeSet<osis_base::CommitId>> {
-    let edge = std::iter::once(d).chain(deps.iter().filter(|e| e.holder == d.holder && e.edge.is_some() && e.concerns(r)));
-    if let Some(k) = edge.filter_map(|e| e.newest_needed(r)).next() {
+    let grant = std::iter::once(d).chain(deps.iter().filter(|e| e.holder == d.holder && e.grant.is_some() && e.concerns(r)));
+    if let Some(k) = grant.filter_map(|e| e.newest_needed(r)).next() {
         return Ok(BTreeSet::from([k.commit]));
     }
     let s = secrets_in(tx, x)?;
@@ -246,7 +246,7 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     let at = At::now(now_ts(core));
     let skip = super::members::key_skip(core);
-    // the role read back from `a` (`Timelines::role`): moved by the edges into what reaches it
+    // the role read back from `a` (`Timelines::role`): moved by the grants on what reaches it
     let role = match skip.is_empty() {
         true => core.timelines().role(who, a, at),
         false => {
@@ -270,18 +270,18 @@ pub(super) fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_ba
     own_removal_on(core, core.timelines().get(a)?, a, &d.holder)
 }
 
-/// The newest applied write on `holder`'s edge on `a` that changed its role for keys
+/// The newest applied write on `holder`'s grant on `a` that changed its role for keys
 /// (`key_role`), when it is this node's own self-removal (`own_leaving_write`). A later write
-/// changing nothing (a sibling's concurrent removal of the same edge) leaves the removal it
+/// changing nothing (a sibling's concurrent removal of the same grant) leaves the removal it
 /// follows the one behind the departure.
 fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<osis_base::CommitId> {
-    let changed = |mc: &RoleCommit, op: &GrantOp| key_role(tl.edges_at(Some(mc.point())).get(holder, a)) != key_role(op.edge.as_ref());
-    let (mc, op) = edge_writes(tl, a).filter(|(mc, op)| op.holder == osis_base::Holder::Thing(*holder) && changed(mc, op)).max_by_key(|(mc, _)| mc.point())?;
+    let changed = |mc: &RoleCommit, op: &GrantOp| key_role(tl.edges_at(Some(mc.point())).get(holder, a)) != key_role(op.grant.as_ref());
+    let (mc, op) = grant_writes(tl, a).filter(|(mc, op)| op.holder == osis_base::Holder::Thing(*holder) && changed(mc, op)).max_by_key(|(mc, _)| mc.point())?;
     own_leaving_write(core, tl, a, mc, op).then_some(mc.id)
 }
 
-/// Whether applied write `op` of `mc` on `a`, the newest changing the holder's edge there, is this
-/// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, it is a
+/// Whether applied write `op` of `mc` on `a`, the newest changing the holder's grant there, is this
+/// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the grant, it is a
 /// self-removal, and it was made here, or by an own thing, or of a holder its own things
 /// administer (the account), whichever node made it: it waits for it to be held elsewhere.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &GrantOp) -> bool {
@@ -307,5 +307,5 @@ pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &B
     if !core.ix.commits.contains_key(c) {
         return false;
     }
-    targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && op.holder.thing().is_some_and(|h| own_removal_on(core, tl, t, &h) == Some(*c)))))
+    targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| grant_writes(tl, t).any(|(mc, op)| mc.id == *c && op.holder.thing().is_some_and(|h| own_removal_on(core, tl, t, &h) == Some(*c)))))
 }

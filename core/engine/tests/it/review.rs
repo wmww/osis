@@ -30,8 +30,8 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, c, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, c, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     // b creates key "ash" (never seen by node 0 before the revoke); c writes into it
     let mut m = Mutation::new();
@@ -45,7 +45,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     lp.advance(10);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
     // node 0: c's write first, then the revoke is held, then b's commit
     sync(&mut lp, 2, 0);
     let bpk = lp.peers[1].engine.package(&bid).unwrap().unwrap();
@@ -232,7 +232,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     let now = lp.peers[0].engine.now();
@@ -240,7 +240,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     lp.advance(10);
     set(&mut lp, 1, t, &REG, "b's");
     lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
     sync(&mut lp, 1, 0);
     let bs = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).unwrap();
     let now = lp.peers[0].engine.now();

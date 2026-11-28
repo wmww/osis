@@ -368,7 +368,7 @@ fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
     in_every_order(&recs(), &c, |t, order| assert!(t.r == scratch, "order {order:?}"));
 }
 
-/// A destruction racing cuts of its path on an edge into another thing (draft §6 Destruction:
+/// A destruction racing cuts of its path on a grant on another thing (draft §6 Destruction:
 /// such a cut reads as for any request): M grants A admin on N (1); H grants X admin on A (2); M's
 /// `writer` delta on N (3); X destroys N along [A] at 5 (4); H's removal of X from A backdated to
 /// 4 listing nothing (5: ordered before the destruction, it takes the right); H's removal of X at
@@ -385,7 +385,7 @@ fn destruction_race() -> Vec<Commit> {
     ]
 }
 
-// spec/permissions.md §6: draft Destruction, a cut of its path on another thing's edge reads as for
+// spec/permissions.md §6: draft Destruction, a cut of its path on another thing's grant reads as for
 // any request, in every arrival order and under every subset forgotten: the backdated removal
 // ordered before the destruction takes it (the later one's list cannot give back what was never
 // held); without it, the later removal keeps it by its list, and takes it listing nothing.
@@ -426,8 +426,8 @@ fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
 }
 
 // notes/perm-paths.md, Components: parts join in any order. A chain of grants each resting on
-// the one before (X grants Y, Y grants Z), two writes each resting on the other's edge (Q grants
-// W, W grants Q: neither live while nothing else sets those edges), and H's grant of Q backdated
+// the one before (X grants Y, Y grants Z), two writes each resting on the other's grant (Q grants
+// W, W grants Q: neither live while nothing else sets those grants), and H's grant of Q backdated
 // before both, which makes the pair live at once: every arrival order reads as from scratch and as
 // the single walk, each `Changed` exact.
 #[test]
@@ -451,7 +451,7 @@ fn liveness_reads_alike_in_every_arrival_order() {
 }
 
 // notes/perm-paths.md, Components: a part that cannot apply (B holds nothing on A,
-// so its path through [A] waits) ordered before a lowering already judged on an edge it rests on
+// so its path through [A] waits) ordered before a lowering already judged on a grant it rests on
 // (H's removal of A's record grant on T1, by H's marked direct hop) is put in question by that
 // lowering as from scratch: its component is walked again from it. Arriving last, it was left
 // out of the lowering's drops.

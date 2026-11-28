@@ -109,16 +109,16 @@ pub enum Role {
 /// value with `until` 0 is a removal saying retain. `until` is wall ms; `may_grant` is the
 /// may-grant flag (its holder may add holders up to the grant's role).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EdgeWrite {
+pub struct GrantWrite {
     pub holder: NodeId,
     pub role: Option<Role>,
     pub may_grant: bool,
     pub until: Option<u64>,
 }
 
-impl EdgeWrite {
-    pub const fn role(holder: NodeId, role: Option<Role>) -> EdgeWrite {
-        EdgeWrite { holder, role, may_grant: false, until: None }
+impl GrantWrite {
+    pub const fn role(holder: NodeId, role: Option<Role>) -> GrantWrite {
+        GrantWrite { holder, role, may_grant: false, until: None }
     }
 }
 
@@ -202,7 +202,7 @@ impl Setting {
 pub enum Delta {
     /// A content or snapshot fragment (spec/crdt.md §3).
     Writes(Frag),
-    Edge(EdgeWrite),
+    Grant(GrantWrite),
     /// A whole `retention^.0` setting (on `Aspect::RETENTION`).
     Retention(Setting),
     /// `addenda.0` entries: per entry the removal's commit and the commits it lists.

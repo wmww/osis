@@ -28,8 +28,8 @@ mod tests {
             lp.sync_all().unwrap();
             let (me, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
             let (t, g) = (thing(&mut lp, me), thing(&mut lp, me));
-            let edge = ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
-            lp.peers[0].engine.grant(&g, &b, &edge).unwrap();
+            let grant = ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
+            lp.peers[0].engine.grant(&g, &b, &grant).unwrap();
             let o = {
                 let mut m = Mutation::new();
                 let o = lp.peers[1].engine.new_thing(&mut m, b);
@@ -80,8 +80,8 @@ mod tests {
         let me = lp.peers[0].engine.tid();
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let t = thing(&mut lp, me);
-        let edge = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
-        let done = lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        let value = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
+        let done = lp.peers[0].engine.grant(&t, &b, &value).unwrap();
         let grant = *done.commits.last().unwrap();
         let h = lp.peers[0].engine.header(&grant).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
@@ -91,7 +91,7 @@ mod tests {
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (bk, bx) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(b)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
+        crate::flows::put_grant(&mut m, t, c, &value).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
         crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -305,7 +305,7 @@ mod tests {
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let e = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a) && k.role == Role::Read).unwrap().epoch.clone();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        crate::flows::put_grant(&mut m, t, c, &read).unwrap();
         let ck = ct::BoxKey { holder: osis_base::Weak(c), role: Role::Read, epoch: e };
         let w = osis_keys::KeysWrite { sealed: [(ck, Default::default())].into_iter().collect(), ..Default::default() };
         crate::flows::put_keysets(&mut m, t, &w).unwrap();
@@ -361,7 +361,7 @@ mod tests {
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let t = thing(&mut lp, a);
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, b, &ct::Grant { role: Role::Write, until: Some(Time(1_700_000_100_000)), may_grant: false, retain: false, floor: None }).unwrap();
+        crate::flows::put_grant(&mut m, t, b, &ct::Grant { role: Role::Write, until: Some(Time(1_700_000_100_000)), may_grant: false, retain: false, floor: None }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         // the role field alone, into the grant's entry: admin, with the `until` left behind
@@ -391,7 +391,7 @@ mod tests {
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(a)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        crate::flows::put_grant(&mut m, t, c, &read).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() };
         crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
         m.unchecked = true;
@@ -434,7 +434,7 @@ mod tests {
         let ek = s.boxes.keys().find(|k| k.holder == osis_base::Weak(e)).unwrap().clone();
         let hk = s.history.keys().next().unwrap().clone();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        crate::flows::put_grant(&mut m, t, c, &read).unwrap();
         m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(ek.to_value()) }).unwrap();
         m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(hk.to_value()) }).unwrap();
         m.unchecked = true;
@@ -449,15 +449,15 @@ mod tests {
         let want = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert!(want.boxes.contains_key(&ek) && want.history.contains_key(&hk));
         for r in [3, 4] {
-            assert_eq!(lp.peers[r].engine.roster(&t).get(&c).map(|x| x.role), Some(Role::Read), "the edge itself is a valid may-grant grant");
+            assert_eq!(lp.peers[r].engine.roster(&t).get(&c).map(|x| x.role), Some(Role::Read), "the grant itself is a valid may-grant grant");
             assert_eq!(lp.peers[r].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "receiver {r}");
         }
     }
-    // spec/permissions.md §2, §5.2: an earlier grant on the same edge, arriving late, leaves an
+    // spec/permissions.md §2, §5.2: an earlier grant on the same grant, arriving late, leaves an
     // may-grant grant unapplied, its boxes with no exemption: judged again though its author's roles
     // did not move, as where they came in the other order.
     #[test]
-    fn may_grant_grant_overtaken_on_its_edge_any_order_spec_perm_2() {
+    fn may_grant_grant_overtaken_on_its_grant_any_order_spec_perm_2() {
         let mut lp = LocalPeer::fresh(5, Time(1_700_000_000_000));
         lp.sync_all().unwrap();
         // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers
@@ -472,20 +472,20 @@ mod tests {
         let id = *lp.peers[1].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
         let by_may_grant = lp.peers[1].engine.package(&id).unwrap().unwrap();
         lp.deliver(3, &by_may_grant).unwrap();
-        assert!(lp.peers[3].engine.edge_write_applied(&t, &id), "applied while alone");
+        assert!(lp.peers[3].engine.grant_write_applied(&t, &id), "applied while alone");
         lp.deliver(3, &by_admin).unwrap();
         lp.deliver(4, &by_admin).unwrap();
         lp.deliver(4, &by_may_grant).unwrap();
         let secrets = osis_base::Ak::new("secrets.0").unwrap();
         for r in [3, 4] {
-            assert!(!lp.peers[r].engine.edge_write_applied(&t, &id), "receiver {r}");
+            assert!(!lp.peers[r].engine.grant_write_applied(&t, &id), "receiver {r}");
         }
         assert_eq!(lp.peers[3].engine.body_valid(&id, &t, &secrets), lp.peers[4].engine.body_valid(&id, &t, &secrets));
         assert_eq!(lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap(), lp.peers[4].engine.get_typed(&t, &ct::SECRETS).unwrap());
     }
     // spec/permissions.md §2, §5.1 step 4: a late grant makes an may-grant holder an admin earlier,
-    // so its write on another's edge turns from a may-grant grant (no audit) into an audited write
-    // (restores what the holder gave up, demotes): the edge's value is the same, the holder's
+    // so its write on another's grant turns from a may-grant grant (no audit) into an audited write
+    // (restores what the holder gave up, demotes): the grant's value is the same, the holder's
     // write falls, as where the grant came first.
     #[test]
     fn may_grant_grant_turned_audited_any_order_spec_perm_5_1() {
@@ -508,7 +508,7 @@ mod tests {
         }
         lp.hold(t);
         lp.sync_all().unwrap();
-        // the holder writes (no one hears yet), then gives its edge up
+        // the holder writes (no one hears yet), then gives its grant up
         lp.advance(1000);
         let mut m = Mutation::new();
         m.set(t, &ak, &Value::Int(2)).unwrap();
@@ -526,7 +526,7 @@ mod tests {
         // a may-grant grant at its author, which has heard neither the write nor the rise
         // (by hand: an honest writer waits for the rotation; the walk does not care)
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, h, &read).unwrap();
+        crate::flows::put_grant(&mut m, t, h, &read).unwrap();
         m.unchecked = true;
         lp.peers[1].engine.core.skip_writer_rules = true;
         let again = lp.peers[1].commit(m).unwrap().unwrap();
@@ -688,7 +688,7 @@ mod tests {
     // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
     // shallow thing it is a holder of), at the writer and at receivers.
     #[test]
-    fn edge_on_deep_thing_not_held_spec_permissions_1() {
+    fn grant_on_deep_thing_not_held_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
         use osis_base::Tid;
         use osis_crdt::{Op, PathOp, PathSeg};
@@ -711,31 +711,31 @@ mod tests {
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         lp.hold(shallow);
-        let edge_in = |m: &mut Mutation, t: Tid, holder: Tid| {
+        let grant_in = |m: &mut Mutation, t: Tid, holder: Tid| {
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
         };
-        let edge = |t: Tid, holder: Tid| {
+        let grant = |t: Tid, holder: Tid| {
             let mut m = Mutation::new();
-            edge_in(&mut m, t, holder);
+            grant_in(&mut m, t, holder);
             m
         };
         lp.peers[0].engine.core.skip_writer_rules = true;
         let mut m = Mutation::new();
         let deep = lp.peers[0].engine.new_thing(&mut m, up);
-        // made and held, then its raw edge (a role commit)
+        // made and held, then its raw grant (a role commit)
         lp.peers[0].commit(m).unwrap();
         lp.hold(deep);
         let mut m = Mutation::new();
-        edge_in(&mut m, deep, x);
+        grant_in(&mut m, deep, x);
         let c = lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].commit(edge(shallow, deep)).unwrap();
+        lp.peers[0].commit(grant(shallow, deep)).unwrap();
         lp.peers[0].engine.core.skip_writer_rules = false;
         lp.sync_all().unwrap();
         assert!(lp.peers[1].engine.header(&c).is_some(), "applied at the receiver");
         for r in [0, 1] {
             let held = &lp.peers[r].engine.core.ix.held;
-            assert!(held.edge_commits(&deep).is_empty(), "peer {r}");
-            assert!(!held.edge_commits(&shallow).is_empty(), "peer {r}: the shallow edge counts");
+            assert!(held.grant_commits(&deep).is_empty(), "peer {r}");
+            assert!(!held.grant_commits(&shallow).is_empty(), "peer {r}: the shallow grant counts");
         }
     }
     // spec/permissions.md §2: the may-grant exemption is for an applied may-grant grant's boxes. A
@@ -758,12 +758,12 @@ mod tests {
         let (rk, rb) = before.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(r)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let zk = ct::BoxKey { holder: osis_base::Weak(z), role: Role::Admin, epoch: rk.epoch.clone() };
         let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
-        let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Grant, i: usize| {
+        let commit = |lp: &mut LocalPeer, who: Tid, grant: ct::Grant, i: usize| {
             let mut m = Mutation::new();
             m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(lp.peers[i].engine.tid())) }).unwrap();
-            crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
-            let k = ct::BoxKey { holder: osis_base::Weak(who), role: edge.role, ..zk.clone() };
-            let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
+            crate::flows::put_grant(&mut m, t, who, &grant).unwrap();
+            let k = ct::BoxKey { holder: osis_base::Weak(who), role: grant.role, ..zk.clone() };
+            let h = ct::HistoryKey { role: grant.role, ..hk.clone() };
             let w = osis_keys::SecretsWrite { boxes: [(k, rb.clone())].into_iter().collect(), history: [(h, vec![0; 48])].into_iter().collect(), ..Default::default() };
             crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
             m.unchecked = true;
@@ -1106,7 +1106,7 @@ mod keys_tests {
         lp.sync_all().unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        crate::flows::put_grant(&mut m, t, c, &ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         m.set(t, &osis_base::Ak::new("secrets.0").unwrap(), &Value::Int(1)).unwrap();
         force(&mut lp, 1, m);
         lp.sync_all().unwrap();

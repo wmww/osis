@@ -31,7 +31,7 @@ use schema::{CONTACTS, OF, PROFILE, REALM};
 
 /// A realm (schema/realm.osis): a thing whose holders are its members, at their roles. Members
 /// are added by `Osis::grant` or a link, changed and removed by `Osis::set_role`; a thing is
-/// shared into it by a grant to it. Its admins are equals: its mint admin's edge is removed like
+/// shared into it by a grant to it. Its admins are equals: its mint admin's grant is removed like
 /// any. An account is one (`Account::realm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Realm {

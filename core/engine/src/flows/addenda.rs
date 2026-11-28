@@ -15,11 +15,11 @@
 //! counting addenda, the node closure, whether it may write there). The gathering is kept
 //! (`Gathered`, `Indexes::addenda_gathered`) and done again only when what it reads may have
 //! moved: R's own status in the walk (`note_changed`: the only input of one not applying), the
-//! history of an edge R writes changing at or before it, or a delta stated through such an edge,
-//! ordered no later than R and received before it, coming (`wake`, filed per edge,
-//! `Indexes::addenda_wake`), R's late parts (`note_due`). Another edge's change, or a removed
-//! party's commits on edges R does not write, gather nothing, so a commit wakes in proportion to
-//! the edges it names and the removals on them, never to what its author reaches. The window
+//! history of a grant R writes changing at or before it, or a delta stated through such a grant,
+//! ordered no later than R and received before it, coming (`wake`, filed per grant,
+//! `Indexes::addenda_wake`), R's late parts (`note_due`). Another grant's change, or a removed
+//! party's commits on grants R does not write, gather nothing, so a commit wakes in proportion to
+//! the grants it names and the removals on them, never to what its author reaches. The window
 //! closes at R's own arrival, so its candidates' receipts are final once R is held. The decide is
 //! followed (`Core::addenda_owed`, `memo::Effects` per removal): settled again exactly where
 //! something it read moved, so no input of it has a trigger to forget. It reads this node's role
@@ -74,18 +74,18 @@ pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
 }
 
 /// The removals a walk change `c` may have moved the gathering of (`gather`) are due again,
-/// gathered anew; the work is per edge and delta `c` names, never per party behind them. A
-/// gathering reads, besides R's own status (`note_changed`), only R's edge histories before R
+/// gathered anew; the work is per grant and delta `c` names, never per party behind them. A
+/// gathering reads, besides R's own status (`note_changed`), only R's grant histories before R
 /// (whether each write is a cut: the grant as restored before it) and the held deltas stated
-/// through R's edges (`Paths::through`, `rests`: facts of their own commits). So R, filed under
-/// each edge its writes are on (`file_wake`), is woken by an edge whose history changed at or
+/// through R's grants (`Paths::through`, `rests`: facts of their own commits). So R, filed under
+/// each grant its writes are on (`file_wake`), is woken by a grant whose history changed at or
 /// before R's `ts`, a record grant of its target coming or going, and a delta new in the walk
-/// stated through its edge, stamped no later than R and received before it (`window`: a
+/// stated through its grant, stamped no later than R and received before it (`window`: a
 /// removed party's backdated content judges nothing).
 ///
 /// Invariant: every input a kept gathering reads besides R's own status moves only by such a
-/// change: who R cuts and whether R applies are read from R's edges' histories, the
-/// candidates are held deltas stated along R's edges.
+/// change: who R cuts and whether R applies are read from R's grants' histories, the
+/// candidates are held deltas stated along R's grants.
 fn wake(core: &mut Core, c: &osis_perm::Changed) {
     let mut due: BTreeSet<CommitId> = BTreeSet::new();
     let on = |core: &Core, (holder, target): (osis_base::Holder, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::Time>| {
@@ -94,10 +94,10 @@ fn wake(core: &mut Core, c: &osis_perm::Changed) {
         let hi = (target, holder, Ts::MAX, CommitId([0xff; 32]));
         due.extend(core.ix.addenda_wake.range(lo..=hi).map(|x| x.3).filter(|r| got.is_none_or(|g| core.ix.commits.get(r).is_none_or(|rm| g < rm.received))));
     };
-    for (&e, k) in &c.walk.edges {
+    for (&e, k) in &c.walk.grants {
         on(core, e, k.ts, &mut due, None);
     }
-    // a record grant coming or going moves every edge into its thing as restored
+    // a record grant coming or going moves every grant on its thing as restored
     for t in &c.created {
         osis_base::costs::count("addenda: wake lookups", 1);
         let (lo, hi) = (osis_base::Holder::Thing(Tid::from_bytes([0; osis_base::format::TID_LEN])), osis_base::Holder::Key(osis_base::SignKey([0xff; 32])));
@@ -116,13 +116,13 @@ fn wake(core: &mut Core, c: &osis_perm::Changed) {
     }
 }
 
-/// Files removal `r` (its edge commit `rc`) under the edges its writes are on (`wake`): one
+/// Files removal `r` (its grant commit `rc`) under the grants its writes are on (`wake`): one
 /// entry each, keyed (target, holder, `ts`, R).
 fn file_wake(core: &mut Core, r: &CommitId) {
-    let Some(rc) = core.ix.held.edge_commit(r) else { return };
+    let Some(rc) = core.ix.held.grant_commit(r) else { return };
     let ts = rc.ts;
-    let edges: BTreeSet<(Tid, osis_base::Holder)> = rc.ops.iter().map(|o| (o.target, o.holder)).collect();
-    for (target, holder) in edges {
+    let grants: BTreeSet<(Tid, osis_base::Holder)> = rc.ops.iter().map(|o| (o.target, o.holder)).collect();
+    for (target, holder) in grants {
         if core.ix.addenda_wake.insert((target, holder, ts, *r)) {
             osis_base::costs::count("addenda: wake entries", 1);
         }
@@ -150,7 +150,7 @@ pub(crate) fn window(got: osis_base::Time, r_ts: Ts, r_got: osis_base::Time) -> 
 /// off R's standing in the walk (applied, the cuts it makes) and the commits held before it with their
 /// receipts. Kept per removal (`Indexes::addenda_gathered`) and
 /// gathered anew only when one of those may have changed: R's own status in the walk
-/// (`note_changed`), an edge R writes changing at or before it or a delta stated through one
+/// (`note_changed`), a grant R writes changing at or before it or a delta stated through one
 /// coming (`wake`), its late parts (`note_due`), an open. Receipts are final
 /// once R is held (its window closes at its arrival), and a commit arriving after R is in no
 /// window, so nothing else adds a candidate. Debug builds check every kept gathering against a
@@ -249,7 +249,7 @@ fn gather_due(tx: &mut Tx<'_>, ds: &mut Decides, r: &CommitId, me: Tid) {
     if tx.core.ix.addenda_gathered.get(r).is_none_or(|k| **k != g) {
         tx.core.ix.addenda_gathered.insert(*r, Arc::new(g));
     }
-    // filed under the edges that may bring it a candidate later (a commit of one received in
+    // filed under the grants that may bring it a candidate later (a commit of one received in
     // time applying late, a late grant bringing one into question)
     file_wake(tx.core, r);
     ds.fx.want(*r);
@@ -431,7 +431,7 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     let mut out = Gathered::default();
     let m = core.ix.commits.get(r)?;
     let frontier = m.view.frontier.clone()?;
-    let rc = core.ix.held.edge_commit(r)?;
+    let rc = core.ix.held.grant_commit(r)?;
     let tl = core.timelines().get(&rc.ops.first()?.target)?;
     // R not applying (dropped, or its author's authority in dispute) owes nothing; it may come
     // to apply, and then its change enters the walk's history: judged again then

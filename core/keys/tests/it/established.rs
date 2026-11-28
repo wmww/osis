@@ -143,7 +143,7 @@ fn r9_reseal_before_rotation_commit() {
     ingest(&w.a, &s3, &Opener { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
     let removed = osis_keys::GrantWrite { key: r1_name(&w).key, role: None, applied: true, takes: true, stands: true, counts: false };
-    let deps = [Departure::holder(w.m1, Role::Sync).upto(Role::Read).edge(osis_keys::GrantLog { start: Some(Role::Read), writes: vec![removed] })];
+    let deps = [Departure::holder(w.m1, Role::Sync).upto(Role::Read).grant(osis_keys::GrantLog { start: Some(Role::Read), writes: vec![removed] })];
     let all = osis_keys::AllHeld;
     assert!(!uncovered(&a2v, Role::Read, &e2, &deps, &all).is_empty());
     assert!(uncovered(&a2v, Role::Read, &e1, &deps, &all).is_empty());

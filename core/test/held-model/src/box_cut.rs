@@ -46,7 +46,7 @@ pub enum Role {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Edge {
+pub struct Grant {
     pub holder: Id,
     pub role: Option<Role>,
     pub may_grant: bool,
@@ -66,7 +66,7 @@ pub struct Commit {
     pub id: Cid,
     pub signer: Id,
     pub ts: u32,
-    pub roles: Option<Vec<Edge>>,
+    pub roles: Option<Vec<Grant>>,
     /// the `secrets.0` write: its pieces are its boxes grouped by holder
     pub boxes: Vec<BoxAt>,
     /// a `sync.0` step registering the sync key of this epoch; `chain` whether it verifies from
@@ -377,8 +377,8 @@ fn open_history(w: &World, held: &Held, out: &mut Seen, valid: impl Fn(&Commit) 
 struct Judge<'a> {
     w: &'a World,
     held: &'a Held,
-    /// grant writes in key order: (ts, edges applied)
-    walk: Vec<(u32, Vec<(Edge, bool)>)>,
+    /// grant writes in key order: (ts, grants applied)
+    walk: Vec<(u32, Vec<(Grant, bool)>)>,
     roles: BTreeMap<Cid, V>,
 }
 
@@ -395,7 +395,7 @@ impl<'a> Judge<'a> {
             }
             let state = j.state_before(c.ts);
             let by = state.get(&c.signer).copied();
-            let applied: Vec<(Edge, bool)> = es
+            let applied: Vec<(Grant, bool)> = es
                 .iter()
                 .map(|e| {
                     let ok = match by {
@@ -507,7 +507,7 @@ pub fn world(seed: u64) -> World {
     // the holders removed since the last rotation, and each epoch's names
     let mut removed: Vec<Id> = Vec::new();
     let mut names: BTreeMap<u32, Vec<Id>> = BTreeMap::from([(0, Vec::new())]);
-    let mut push = |w: &mut World, signer: Id, roles: Option<Vec<Edge>>, boxes: Vec<BoxAt>, step: Option<(u32, bool)>, history: Option<History>| {
+    let mut push = |w: &mut World, signer: Id, roles: Option<Vec<Grant>>, boxes: Vec<BoxAt>, step: Option<(u32, bool)>, history: Option<History>| {
         id += 1;
         w.commits.push(Commit { id, signer, ts: id, roles, boxes, step, history });
     };
@@ -542,7 +542,7 @@ pub fn world(seed: u64) -> World {
                         bs.push(BoxAt { holder: o, role: Role::Read, epoch });
                     }
                 }
-                push(&mut w, s, Some(vec![Edge { holder: g, role: Some(role), may_grant: mg }]), bs, None, history);
+                push(&mut w, s, Some(vec![Grant { holder: g, role: Some(role), may_grant: mg }]), bs, None, history);
                 if sr == Role::Admin || !x.contains_key(&g) {
                     x.insert(g, (role, mg));
                 }
@@ -584,7 +584,7 @@ pub fn world(seed: u64) -> World {
                     continue;
                 }
                 let s = r.pick(&forgers);
-                push(&mut w, s, Some(vec![Edge { holder: T, role: Some(Role::Read), may_grant: false }]), Vec::new(), None, None);
+                push(&mut w, s, Some(vec![Grant { holder: T, role: Some(Role::Read), may_grant: false }]), Vec::new(), None, None);
             }
             _ => {
                 // an admin removes a holder (no rotation: the next rotation boxes those left)
@@ -595,7 +595,7 @@ pub fn world(seed: u64) -> World {
                     continue;
                 }
                 let g = r.pick(&hs);
-                push(&mut w, s, Some(vec![Edge { holder: g, role: None, may_grant: false }]), Vec::new(), None, None);
+                push(&mut w, s, Some(vec![Grant { holder: g, role: None, may_grant: false }]), Vec::new(), None, None);
                 x.remove(&g);
                 removed.push(g);
             }

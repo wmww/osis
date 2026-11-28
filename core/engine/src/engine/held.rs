@@ -30,13 +30,13 @@ pub struct Held {
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Thing -> holder (a thing or a key) -> the points of the commits writing that edge (grants and removals), with
+    /// Thing -> holder (a thing or a key) -> the points of the commits writing that grant (grants and removals), with
     /// counts: what a part's path wait reads (`validity::unreached`).
     writes: BTreeMap<Tid, BTreeMap<Holder, BTreeMap<Point, usize>>>,
     /// Mint admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
     mint_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Commit -> its edge commit held here.
+    /// Commit -> its grant commit held here.
     ids: BTreeMap<CommitId, Arc<RoleCommit>>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
@@ -131,7 +131,7 @@ impl Held {
     }
 
     /// The points of the commits with a grant write (a grant or a removal, of any validity) on
-    /// `holder`'s edge on `thing`, ascending, those after `after` alone where given.
+    /// `holder`'s grant on `thing`, ascending, those after `after` alone where given.
     pub fn writes_on(&self, holder: Holder, thing: &Tid, after: Option<&Point>) -> impl Iterator<Item = &Point> {
         use std::ops::Bound::{Excluded, Unbounded};
         self.rest.read(&Row::Writes(thing));
@@ -141,13 +141,13 @@ impl Held {
 
     /// `from` and everything authority flows to from them: what they own, the things they are
     /// named on as holders, transitively (spec/permissions.md §1: paths climb record links and
-    /// role edges). A change of authority at `from` changes it only there.
+    /// role grants). A change of authority at `from` changes it only there.
     pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         walk(from, |t, s| s.extend(self.mint_admin_of(t).chain(self.named_on(t))))
     }
 
     /// `from` and everything authority comes to them from: their mint admins and the
-    /// holders named on them, transitively (the search `reach` answers forward). A changed edge
+    /// holders named on them, transitively (the search `reach` answers forward). A changed grant
     /// to holder `z` changes the roles only of `upstream({z})`.
     pub fn upstream(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         walk(from, |t, s| s.extend(self.created(t).and_then(CreationRecord::mint_admin).into_iter().chain(self.holders_of(t).copied())))
@@ -162,7 +162,7 @@ impl Held {
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
     /// followed, by grant writes.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
-        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).filter_map(|o| Some((r.signer, o.holder.thing()?))))
+        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.grant.as_ref().is_some_and(|e| e.role >= role)).filter_map(|o| Some((r.signer, o.holder.thing()?))))
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
@@ -389,14 +389,14 @@ impl Held {
         self.log.push(Undo::AddedCommit(c));
     }
 
-    /// The edge commit held under this ID: what the timeline reads.
+    /// The grant commit held under this ID: what the timeline reads.
     pub fn held_commit(&self, id: &CommitId) -> Option<Arc<RoleCommit>> {
         self.rest.read(&Row::Id(id));
         self.ids.get(id).cloned()
     }
 
-    /// The edge commit held under this ID.
-    pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
+    /// The grant commit held under this ID.
+    pub fn grant_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
         self.rest.read(&Row::Id(id));
         self.ids.get(id).map(|c| &**c)
     }
@@ -449,7 +449,7 @@ impl Held {
         !self.touched.is_empty() || !self.touched_commits.is_empty()
     }
 
-    /// The commits touched since the last call (`touch_commit`, an edge commit added or
+    /// The commits touched since the last call (`touch_commit`, a grant commit added or
     /// removed).
     pub fn take_touched_commits(&mut self) -> BTreeSet<CommitId> {
         std::mem::take(&mut self.touched_commits)
@@ -503,15 +503,15 @@ impl Held {
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
-    /// The edge commits on `thing`.
-    pub fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
+    /// The grant commits on `thing`.
+    pub fn grant_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         self.rest.read(&Row::Commits(thing));
         self.commits.get(thing).cloned().unwrap_or_default()
     }
 }
 
 /// perm's timeline over the held set (`Core::timelines`), its reads stamped at the grain each
-/// sees (`Read`): the whole of it (`get`), what is written on a thing's edges (`on`), the roles
+/// sees (`Read`): the whole of it (`get`), what is written on a thing's grants (`on`), the roles
 /// on a thing (`roles_on`, `role`), each moved only by what it can see; and the keyless actor
 /// grants over it (`keyless`), kept up to date at each update.
 #[derive(Clone, Default)]
@@ -521,15 +521,15 @@ pub struct Timelines {
     /// The keyless actor grants (target, holder) (`rotation::members::keyless_in`, spec/crypto.md
     /// §4 Key access).
     keyless: Arc<BTreeSet<(Tid, Tid)>>,
-    /// The ways into a thing (`osis_perm::Timeline::ways_now`) searched since the edges last
+    /// The ways into a thing (`osis_perm::Timeline::ways_now`) searched since the grants last
     /// changed.
     ways: Now<(Tid, osis_perm::Need), Arc<osis_perm::graph::Ways>>,
-    /// Every actor's role on a thing on the current edges (`osis_perm::Timeline::roles_on_now`)
-    /// walked since the edges last changed.
+    /// Every actor's role on a thing on the current grants (`osis_perm::Timeline::roles_on_now`)
+    /// walked since the grants last changed.
     roles: Now<Tid, Arc<BTreeMap<Tid, Role>>>,
 }
 
-/// A cache of reads of the current edges, emptied when an edge or record changes: each answer
+/// A cache of reads of the current grants, emptied when a grant or record changes: each answer
 /// with the ts it was read at and the `until` it holds before, so it answers any ts between.
 struct Now<K, V>(std::sync::Mutex<BTreeMap<K, ReadAt<V>>>);
 /// An answer, the ts it was read at, and the `until` it holds before.
@@ -623,8 +623,8 @@ impl TlStamps {
 enum Read {
     /// The whole timeline: moved by every update that changed the walk.
     Whole,
-    /// The history of the edges into a thing (its record grant included): moved by a change of
-    /// one (`osis_perm::Changed::edges`) or of its record.
+    /// The history of the grants on a thing (its record grant included): moved by a change of
+    /// one (`osis_perm::Changed::grants`) or of its record.
     Into(Tid),
     /// The grant writes held on a thing and whether each applies: moved by one coming or going
     /// (`osis_perm::Changed::held`) or changing its standing (`ops`).
@@ -645,8 +645,8 @@ impl std::ops::Deref for Timelines {
     }
 }
 
-/// A thing's edges in the timeline (`Timelines::on`): what is read of them depends on the
-/// history of the edges into it alone (spec/permissions.md §5.1: its roster, each holder's
+/// A thing's grants in the timeline (`Timelines::on`): what is read of them depends on the
+/// history of the grants on it alone (spec/permissions.md §5.1: its roster, each holder's
 /// standing, the writes applied on them), and on the grant writes held on it (`held`).
 pub struct On<'a> {
     tl: &'a osis_perm::Timeline,
@@ -655,7 +655,7 @@ pub struct On<'a> {
 }
 
 impl<'a> On<'a> {
-    /// The whole timeline, for what depends on more than the thing's edges (a write's
+    /// The whole timeline, for what depends on more than the thing's grants (a write's
     /// authority): read whole (`Timelines::get`).
     pub fn whole(&self) -> &'a osis_perm::Timeline {
         self.stamps.read(&Read::Whole);
@@ -672,11 +672,11 @@ impl<'a> On<'a> {
         self.stamps.read(&Read::Held(self.thing));
         self.tl.is_applied(w)
     }
-    /// `holder`'s edge on it just before `point` (`None`: now).
-    pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Grant> {
+    /// `holder`'s grant on it just before `point` (`None`: now).
+    pub fn grant_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Grant> {
         self.tl.edges_at(point).get(holder, &self.thing).copied()
     }
-    /// Its holders by their current edges, its record grant included while it stands.
+    /// Its holders by their current grants, its record grant included while it stands.
     pub fn holders(&self) -> Vec<(Tid, osis_perm::Grant)> {
         self.tl.edges_at(None).holders(&self.thing).map(|(m, e)| (*m, *e)).collect()
     }
@@ -694,11 +694,11 @@ impl<'a> On<'a> {
         let (tl, thing) = (self.tl, self.thing);
         tl.held_on_owned(thing).filter(move |(w, _, _)| tl.is_applied(w)).map(|(_, c, o)| (c, o))
     }
-    /// The holders whose edge on it ended by `ts` (`Timeline::ended`).
+    /// The holders whose grant on it ended by `ts` (`Timeline::ended`).
     pub fn holders_gone(&self, ts: osis_base::Ts) -> BTreeMap<Tid, (bool, Option<osis_perm::Point>, Role)> {
         self.tl.ended(&self.thing, ts)
     }
-    /// The holders whose edge on it is lowered at `ts` (`Timeline::lowered`).
+    /// The holders whose grant on it is lowered at `ts` (`Timeline::lowered`).
     pub fn holders_lowered(&self, ts: osis_base::Ts) -> BTreeSet<Tid> {
         self.tl.lowered(&self.thing, ts)
     }
@@ -731,7 +731,7 @@ impl Timelines {
         Some(&self.of)
     }
 
-    /// `thing`'s edges, read alone (`On`). `None` where the timeline does not know it.
+    /// `thing`'s grants, read alone (`On`). `None` where the timeline does not know it.
     pub fn on(&self, thing: &Tid) -> Option<On<'_>> {
         self.stamps.read(&Read::Known(*thing));
         if !self.of.knows(thing) {
@@ -741,15 +741,15 @@ impl Timelines {
         Some(On { tl: &self.of, thing: *thing, stamps: &self.stamps })
     }
 
-    /// Every node's effective role on `thing` at `at` over the edges not in `skip`, each named
-    /// (target, holder) (`Timeline::roles_on`): a walk back from it reads the edges into each
+    /// Every node's effective role on `thing` at `at` over the grants not in `skip`, each named
+    /// (target, holder) (`Timeline::roles_on`): a walk back from it reads the grants on each
     /// node that reaches it and nothing else, so the answer moves with those alone.
     pub fn roles_on(&self, thing: &Tid, at: osis_perm::At, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
         let roles = match (at.point, at.ts) {
             (None, Some(ts)) => {
                 let all = self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts)).0;
-                // the walk (`thing` among its keys) follows an edge only from a thing it reached:
-                // skipping edges from none of them changes nothing
+                // the walk (`thing` among its keys) follows a grant only from a thing it reached:
+                // skipping grants from none of them changes nothing
                 match skip.iter().any(|(t, _)| all.contains_key(t)) {
                     false => all,
                     true => Arc::new(self.of.roles_on_without(thing, at, skip)),
@@ -763,18 +763,18 @@ impl Timelines {
         roles
     }
 
-    /// `node`'s effective role on `thing` on the current edges at `ts`, and the earliest `until`
+    /// `node`'s effective role on `thing` on the current grants at `ts`, and the earliest `until`
     /// before which the answer holds (`Timeline::roles_on_now`), read as `roles_on` is.
     pub fn role_now(&self, node: &Tid, thing: &Tid, ts: osis_base::Ts) -> (Option<Role>, Option<osis_base::Time>) {
         let (roles, until) = self.roles_now(thing, ts);
         (roles.get(node).copied(), until)
     }
 
-    /// The path from `node` into `thing` giving `need` on the current edges at `ts`
+    /// The path from `node` into `thing` giving `need` on the current grants at `ts`
     /// (`osis_perm::Timeline::ways_now`): the things listed, the hops marked direct, and whether
     /// its last hop is a record grant.
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
-        // the search reads the edges into everything that reaches `thing`
+        // the search reads the grants on everything that reaches `thing`
         self.stamps.read(&Read::Whole);
         let (ways, _) = self.ways.at((*thing, need), ts, || {
             let (w, until) = self.of.ways_now(thing, need, ts);
@@ -783,7 +783,7 @@ impl Timelines {
         ways.path(self.of.records(), node)
     }
 
-    /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
+    /// Every actor's effective role on `thing` on the current grants at `ts`, and the earliest
     /// `until` before which they hold, read as `roles_on` is.
     pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::Time>) {
         let (roles, until) = self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts));
@@ -813,22 +813,22 @@ impl Timelines {
     /// Stamps what an update changed (`c`).
     fn moved(&mut self, c: &osis_perm::Changed) {
         // the whole of it as role state: a delta coming or going moves no grant write's
-        // standing and no edge (what reads a delta's verdict is judged again by `Changed::reached`)
+        // standing and no grant (what reads a delta's verdict is judged again by `Changed::reached`)
         let w = &c.walk;
-        if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.edges.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() {
+        if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.grants.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() {
             self.stamps.wrote(&Read::Whole, true);
         }
-        if !c.created.is_empty() || c.edges().next().is_some() {
+        if !c.created.is_empty() || c.grants().next().is_some() {
             self.ways.clear();
             self.roles.clear();
         }
         // the grant writes held on a thing, and which of them apply: a write that came or went
         // (`held`), one whose standing moved (`ops`). A commit moves nothing of its signer's.
-        let stood: BTreeSet<Tid> = c.ops.iter().filter_map(|w| self.of.edge_op(w)).map(|(_, _, target)| target).collect();
+        let stood: BTreeSet<Tid> = c.ops.iter().filter_map(|w| self.of.grant_op(w)).map(|(_, _, target)| target).collect();
         for t in c.held.iter().chain(&stood) {
             self.stamps.wrote(&Read::Held(*t), true);
         }
-        for t in c.created.iter().copied().chain(c.edges().map(|(_, t)| t)) {
+        for t in c.created.iter().copied().chain(c.grants().map(|(_, t)| t)) {
             self.stamps.wrote(&Read::Into(t), true);
         }
         // a thing is known by its record or a grant write on it: both are its held inputs
@@ -842,13 +842,13 @@ impl Timelines {
         // anew where an actor's grant moved or a record came or went other than a new leaf's
         // (its record grant is in no cycle: it holds nothing)
         let records = self.of.records();
-        let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_edge(t);
-        if c.edges().next().is_some() || c.created.iter().any(|t| !leaf(t)) {
+        let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_grant(t);
+        if c.grants().next().is_some() || c.created.iter().any(|t| !leaf(t)) {
             self.rekey();
         }
     }
 
-    /// Brings `keyless` up to date with the edge state.
+    /// Brings `keyless` up to date with the grant state.
     fn rekey(&mut self) {
         let new = crate::rotation::members::keyless_in(&self.of);
         if *self.keyless != new {
@@ -909,10 +909,10 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::Time(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![GrantOp { target: on, holder: Holder::Thing(to), edge: Some(Grant::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::Time(1), 0).unwrap(), signer: by, key: osis_base::SignKey([0; 32]), listed: Vec::new(), direct: 0, frontier: None, ops: vec![GrantOp { target: on, holder: Holder::Thing(to), grant: Some(Grant::new(role)) }] }
     }
 
-    /// The held set alone as the walk reads it: each counting edge commit along the empty path.
+    /// The held set alone as the walk reads it: each counting grant commit along the empty path.
     struct Bare<'a>(&'a Held);
     impl osis_perm::HeldSet for Bare<'_> {
         fn created(&self, t: &Tid) -> Option<CreationRecord> {
@@ -953,7 +953,7 @@ mod tests {
                     next.insert(x);
                 }
                 for r in h.commits_on(c).iter().filter(|r| set.contains(&r.signer)) {
-                    next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).filter_map(|o| o.holder.thing()));
+                    next.extend(r.ops.iter().filter(|o| o.target == *c && o.grant.as_ref().is_some_and(|e| e.role >= Role::Admin)).filter_map(|o| o.holder.thing()));
                 }
             }
             if next == set {
@@ -966,7 +966,7 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). Each read of the held set is
     // stamped by what it read: a memo of it keeps the answer a fresh read gives through any
-    // change and undo (an edge commit added or removed; a record created or
+    // change and undo (a grant commit added or removed; a record created or
     // forgotten), and a change elsewhere reads nothing again.
     #[test]
     fn held_reads_move_with_what_they_read() {
@@ -979,7 +979,7 @@ mod tests {
             let tids = |ts: &mut dyn Iterator<Item = &Tid>| ts.map(|t| *t.as_bytes()).map(|b| { let mut x = [0; 32]; x[..15].copy_from_slice(&b); x }).collect::<Vec<_>>();
             match r {
                 0 => ids(h.commits_on(t)),
-                1 => ids(&h.edge_commits(t)),
+                1 => ids(&h.grant_commits(t)),
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
                 4 => at.iter().flat_map(|x| h.writes_on(Holder::Thing(*x), t, None)).map(|p| p.commit.0).collect(),
@@ -995,7 +995,7 @@ mod tests {
         let c2 = grant(2, at[1], t.tid(), at[2], Role::Write);
         let check = |h: &Held| {
             for id in [c1.id, c2.id] {
-                assert_eq!(by_id.get(&id, || h.edge_commit(&id).map(|c| c.id)), h.edge_commit(&id).map(|c| c.id), "{id:?}");
+                assert_eq!(by_id.get(&id, || h.grant_commit(&id).map(|c| c.id)), h.grant_commit(&id).map(|c| c.id), "{id:?}");
             }
             for x in &all {
                 for r in 0..6 {
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     // spec: none (internal: notes/engine.md, Derived values). Each read of the timelines moves
-    // with what it can see: a thing's edges (`on`) and the roles on it with the edges into what
+    // with what it can see: a thing's grants (`on`) and the roles on it with the grants on what
     // reaches it, the writes held on a thing with them, the keyless grants with their value; a memo of each keeps the answer a fresh read
     // gives through grants, a write applying nothing, removals, records, a cycle of actor grants
     // and an undo, and a grant on one actor reads nothing of another again.
@@ -1132,7 +1132,7 @@ mod tests {
                 1 => format!("{:?}", on().map(|o| o.roster(At::END))),
                 2 => format!("{:?}", on().map(|o| o.roster(now))),
                 3 => format!("{:?}", on().map(|o| o.standing_since())),
-                4 => format!("{:?}", on().map(|o| o.held().map(|(w, c, op)| (w, c.id, op.clone(), o.is_applied(&w), op.holder.thing().and_then(|h| o.edge_at(&h, Some(c.point()))))).collect::<Vec<_>>())),
+                4 => format!("{:?}", on().map(|o| o.held().map(|(w, c, op)| (w, c.id, op.clone(), o.is_applied(&w), op.holder.thing().and_then(|h| o.grant_at(&h, Some(c.point()))))).collect::<Vec<_>>())),
                 5 => format!("{:?}", tl.roles_on(t, At::END, &BTreeSet::new())),
                 6 => format!("{:?}", tl.roles_on(t, At::KEYS, &BTreeSet::new())),
                 7 => format!("{:?}", tl.roles_on(t, now, &BTreeSet::new())),
@@ -1172,7 +1172,7 @@ mod tests {
                         next += 1;
                         let pick = |rng: &mut dyn FnMut(usize) -> usize| all[rng(all.len())];
                         let (by, on, to) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
-                        let edge = match rng(6) {
+                        let value = match rng(6) {
                             0 => None,
                             1 => Some(Grant::kept_end()),
                             2 => Some(Grant { until: Some(osis_base::Time(3 + rng(5) as u64)), ..Grant::new(roles[rng(3)]) }),
@@ -1180,7 +1180,7 @@ mod tests {
                         };
                         let mut c = grant(next, by, on, to, Role::Read);
                         c.ts = Ts::make(osis_base::Time(1 + rng(4) as u64), next).unwrap();
-                        c.ops[0].edge = edge;
+                        c.ops[0].grant = value;
                         ids.push(c.id);
                         h.add_commit(c);
                     }

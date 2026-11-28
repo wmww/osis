@@ -222,7 +222,7 @@ fn shared_dot_has_no_owner_spec_commits_4() {
     let el = |h: u64, c: char| Body::Held(Delta::Writes(Frag::Seq { text: true, c: Default::default(), elems: [(d.clone(), SeqElem::new(Stamp { ts: hour(h), dot: d.clone() }, Anchor::Head, Content::Char(c)))].into() }));
     let events = vec![
         sess(100, X, 1, &session(X, 0), vec![(text, el(1, 'a'), 1, 2)]),
-        edge(101, ADMIN, 2, X, None, Some(vec![100])),
+        grant(101, ADMIN, 2, X, None, Some(vec![100])),
         sess(102, X, 3, &session(X, 0), vec![(text, el(3, 'z'), 1, 2)]),
     ];
     let w = World { name: "shared_dot", base: base(), events };

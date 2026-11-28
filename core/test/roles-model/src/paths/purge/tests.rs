@@ -7,9 +7,9 @@ use Role::{Admin, None as Gone, Write};
 /// A minted by H, T1 minted with A, A2 by K; H pairs X and B (admin on A) and grants W write on T1.
 fn base() -> World {
     let mut w = World::new(&[(H, A), (K, A2), (A, T1)]);
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[A], T1, W, Write, &[]);
+    w.grant(H, 1, &[], A, X, Admin, &[]);
+    w.grant(H, 1, &[], A, B, Admin, &[]);
+    w.grant(H, 1, &[A], T1, W, Write, &[]);
     w
 }
 
@@ -50,7 +50,7 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
         let mut w = base();
         let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let q = w.request(X, 5, &[A], T1, names);
-        let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+        let r = w.grant(H, 6, &[], A, X, Gone, &[]);
         for trust in [vec![], vec![r]] {
             assert!(read(&w, &Rules::purging(), &trust).purged.is_empty(), "{names:?} {trust:?}");
         }
@@ -61,7 +61,7 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
 }
 
 /// A destruction is judged as any request (spec/permissions.md §6 Destruction): Z, admin of T1 by
-/// H's direct grant (or of A), destroys T1 at 4; H's removal of Z from that edge at 6, listing
+/// H's direct grant (or of A), destroys T1 at 4; H's removal of Z from that grant at 6, listing
 /// nothing, takes its right, as it would from a thief's backdated destruction made after the
 /// removal (one held set); listed by the removal it stands.
 #[test]
@@ -69,11 +69,11 @@ fn a_destruction_falls_with_a_later_cut_as_any_request() {
     for on_thing in [true, false] {
         let mut w = base();
         let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
-        let (path, edge): (&[Thing], Thing) = if on_thing { (&[], T1) } else { (&[A], A) };
+        let (path, grant): (&[Thing], Thing) = if on_thing { (&[], T1) } else { (&[A], A) };
         let at: &[Thing] = if on_thing { &[A] } else { &[] };
-        w.edge(H, 1, at, edge, Z, Admin, &[]);
+        w.grant(H, 1, at, grant, Z, Admin, &[]);
         let q = w.request(Z, 4, path, T1, Names::Destroy);
-        let r = w.edge(H, 6, at, edge, Z, Gone, &[]);
+        let r = w.grant(H, 6, at, grant, Z, Gone, &[]);
         for trust in [vec![], vec![r]] {
             assert!(!read(&w, &Rules::purging(), &trust).purged.contains(&h), "{on_thing} {trust:?}");
         }
@@ -97,7 +97,7 @@ fn witnessed() -> (World, Id) {
     let mut w = base();
     let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.addendum(B, 7, &[A], T1, r, &[q]);
     (w, h)
 }
@@ -116,7 +116,7 @@ fn an_addendum_by_a_holder_of_the_class_keeps_a_request() {
     let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let any = content(&mut w, H, 2, &[A], PurgeBy::Writer);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     w.addendum(W, 7, &[], T1, r, &[q]);
     assert_eq!(read(&w, &rules, &[r]).purged, Set::from([any]));
     assert!(!read(&w, &rules, &[r]).purged.contains(&h));
@@ -129,7 +129,7 @@ fn an_addendum_by_a_holder_of_the_class_keeps_a_request() {
 #[test]
 fn a_request_reaches_the_copy_of_a_write_the_node_does_not_hold() {
     let mut w = base();
-    w.edge(B, 1, &[A], T1, A2, Write, &[]);
+    w.grant(B, 1, &[A], T1, A2, Write, &[]);
     let d = w.content(B, 2, &[A], T1);
     w.push(K, 3, &[A2], T1, Kind::Cover { carries: Set::from([d]) });
     w.purge(B, 4, &[A], T1, B);
@@ -154,10 +154,10 @@ fn an_own_cover_stands_while_its_removal_applies() {
         let x = w.content(X, 2, &[A], T1);
         let s = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
         w.own_cover(s);
-        let r = w.edge(H, 6, &[], A, X, Gone, &[s]);
+        let r = w.grant(H, 6, &[], A, X, Gone, &[s]);
         // B lists what it received through (H, A): H's grants, and H's removal or not; never S
         let got: Vec<Id> = w.through((H, A), |i| i != s && (listed || i != r));
-        let rh = w.edge(B, 9, &[], A, H, Gone, &got);
+        let rh = w.grant(B, 9, &[], A, H, Gone, &got);
         let at_h = View::all(&w).without(&[x]).trusting(&[r, rh]);
         let shows = |rules: &Rules| judge(&w, rules, &at_h).shows(x);
         assert_eq!(shows(&Rules::purging()), listed);
@@ -165,7 +165,7 @@ fn an_own_cover_stands_while_its_removal_applies() {
     }
 }
 
-/// An own cover stands while its removal applies, whatever that removal takes from its edge at
+/// An own cover stands while its removal applies, whatever that removal takes from its grant at
 /// the node reading it (draft §5.2 Own cover: "an explicit lowering R the timeline applies"): a
 /// node holding H's removal of X but not H's grant of X (nothing to take there) reads H's own cover
 /// as H does. Read only where the removal falls, the cover would stand at H and fall at that node
@@ -176,9 +176,9 @@ fn an_own_cover_stands_while_its_removal_applies_whatever_it_takes_here() {
     let x = w.content(X, 2, &[A], T1);
     let s = w.push(H, 5, &[A], T1, Kind::Cover { carries: Set::from([x]) });
     w.own_cover(s);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[s]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[s]);
     let got: Vec<Id> = w.through((H, A), |i| i != s);
-    let rh = w.edge(B, 9, &[], A, H, Gone, &got);
+    let rh = w.grant(B, 9, &[], A, H, Gone, &got);
     // the grant of X (commit 0) not held: the removal applies and takes nothing
     let v = View::all(&w).without(&[0, x]).trusting(&[r, rh]);
     let rd = judge(&w, &Rules::purging(), &v);
@@ -194,8 +194,8 @@ fn an_own_cover_whose_path_gave_no_role_stands_by_nothing() {
     let d = w.content(B, 2, &[A], T1);
     let s = w.push(Z, 5, &[A], T1, Kind::Cover { carries: Set::from([d]) });
     w.own_cover(s);
-    w.edge(H, 6, &[], A, Z, Admin, &[]);
-    let r = w.edge(Z, 7, &[], A, B, Gone, &[s, d]);
+    w.grant(H, 6, &[], A, Z, Admin, &[]);
+    let r = w.grant(Z, 7, &[], A, B, Gone, &[s, d]);
     let rd = read(&w, &Rules::purging(), &[r]);
     assert!(rd.applied.contains(&r) && !rd.valid.contains(&s));
 }
@@ -211,7 +211,7 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
     let mut w = base();
     let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+    let r = w.grant(H, 6, &[], A, X, Gone, &[]);
     // an honest addendum lists what its writer received by the removal's `ts`: the thief's request
     // made after it is in no honest addendum; a colluding writer's is a writer's word (as content)
     w.addendum(B, 7, &[A], T1, r, &[]);

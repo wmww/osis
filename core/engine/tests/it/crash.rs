@@ -326,7 +326,7 @@ fn crash_every_write_of_a_hold_and_release() {
 
 // notes/node-closure.md (a rollback past the settle resets the follower), spec/sync-set.md §2:
 // a write removing D -> X fails at its store commit, after the node closure settled it (X and
-// Y, X -> Y, dropped and their edges no longer followed). The rollback holds them again, and Y
+// Y, X -> Y, dropped and their grants no longer followed). The rollback holds them again, and Y
 // becoming independent then enters Y's sync unit at X's strong: the node closure equals one walked
 // afresh.
 #[test]

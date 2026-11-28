@@ -15,8 +15,8 @@ fn no_box_below_admin_makes_a_dependent_thing_independent_spec_sync_set_2() {
 fn an_honest_box_counts_before_its_keyset_spec_permissions_4() {
     assert!(stuck(Rule::Spec).is_empty(), "{:?}", stuck(Rule::Spec));
     assert_eq!(stuck(Rule::KeysetOnly), ["sync-only cut"]);
-    assert_eq!(stuck(Rule::BesideEdge), Vec::<&str>::new());
-    for r in [Rule::KeysetOnly, Rule::BesideEdge, Rule::StepAnywhere] {
+    assert_eq!(stuck(Rule::BesideGrant), Vec::<&str>::new());
+    for r in [Rule::KeysetOnly, Rule::BesideGrant, Rule::StepAnywhere] {
         assert!(unsafe_case(r).is_none(), "{r:?}: the control is safe below admin");
     }
     // the issue's candidate: a writer's box to a grantee reading nothing of P

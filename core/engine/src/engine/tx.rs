@@ -670,9 +670,9 @@ impl Tx<'_> {
     }
 
     /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
-    /// they keep; then its blob), and for a role commit its `node/perm` row (`edges`: what the caller already
+    /// they keep; then its blob), and for a role commit its `node/perm` row (`grants`: what the caller already
     /// read of `blob` with `perm_parts_of`, else decoded here).
-    pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::PermParts>) -> Result<()> {
+    pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, grants: Option<&crate::apply::validity::PermParts>) -> Result<()> {
         // the bodies leaving the record: held whole as the index has it, absent from `blob`
         self.core.note_kept(id, meta);
         let leaving: Vec<usize> = self.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai) && blob.part(*ai).is_none()).collect()).unwrap_or_default();
@@ -687,7 +687,7 @@ impl Tx<'_> {
         crate::sync_ids::opened::prune(self, id, meta)?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
-            match edges {
+            match grants {
                 Some(p) => index::put_perm(self, id, p, shred)?,
                 None => {
                     let p = crate::apply::perm_parts_of(self, id, &meta.header, blob)?;

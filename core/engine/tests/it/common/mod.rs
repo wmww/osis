@@ -202,7 +202,7 @@ pub fn mint_from(e: &mut Engine, admin: Tid, from: Tid, writes: &[(&Aspect<Value
 /// A new dependent thing of peer `i`: its mint admin the account the peer acts for
 /// (`settings_thing`: made for the account, so its other nodes read it, spec/permissions.md §8),
 /// else `Engine::me`; held where it lives and by every other peer (`LocalPeer::hold`), which
-/// keeps it once granted a role (`set_edge`).
+/// keeps it once granted a role (`set_grant`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
 }
@@ -262,40 +262,40 @@ pub fn share(lp: &mut LocalPeer, admin: usize, t: Tid) {
     for j in (0..lp.peers.len()).filter(|j| *j != admin) {
         let who = lp.peers[j].engine.tid();
         if lp.peers[admin].engine.key_role(&t, &who).is_none() {
-            lp.peers[admin].engine.grant(&t, &who, &edge(Role::Read)).unwrap();
+            lp.peers[admin].engine.grant(&t, &who, &grant(Role::Read)).unwrap();
         }
     }
 }
 
-pub fn edge(role: Role) -> ct::Grant {
+pub fn grant(role: Role) -> ct::Grant {
     ct::Grant { role, until: None, may_grant: false, retain: false, floor: None }
 }
 
-/// Writes `holder`'s edge on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets
+/// Writes `holder`'s grant on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets
 /// with it, so a holder holding the thing keeps it) when the write needs no frontier and is given
-/// none, else `edge_write`. Its edge commit.
-pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
-    match &edge {
-        Some(x) if frontier.is_none() && !e.needs_frontier(&thing, &holder, edge.as_ref()) => *e.grant(&thing, &holder, x).unwrap().commits.last().unwrap(),
-        _ => edge_write(e, thing, holder, edge, frontier),
+/// none, else `grant_write`. Its grant commit.
+pub fn set_grant(e: &mut Engine, thing: Tid, holder: Tid, grant: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
+    match &grant {
+        Some(x) if frontier.is_none() && !e.needs_frontier(&thing, &holder, grant.as_ref()) => *e.grant(&thing, &holder, x).unwrap().commits.last().unwrap(),
+        _ => grant_write(e, thing, holder, grant, frontier),
     }
 }
 
-/// Writes `holder`'s edge on `thing` as a bare remove + put (`None` removes it; no secrets: for a
-/// holder no peer is, or an edge between things), with an optional frontier: a write that needs
+/// Writes `holder`'s grant on `thing` as a bare remove + put (`None` removes it; no secrets: for a
+/// holder no peer is, or a grant between things), with an optional frontier: a write that needs
 /// one given none carries an empty one (an explicit removal, one with no frontier being a
 /// finalize, or a write that audits, spec/permissions.md §2, §5.1). A hand-built frontier says
 /// exactly what this node lists: it answers the write with no addendum of its own
 /// (`Engine::write_addenda`), which would list the rest.
-pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
-    if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
+pub fn grant_write(e: &mut Engine, thing: Tid, holder: Tid, grant: Option<ct::Grant>, frontier: Option<ct::Frontier>) -> CommitId {
+    if frontier.is_some() || e.needs_frontier(&thing, &holder, grant.as_ref()) {
         e.write_addenda(false);
     }
-    // an edge change is remove + put (spec/permissions.md §2)
+    // a grant change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).unwrap();
-    let needs = e.needs_frontier(&thing, &holder, edge.as_ref());
-    if let Some(x) = edge {
+    let needs = e.needs_frontier(&thing, &holder, grant.as_ref());
+    if let Some(x) = grant {
         m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
     if let Some(f) = frontier.or_else(|| needs.then(ct::Frontier::default)) {
@@ -318,7 +318,7 @@ pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engin
     }
     p.engine.hold(osis_base::Strong(t)).unwrap();
     let me = p.engine.tid();
-    lp.peers[admin].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
+    lp.peers[admin].engine.grant(&t, &me, &grant(Role::Read)).unwrap();
     // what `admin` sends it: the grant's fire, certificates (the grant among them), then what
     // the sync IDs it then syncs carry
     lp.pass_fires_to(admin, &mut p).unwrap();

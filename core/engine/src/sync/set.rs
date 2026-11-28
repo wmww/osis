@@ -419,7 +419,7 @@ impl Engine {
     /// write or admin on it (acts for it).
     pub fn settings_thing(&mut self) -> Result<Option<Tid>> {
         let Some(t) = self.settings_named()? else { return Ok(None) };
-        Ok(self.core.edge_now(&t, &self.core.tid()).is_some_and(|e| e.role >= Role::Write).then_some(t))
+        Ok(self.core.grant_now(&t, &self.core.tid()).is_some_and(|e| e.role >= Role::Write).then_some(t))
     }
 
     /// The thing this node's root's `settings^.0` names, whatever this node holds of it: where a

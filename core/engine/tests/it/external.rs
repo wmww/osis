@@ -4,8 +4,8 @@
 //! a reader's write, the fire's listing and validity, promotion, each in
 //! both orders against the setting.
 
-use crate::common::{REG, ak, edge, edge_write, new_shared, s, set_edge, set_setting, test_setting};
-use crate::flows::{edge_of, people, send_carried};
+use crate::common::{REG, ak, grant, grant_write, new_shared, s, set_grant, set_setting, test_setting};
+use crate::flows::{grant_of, people, send_carried};
 use osis_base::{CommitId, Role, Tid};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -101,13 +101,13 @@ fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2
     let (mut lp, g) = three();
     let p1 = lp.peers[1].engine.tid();
     let s1 = set_setting(&mut lp, 0, g, &setting(true));
-    let up = set_edge(&mut lp.peers[0].engine, g, p1, Some(edge(Role::Write)), None);
+    let up = set_grant(&mut lp.peers[0].engine, g, p1, Some(grant(Role::Write)), None);
     send_carried(&mut lp, 0, 1, &[s1, up]);
     let f = fire(&mut lp, 1, g).unwrap();
     send_carried(&mut lp, 1, 0, &[f]);
     set_setting(&mut lp, 0, g, &setting(false));
     assert!(valid(&lp, 0, &f, g), "a writer's fire: valid whatever the setting");
-    edge_write(&mut lp.peers[0].engine, g, p1, Some(edge(Role::Read)), Some(ct::Frontier::default()));
+    grant_write(&mut lp.peers[0].engine, g, p1, Some(grant(Role::Read)), Some(ct::Frontier::default()));
     assert!(!valid(&lp, 0, &f, g), "unlisted by the demotion, not enabled: invalid");
     set_setting(&mut lp, 0, g, &setting(true));
     assert!(valid(&lp, 0, &f, g), "enabled: valid as a stranger's");
@@ -167,7 +167,7 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     let g = new_shared(&mut lp, 0);
     lp.sync_all().unwrap();
     let p2 = lp.peers[2].engine.tid();
-    let up = set_edge(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Admin)), None);
+    let up = set_grant(&mut lp.peers[0].engine, g, p2, Some(grant(Role::Admin)), None);
     send_carried(&mut lp, 0, 2, &[up]);
     let s1 = set_setting(&mut lp, 2, g, &setting(true));
     send_carried(&mut lp, 2, 1, &[up, s1]);
@@ -178,7 +178,7 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     send_carried(&mut lp, 0, 3, &[up]);
     send_carried(&mut lp, 2, 3, &[s1]);
     assert!(valid(&lp, 3, &f, g), "the grant, then the setting again: valid");
-    let dem = edge_write(&mut lp.peers[0].engine, g, p2, Some(edge(Role::Read)), Some(ct::Frontier::default()));
+    let dem = grant_write(&mut lp.peers[0].engine, g, p2, Some(grant(Role::Read)), Some(ct::Frontier::default()));
     send_carried(&mut lp, 2, 0, &[s1]);
     send_carried(&mut lp, 1, 0, &[f]);
     assert!(!valid(&lp, 0, &f, g), "the setting unlisted by its author's demotion: invalid");
@@ -222,16 +222,16 @@ fn carry_roles(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId], x: 
 
 // spec/sync-set.md §2 Own things (the node's role is by the thing's grants as the node holds
 // them): Alice makes Carol admin of X and grants Bob read. Alice removes Carol; before Carol
-// hears of it she removes Bob, and her removal reaches Bob first: his edge has ended. Then
+// hears of it she removes Bob, and her removal reaches Bob first: his grant has ended. Then
 // Alice's removal of Carol reaches him: Carol's removal is judged invalid, Bob's grant stands
 // again and he reads X by it, with no new fire from anyone.
 #[test]
 fn a_grant_standing_again_by_an_invalid_removal_gives_its_role_again_spec_sync_set_2() {
     let (mut lp, ps) = people(3);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&x, &ps[2], &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&x, &ps[2], &grant_of(Role::Admin)).unwrap();
     crate::flows::spread(&mut lp);
-    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &ps[1], &grant_of(Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X");
     let carol_out = lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[2], new: None, retain: Some(false) }).unwrap().commits;
@@ -263,7 +263,7 @@ fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     let x = e.new_thing(&mut m, ps[0]);
     m.set(x, &REG, &s("x")).unwrap();
     e.commit(m).unwrap().unwrap();
-    e.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    e.grant(&x, &ps[1], &grant_of(Role::Read)).unwrap();
     let mut new: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     new.sort_by_key(|c| e.header(c).unwrap().ts);
     let hand = |lp: &mut LocalPeer| {

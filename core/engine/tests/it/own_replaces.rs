@@ -196,10 +196,10 @@ fn bob_replaces(shared: i64, only: i64) -> (LocalPeer, Tid, CommitId, Vec<Commit
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| osis_schema::core_types::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+        let grant = |role| osis_schema::core_types::Grant { role, until: None, may_grant: false, retain: false, floor: None };
         for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
             let who = lp.peers[p].engine.tid();
-            lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
+            lp.peers[0].engine.grant(&t, &who, &grant(r)).unwrap();
         }
         lp.sync_all().unwrap();
         (lp, t)

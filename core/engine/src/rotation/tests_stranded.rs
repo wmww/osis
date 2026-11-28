@@ -3,7 +3,7 @@
 //! asks for writes only what differs.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, granted, independent_thing, synced};
+use super::tests::{grant, granted, independent_thing, synced};
 use super::Reseal;
 use crate::local_peer::LocalPeer;
 use osis_base::{CommitId, Role, Tid};
@@ -16,7 +16,7 @@ fn holder_on_g() -> (LocalPeer, Tid, Tid) {
         let t = independent_thing(&mut lp, 2);
         lp.sync_all().unwrap();
         let g = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &t, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &t, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         (lp, (g, t))
     });
@@ -99,12 +99,12 @@ fn an_asked_reseal_writes_only_what_differs_spec_permissions_3() {
 // independent thing of peer 2's on no path to T; a report naming T that carries a later grant on X leaves
 // peer 0 without it.
 #[test]
-fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
+fn holder_keys_take_no_grant_write_off_the_chain_spec_permissions_4() {
     let (mut lp, _, t) = holder_on_g();
     let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
     let p1 = lp.peers[1].engine.tid();
-    let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
+    let c = lp.peers[2].engine.grant(&x, &p1, &grant(Role::Read)).unwrap().commits[0];
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
     let keys = osis_blob::Certificates { commits: vec![v], records: Vec::new() };
@@ -155,7 +155,7 @@ fn until_granted() -> (LocalPeer, Tid, Vec<Tid>) {
         let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, 0);
         let until = lp.peers[0].engine.now().0 + 1_000;
-        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(osis_base::Time(until)), ..edge(Role::Read) }).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Grant { until: Some(osis_base::Time(until)), ..grant(Role::Read) }).unwrap();
         lp.sync_all().unwrap();
         (lp, (g, tids))
     });
@@ -201,7 +201,7 @@ fn a_writer_taking_a_stranded_notice_reseals_its_holder_spec_sync_inbox_5() {
     let m = tids[1];
     // g a holder (read on h), so its read keysets carry KEM keys whatever its setting (spec/crypto.md §3)
     let h = super::tests::independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&h, &g, &super::tests::edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&h, &g, &super::tests::grant(Role::Read)).unwrap();
     // g's admin enables no external signal
     let mut x = crate::Mutation::new();
     x.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::default()).unwrap();

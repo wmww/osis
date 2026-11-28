@@ -7,7 +7,7 @@
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world_of};
 use crate::harness::lies::Lie;
-use crate::harness::{World, edge, fixture_with, play};
+use crate::harness::{World, grant, fixture_with, play};
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_engine::flows::Demotion;
@@ -60,7 +60,7 @@ fn grant_reader(w: &mut World, t: Tid) -> Tid {
         let me = e.tid();
         let x = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
-        e.grant(&t, &x, &edge(Role::Read)).unwrap();
+        e.grant(&t, &x, &grant(Role::Read)).unwrap();
         x
     })
 }

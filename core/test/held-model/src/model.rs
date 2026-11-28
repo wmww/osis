@@ -368,7 +368,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
     let view = loop {
         let out: BTreeSet<PartRef> = waiting.union(&thrown).copied().collect();
         let view: Vec<Commit> = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &out)).collect();
-        let edges = edge_writes(&view, &world);
+        let grants = grant_writes(&view, &world);
         // a thing exists while a creation of it joins, or while it is known by its record alone,
         // no held commit listing a creation of it (spec/commits.md §5: a record is identity)
         let listed: BTreeSet<ThingId> = live.iter().flat_map(|c| c.parts.iter()).filter(|p| p.aspect == Aspect::CREATED).map(|p| p.thing).collect();
@@ -383,7 +383,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
         // creation hashes to its thing and needs no key)
         let t: BTreeSet<PartRef> = parts()
             .filter(|(c, i, p)| {
-                unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&edges, c, *i, &world)) || (p.aspect != Aspect::CREATED && miskeyed.contains(&(c.id, p.thing)))
+                unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&grants, c, *i, &world)) || (p.aspect != Aspect::CREATED && miskeyed.contains(&(c.id, p.thing)))
             })
             .map(|(c, i, _)| (c.id, i))
             .collect();
@@ -549,7 +549,7 @@ fn judgeable(world: &World, c: &Commit) -> bool {
 }
 
 /// A grant write's place in the order a wait reads (spec/permissions.md §5.1 step 1): its key,
-/// then its place among its commit's grant writes (on an edge its commit states or not, thing,
+/// then its place among its commit's grant writes (on a grant its commit states or not, thing,
 /// holder, index).
 type Placed = (Key, (bool, ThingId, NodeId, usize));
 
@@ -563,7 +563,7 @@ enum At {
 impl At {
     fn of(c: &Commit, i: usize, world: &World) -> At {
         match &c.parts[i].body {
-            Body::Held(Delta::Edge(e)) if c.is_role() => At::Write(placed(c, i, e.holder, &world.stated(c))),
+            Body::Held(Delta::Grant(e)) if c.is_role() => At::Write(placed(c, i, e.holder, &world.stated(c))),
             _ => At::Start(c.ts),
         }
     }
@@ -581,14 +581,14 @@ fn placed(c: &Commit, i: usize, holder: NodeId, stated: &BTreeSet<Hop>) -> Place
     (c.key(), (stated.contains(&(holder, thing)), thing, holder, i))
 }
 
-/// The grant writes of the held applied parts, grants and removals, of any validity, by the edge
+/// The grant writes of the held applied parts, grants and removals, of any validity, by the grant
 /// each sets: a joined part is judgeable, so none is itself unjudgeable.
-fn edge_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
+fn grant_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
     let mut out: BTreeMap<Hop, Vec<Placed>> = BTreeMap::new();
     for c in view.iter().filter(|c| c.is_role()) {
         let stated = world.stated(c);
         for (i, p) in c.parts.iter().enumerate() {
-            if let Body::Held(Delta::Edge(e)) = &p.body {
+            if let Body::Held(Delta::Grant(e)) = &p.body {
                 out.entry((e.holder, p.thing)).or_default().push(placed(c, i, e.holder, &stated));
             }
         }
@@ -596,20 +596,20 @@ fn edge_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
     out
 }
 
-/// spec/commits.md §4 Unjudgeable: an edge of the stated path of part `i` of `c` is neither a
+/// spec/commits.md §4 Unjudgeable: a grant of the stated path of part `i` of `c` is neither a
 /// record grant nor set by a held grant write ordered before the part. A fire of an external
-/// signal reads none; a path that states no edges (a thing named twice, a bad mark) is judged as
+/// signal reads none; a path that states no grants (a thing named twice, a bad mark) is judged as
 /// it is.
-fn unreached(edges: &BTreeMap<Hop, Vec<Placed>>, c: &Commit, i: usize, world: &World) -> bool {
+fn unreached(grants: &BTreeMap<Hop, Vec<Placed>>, c: &Commit, i: usize, world: &World) -> bool {
     let p = &c.parts[i];
     let holder = match &p.body {
-        Body::Held(Delta::Edge(e)) if c.is_role() => Some(e.holder),
+        Body::Held(Delta::Grant(e)) if c.is_role() => Some(e.holder),
         _ => None,
     };
     let empty = Path::default();
     let hops = world.hops(c.signer, c.paths.get(&p.thing).unwrap_or(&empty), p.thing, holder);
     let at = At::of(c, i, world);
-    !p.aspect.external && hops.is_some_and(|hs| hs.iter().any(|&(e, record)| !record && !edges.get(&e).is_some_and(|ws| ws.iter().any(|w| at.after(w)))))
+    !p.aspect.external && hops.is_some_and(|hs| hs.iter().any(|&(e, record)| !record && !grants.get(&e).is_some_and(|ws| ws.iter().any(|w| at.after(w)))))
 }
 
 /// The commit as joined: its waiting and thrown parts count as not received.
@@ -733,7 +733,7 @@ pub fn judged_with(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
 fn part_valid(tl: &Timeline, c: &Commit, i: usize) -> bool {
     match &c.parts[i].body {
         _ if c.parts[i].aspect == Aspect::CREATED => true,
-        Body::Held(Delta::Edge(_)) if c.is_role() => tl.applied_part(c.id, i),
+        Body::Held(Delta::Grant(_)) if c.is_role() => tl.applied_part(c.id, i),
         _ if c.is_role() && c.parts[i].aspect == Aspect::ROLES => tl.applied_part(c.id, i),
         _ => tl.valid_part(c.id, i),
     }

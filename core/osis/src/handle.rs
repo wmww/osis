@@ -622,7 +622,7 @@ impl Osis {
     /// is that actor, a read shows what it may read and nothing else (what it may not reads as a
     /// thing this node does not know), a write or revert needs its rights, not this node's. Calls
     /// on the tid-addressed read and write paths only: the sharing, sync and process-wide calls do
-    /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate.
+    /// not honour it yet (issues/act-as-several.md), so it stays inside the crate.
     pub(crate) fn act_as(&self, actor: Tid) -> Osis {
         Osis::internal(self.inner.clone(), Some(actor))
     }

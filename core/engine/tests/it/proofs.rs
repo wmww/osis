@@ -3,7 +3,7 @@
 //! The model: roles-model `paths::proofs` (notes/accounts-switch-brief.md, Models).
 
 use crate::disputes::{admins, fight};
-use crate::flows::{edge_of, people, send_carried, thing_of};
+use crate::flows::{grant_of, people, send_carried, thing_of};
 use osis_base::{Role, Tid};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::sync::{Claim, ProvenThing};
@@ -50,10 +50,10 @@ fn contact(on_t: Role) -> (LocalPeer, Tid, Tid) {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 2, ps[2]);
     let s = thing_of(&mut lp, 2, ps[2]);
-    lp.peers[2].engine.grant(&s, &t, &edge_of(Role::Write)).unwrap();
-    lp.peers[2].engine.grant(&s, &ps[3], &edge_of(Role::Read)).unwrap();
+    lp.peers[2].engine.grant(&s, &t, &grant_of(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&s, &ps[3], &grant_of(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    lp.peers[2].engine.grant(&t, &ps[0], &edge_of(on_t)).unwrap();
+    lp.peers[2].engine.grant(&t, &ps[0], &grant_of(on_t)).unwrap();
     lp.sync(2, 0).unwrap();
     (lp, t, s)
 }
@@ -106,9 +106,9 @@ fn a_cherry_picked_removal_of_the_remover_proves_nothing_spec_sync_opens_2() {
     let (a, b, d, c) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 3, c);
     for x in [a, b, d] {
-        lp.peers[3].engine.grant(&t, &x, &edge_of(Role::Admin)).unwrap();
+        lp.peers[3].engine.grant(&t, &x, &grant_of(Role::Admin)).unwrap();
     }
-    lp.peers[3].engine.grant(&t, &ps[4], &edge_of(Role::Read)).unwrap();
+    lp.peers[3].engine.grant(&t, &ps[4], &grant_of(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.peers[0].clock.advance(1_000);
     remove(&mut lp, 0, t, d);
@@ -154,7 +154,7 @@ fn proofs(k: usize) -> (LocalPeer, Vec<(Claim, osis_blob::Certificates)>) {
     for _ in 0..k {
         let t = thing_of(&mut lp, 2, ps[2]);
         let before: std::collections::BTreeSet<_> = lp.peers[2].engine.commit_ids().into_iter().collect();
-        lp.peers[2].engine.grant(&t, &ps[0], &edge_of(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&t, &ps[0], &grant_of(Role::Write)).unwrap();
         grants.push((t, lp.peers[2].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect::<Vec<_>>()));
     }
     lp.sync(2, 0).unwrap();

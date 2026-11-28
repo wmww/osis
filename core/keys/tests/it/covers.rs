@@ -21,8 +21,8 @@ fn key(b: u8) -> Key {
 
 /// Reader `m` removed by commit `b`: its departure, and the name a rotation knowing it writes.
 fn removal(m: Tid, b: u8) -> (Departure, Name) {
-    let edge = GrantLog { start: Some(Role::Read), writes: vec![GrantWrite { key: key(b), role: None, applied: true, takes: true, stands: true, counts: false }] };
-    (Departure::holder(m, Role::Sync).upto(Role::Read).edge(edge), Name::applied(key(b), m))
+    let grant = GrantLog { start: Some(Role::Read), writes: vec![GrantWrite { key: key(b), role: None, applied: true, takes: true, stands: true, counts: false }] };
+    (Departure::holder(m, Role::Sync).upto(Role::Read).grant(grant), Name::applied(key(b), m))
 }
 
 fn naming(n: Name) -> Names {
@@ -129,18 +129,18 @@ fn missing_box_covers_nothing() {
     assert!(!uncovered(&v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld).is_empty());
 }
 
-/// Held writes `ws` (commit, role, applied, takes, counts) on holder `m`'s edge (`start` its
+/// Held writes `ws` (commit, role, applied, takes, counts) on holder `m`'s grant (`start` its
 /// grant before them): its departure from every role above `now`.
-fn edge_dep(m: Tid, start: Option<Role>, ws: &[(u8, Option<Role>, bool, bool, bool)]) -> Departure {
+fn grant_dep(m: Tid, start: Option<Role>, ws: &[(u8, Option<Role>, bool, bool, bool)]) -> Departure {
     let writes = ws.iter().map(|(b, role, applied, takes, counts)| GrantWrite { key: key(*b), role: *role, applied: *applied, takes: *takes, stands: *takes, counts: *counts }).collect();
-    let edge = GrantLog { start, writes };
-    let from = match edge.now() {
+    let grant = GrantLog { start, writes };
+    let from = match grant.now() {
         None => Role::Sync,
         Some(Role::Sync) => Role::Read,
         Some(Role::Read) => Role::Write,
         _ => Role::Admin,
     };
-    Departure::holder(m, from).upto(Role::Admin).edge(edge)
+    Departure::holder(m, from).upto(Role::Admin).grant(grant)
 }
 
 /// Every name met; a departs mark marks only the commit of its `ts` and author (unlike
@@ -156,7 +156,7 @@ fn marking() -> impl osis_keys::Held {
 // not count (its author a reader at its point) is not pinned: the stated limit. With no write
 // giving M the role applied (start none), the void tail alone pins (the start holds M out
 // everywhere). A second removal F (9) applying nothing here pins only where it would apply over
-// the edge before L (a second finalize of the grant L ended), named applied by a rotator that
+// the grant before L (a second finalize of the grant L ended), named applied by a rotator that
 // lacked L or by the rotation commit's own mark; voided by its author's demotion here, it pins
 // nothing (a node holding that demotion but not L holds M a reader).
 #[test]
@@ -164,24 +164,24 @@ fn pins_hold_the_tail_spec_crypto_4() {
     let m = tid(3);
     let (l, g) = (Name::applied(key(1), m), Name::void(key(2), m));
     let names = |ns: &[Name]| Names { list: ns.iter().copied().collect(), departs: None };
-    let raised = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, true)]);
+    let raised = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, true)]);
     assert!(pins(&names(&[l, g]), Role::Read, &raised, &AllHeld));
     assert!(!pins(&names(&[g]), Role::Read, &raised, &AllHeld), "the void raise alone");
     assert!(!pins(&names(&[l]), Role::Read, &raised, &AllHeld), "the removal alone");
-    let junk = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, false)]);
+    let junk = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, false)]);
     assert!(pins(&names(&[l]), Role::Read, &junk, &AllHeld), "a raise that does not count");
-    let dropped = edge_dep(m, None, &[(2, Some(Role::Read), false, false, true)]);
+    let dropped = grant_dep(m, None, &[(2, Some(Role::Read), false, false, true)]);
     assert!(pins(&names(&[g]), Role::Read, &dropped, &AllHeld));
     assert!(!pins(&names(&[]), Role::Read, &dropped, &AllHeld));
     let f = Name::applied(key(9), m);
-    let twice = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false)]);
+    let twice = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false)]);
     assert!(pins(&names(&[f]), Role::Read, &twice, &AllHeld), "F named by a rotator lacking L");
     let marked = Names { list: BTreeSet::new(), departs: Some(Own { ts: 9, author: tid(9), blind: [0; 16] }) };
     assert!(pins(&marked, Role::Read, &twice, &marking()), "F is the rotation commit's own write");
-    let voided = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, false, true)]);
+    let voided = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, false, true)]);
     assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &marking()), "F voided by its author's demotion");
     // L, F, then G raising M back (void, counting): F pins nothing without G void
-    let back = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
+    let back = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
     assert!(!pins(&marked, Role::Read, &back, &marking()));
     assert!(pins(&Names { list: [Name::void(key(12), m)].into(), ..marked }, Role::Read, &back, &marking()));
 }

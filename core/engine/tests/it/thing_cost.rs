@@ -3,7 +3,7 @@
 //! node: commits, store rows by family, bytes a peer downloads, KEM and signature operations.
 
 use crate::common::{REG, s};
-use crate::flows::{account_two_nodes, edge_of, people};
+use crate::flows::{account_two_nodes, grant_of, people};
 use osis_base::Role;
 use osis_base::{CommitId, Tid, costs};
 use osis_engine::local_peer::LocalPeer;
@@ -172,7 +172,7 @@ fn what_a_reader_costs() {
         crate::flows::spread(&mut lp);
         let (c0, r0) = (lp.peers[0].engine.census().unwrap(), lp.peers[1].engine.census().unwrap());
         costs::take();
-        let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+        let done = lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
         let minting_ops = ops();
         let mut download = 0;
         for c in &done.commits {
@@ -267,9 +267,9 @@ fn what_a_small_commit_costs() {
     // T, its key holds write on T
     let (mut kp, ps) = people(2);
     let k = crate::flows::thing_of(&mut kp, 0, ps[0]);
-    kp.peers[0].engine.grant(&k, &ps[1], &edge_of(Role::Read)).unwrap();
+    kp.peers[0].engine.grant(&k, &ps[1], &grant_of(Role::Read)).unwrap();
     let key = osis_base::SignKey(kp.peers[1].engine.identity().signing().verifying_key().to_bytes());
-    kp.peers[0].engine.grant_key(&k, &key, Some(&edge_of(Role::Write))).unwrap();
+    kp.peers[0].engine.grant_key(&k, &key, Some(&grant_of(Role::Write))).unwrap();
     kp.advance(1000);
     crate::flows::spread(&mut kp);
     small_commit(&mut kp, 0, k, None, "x");

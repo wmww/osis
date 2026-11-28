@@ -34,15 +34,15 @@ impl Engine {
     }
 
     /// The grant writes held role commit `id` makes, whatever the delete keys it lists (none while
-    /// a reset names a write not held, `validity::edge_writes_of`, nor for a split commit): the
+    /// a reset names a write not held, `validity::grant_writes_of`, nor for a split commit): the
     /// applied ones (`ix.held`) less a miskeyed commit's left out.
     #[doc(hidden)]
-    pub fn edge_writes(&mut self, id: &CommitId) -> Result<Vec<osis_perm::GrantOp>> {
+    pub fn grant_writes(&mut self, id: &CommitId) -> Result<Vec<osis_perm::GrantOp>> {
         let id = *id;
         self.read(|tx| {
             let Some(v) = tx.core.ix.commits.get(&id).filter(|m| matches!(m.header.path, osis_commit::Paths::One(_))).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
             let parts = crate::apply::perm_parts(tx, &id)?;
-            let per = crate::apply::validity::edge_writes_of(tx.core, &v, &id, &parts);
+            let per = crate::apply::validity::grant_writes_of(tx.core, &v, &id, &parts);
             Ok(if per.iter().all(|x| x.2) { per.into_iter().flat_map(|x| x.1).collect() } else { Vec::new() })
         })
     }
@@ -595,7 +595,7 @@ impl Engine {
 
     /// Whether a grant write of commit `c` on `t` applies in the settled walk (tests).
     #[doc(hidden)]
-    pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
+    pub fn grant_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
         self.core.timelines().get(t).is_some_and(|tl| tl.held_on(t).any(|(w, mc, _)| mc.id == *c && tl.is_applied(&w)))
     }
 
@@ -819,7 +819,7 @@ impl super::Core {
         let ix = &self.ix;
         ix.held.all_things().into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = ix.held.edge_commits(&t).iter().map(|x| x.id).collect();
+            let mut cs: Vec<CommitId> = ix.held.grant_commits(&t).iter().map(|x| x.id).collect();
             cs.sort();
             (t, (cs, ix.held.created(&t).is_some()))
         }).collect()
@@ -895,7 +895,7 @@ impl super::Core {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexDigest {
     pub commits: BTreeMap<CommitId, CommitDigest>,
-    /// Per thing perm's held set reads: its edge commits, sorted, and whether its creation record
+    /// Per thing perm's held set reads: its grant commits, sorted, and whether its creation record
     /// is held.
     pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.

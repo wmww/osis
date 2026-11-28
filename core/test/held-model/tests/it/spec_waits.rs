@@ -17,7 +17,7 @@ fn on(thing: ThingId, mut c: Commit) -> Commit {
 // the commit is thrown out whole, to be fetched again
 #[test]
 fn unknown_author_record_throws_the_commit_out_spec_commits_4() {
-    let mut hd = held(5, vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1)]);
+    let mut hd = held(5, vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1)]);
     assert!(evaluate(&hd).applied.contains(&10));
     hd.records.retain(|t| t.id != 1);
     let o = evaluate(&hd);
@@ -69,19 +69,19 @@ fn unknown_record_up_the_chain_throws_the_part_out_spec_commits_4() {
     assert!(o.revisit.contains(&10));
 }
 
-// spec/commits.md §4 (Unjudgeable): a part waits until a grant write on each edge of its stated
+// spec/commits.md §4 (Unjudgeable): a part waits until a grant write on each grant of its stated
 // path is held ordered before it: a grant ordered after it is no evidence its writer relied on
 #[test]
 fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
     let w = reg(10, 2, 2, REG, PurgeBy::AuthorOrAdmin, 1);
     let o = evaluate(&held(5, vec![w.clone()]));
     assert!(!o.applied.contains(&10));
-    let o = evaluate(&held(5, vec![w.clone(), edge(5, MINT_ADMIN, 3, 2, Some(Role::Write), None)]));
+    let o = evaluate(&held(5, vec![w.clone(), grant(5, MINT_ADMIN, 3, 2, Some(Role::Write), None)]));
     assert!(!o.applied.contains(&10), "the grant came after it: it still waits");
-    let o = evaluate(&held(5, vec![w.clone(), edge(5, MINT_ADMIN, 1, 2, Some(Role::Write), None)]));
+    let o = evaluate(&held(5, vec![w.clone(), grant(5, MINT_ADMIN, 1, 2, Some(Role::Write), None)]));
     assert!(o.applied.contains(&10) && o.valid[&(10, 0)]);
     // a removal ordered before it is evidence too: applied, invalid
-    let o = evaluate(&held(5, vec![w, edge(5, MINT_ADMIN, 1, 2, None, None)]));
+    let o = evaluate(&held(5, vec![w, grant(5, MINT_ADMIN, 1, 2, None, None)]));
     assert!(o.applied.contains(&10) && !o.valid[&(10, 0)]);
 }
 
@@ -89,12 +89,12 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
 // forged grant to 3 by 2 (holding nothing on T) waits, and does not release 3's write after it;
 // an honest grant to 3 ordered after the forgery does
 #[test]
-fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
-    let forged = edge(5, 2, 1, 3, Some(Role::Write), None);
+fn an_unjudgeable_grant_write_is_no_evidence_spec_commits_4() {
+    let forged = grant(5, 2, 1, 3, Some(Role::Write), None);
     let w = reg(10, 3, 3, REG, PurgeBy::AuthorOrAdmin, 1);
     let o = evaluate(&held(5, vec![forged.clone(), w.clone()]));
     assert!(!o.applied.contains(&5) && !o.applied.contains(&10));
-    let o = evaluate(&held(5, vec![forged, edge(6, MINT_ADMIN, 2, 3, Some(Role::Write), None), w]));
+    let o = evaluate(&held(5, vec![forged, grant(6, MINT_ADMIN, 2, 3, Some(Role::Write), None), w]));
     assert!(o.applied.contains(&10) && o.valid[&(10, 0)]);
 }
 
@@ -114,8 +114,8 @@ fn parked_part_waits_alone_spec_commits_4() {
 // spec/commits.md §4 (Unjudgeable): a role commit's part on an unknown thing goes alone
 #[test]
 fn role_commit_part_on_unknown_thing_goes_alone_spec_commits_4() {
-    let mut c = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
-    c.parts.push(on(UNKNOWN, edge(5, MINT_ADMIN, 0, 2, Some(Role::Write), None)).parts.remove(0));
+    let mut c = grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    c.parts.push(on(UNKNOWN, grant(5, MINT_ADMIN, 0, 2, Some(Role::Write), None)).parts.remove(0));
     let o = evaluate(&held(5, vec![c, reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1)]));
     assert!(o.applied.contains(&5) && o.valid[&(5, 0)]);
     assert!(!o.valid[&(5, 1)]);

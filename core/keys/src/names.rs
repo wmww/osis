@@ -17,7 +17,7 @@ pub struct Key {
     pub commit: CommitId,
 }
 
-/// One named grant write on the actor: its commit's key and the holder whose edge it writes;
+/// One named grant write on the actor: its commit's key and the holder whose grant it writes;
 /// `void`: it applied nothing at the rotator (else it applied, lowering the holder).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
@@ -27,12 +27,12 @@ pub struct Name {
 }
 
 impl Name {
-    /// The write of the commit at `key` on `holder`'s edge, applied.
+    /// The write of the commit at `key` on `holder`'s grant, applied.
     pub fn applied(key: Key, holder: Tid) -> Name {
         Name { key, holder, void: false }
     }
 
-    /// The write of the commit at `key` on `holder`'s edge, applying nothing.
+    /// The write of the commit at `key` on `holder`'s grant, applying nothing.
     pub fn void(key: Key, holder: Tid) -> Name {
         Name { key, holder, void: true }
     }
@@ -125,8 +125,8 @@ impl Names {
 
 /// What a node holds for judging names (spec/crypto.md §4), for one actor.
 pub trait Held {
-    /// `n`'s commit is applied here with its `roles.0` part on the actor, every entry its edge
-    /// writes reset known, and its write on `n.holder`'s edge judged as the rotator judged it:
+    /// `n`'s commit is applied here with its `roles.0` part on the actor, every entry its grant
+    /// writes reset known, and its write on `n.holder`'s grant judged as the rotator judged it:
     /// standing here (`GrantWrite::stands`) for an applied name, applying nothing for a void one.
     fn met(&self, n: &Name) -> bool;
     /// `node` holds role `r` on the actor now, for keys (spec/crypto.md §4, Holds): a departure

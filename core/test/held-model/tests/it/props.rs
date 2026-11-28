@@ -99,7 +99,7 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
             // valid (spec/permissions.md §6), and one thrown out as unknown once it is known
             // (notes/expiry-creation-design.md §3): a part `full` holds of any held commit, unless
             // held it would go again (invalid, expired, purged past its bound, covered, still
-            // unknown), judged with its body put back (a role part's validity is its edge's, and a
+            // unknown), judged with its body put back (a role part's validity is its grant's, and a
             // role delta is kept at any validity)
             let mut again = again;
             for c in &h.commits {

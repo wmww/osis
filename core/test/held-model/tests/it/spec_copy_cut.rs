@@ -67,13 +67,13 @@ fn hand(admin_rotates: bool) -> World {
     let mut c = |id, signer, thing, hops: Vec<(Id, Id)>, parts| cs.push(Commit { id, signer, thing, hops, ts: id, parts });
     c(1, 1, A, vec![(1, A)], vec![Delta::Keys { keyset: 0 }, Delta::Secrets(vec![rd(1, 0, 0)]), Delta::Sync]);
     if admin_rotates {
-        c(2, 1, A, vec![(1, A)], vec![Delta::Roles(vec![Edge { holder: 2, role: Some(Role::Admin), may_grant: false }]), Delta::Secrets(vec![rd(2, 0, 0)])]);
+        c(2, 1, A, vec![(1, A)], vec![Delta::Roles(vec![Grant { holder: 2, role: Some(Role::Admin), may_grant: false }]), Delta::Secrets(vec![rd(2, 0, 0)])]);
         let b = vec![rd(1, 1, 0), rd(2, 1, 0)];
         c(3, 2, A, vec![(2, A)], vec![Delta::Keys { keyset: 1 }, Delta::Secrets(b)]);
         c(4, 1, T, vec![(1, A), (A, T)], vec![Delta::Secrets(vec![rd(A, 1, 1)])]);
     } else {
-        c(2, 1, A, vec![(1, A)], vec![Delta::Roles(vec![Edge { holder: 2, role: Some(Role::Read), may_grant: true }]), Delta::Secrets(vec![rd(2, 0, 0)])]);
-        c(3, 2, A, vec![(2, A)], vec![Delta::Roles(vec![Edge { holder: 3, role: Some(Role::Read), may_grant: false }]), Delta::Secrets(vec![rd(3, 0, 0)])]);
+        c(2, 1, A, vec![(1, A)], vec![Delta::Roles(vec![Grant { holder: 2, role: Some(Role::Read), may_grant: true }]), Delta::Secrets(vec![rd(2, 0, 0)])]);
+        c(3, 2, A, vec![(2, A)], vec![Delta::Roles(vec![Grant { holder: 3, role: Some(Role::Read), may_grant: false }]), Delta::Secrets(vec![rd(3, 0, 0)])]);
         c(4, 3, 3, vec![], vec![Delta::Keys { keyset: 1 }]);
         c(5, 1, T, vec![(1, A), (A, T)], vec![Delta::Secrets(vec![rd(A, 1, 0)])]);
     }

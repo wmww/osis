@@ -15,7 +15,7 @@ use osis_keys::{Grant, HolderKeys, Keysets, ROLES, Recipient, Seal};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The order of an actor grant (spec/crypto.md §4, key access): an edge by the write that began
+/// The order of an actor grant (spec/crypto.md §4, key access): a grant by the write that began
 /// its standing (`None`: a record grant, since before every change, so never the one left
 /// keyless), then a grant being written now.
 type Order = (u8, Option<osis_perm::Point>);
@@ -113,10 +113,10 @@ pub(crate) fn keyed(core: &Core, a: &Tid, h: &Tid) -> bool {
 }
 
 /// Whether a grant of `holder` on `target` written now would be keyless (spec/crypto.md §4): a
-/// standing edge on `target` (`edge_holders`) keeps its standing's judgement, a new one comes
+/// standing grant on `target` (`grant_holders`) keeps its standing's judgement, a new one comes
 /// after every grant held.
 pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool {
-    if core.edge_holders(target).iter().any(|(m, _)| m == holder) {
+    if core.grant_holders(target).iter().any(|(m, _)| m == holder) {
         return key_access(core).contains(&(*target, *holder));
     }
     // the grants held with this one last, and the record grants of both ends (an actor whose
@@ -330,7 +330,7 @@ fn stands(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
     if writes_keyset(tx.core, c) {
         return Ok(true);
     }
-    if let Some(rc) = tx.core.ix.held.edge_commit(c).cloned() {
+    if let Some(rc) = tx.core.ix.held.grant_commit(c).cloned() {
         let keyless = key_access(tx.core);
         for op in &rc.ops {
             let Some(h) = op.holder.thing() else { continue };
@@ -338,7 +338,7 @@ fn stands(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
                 return Ok(true);
             }
             let deps = super::departures(tx, &op.target)?;
-            let wrote = |d: &osis_keys::Departure| d.holder == h && d.edge.as_ref().is_some_and(|e| e.writes.iter().any(|w| w.key.commit == *c));
+            let wrote = |d: &osis_keys::Departure| d.holder == h && d.grant.as_ref().is_some_and(|e| e.writes.iter().any(|w| w.key.commit == *c));
             if super::others(tx.core, &op.target, None, deps).iter().any(wrote) {
                 return Ok(true);
             }
@@ -419,7 +419,7 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
 }
 
 /// `sealed` for a grant of `role` to `m` with key access (`grant_keyless` judged it): up to
-/// `role` itself, which the grant's own edge gives `m`.
+/// `role` itself, which the grant's own grant gives `m`.
 pub(crate) fn sealed_granted(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
     let mut sealed = sealing_at(tx, who, a, m, role)?;
     if let Sealed::Boxed(r) = &mut sealed {

@@ -15,11 +15,11 @@ pub struct Point {
     pub commit: CommitId,
 }
 
-/// A `roles.0` edge value (spec/data-model.md §9 `edge`).
+/// A `roles.0` grant value (spec/data-model.md §9 `grant`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Grant {
     pub role: Role,
-    /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
+    /// The grant counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<Time>,
     /// The may-grant flag (spec/permissions.md §2): its holder may add new holders up to its role.
     pub may_grant: bool,
@@ -48,7 +48,7 @@ impl Grant {
     pub fn ends_retaining(&self) -> bool {
         self.says_retain() || self.until.is_some() && self.retain
     }
-    /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
+    /// Alive at `ts`; `None` is the end of time, where every grant with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {
         match (self.until, ts) {
             (None, _) => true,
@@ -110,14 +110,14 @@ impl Frontier {
     }
 }
 
-/// One `roles.0` grant write of a role commit: the edge of `holder` on `target`, `None`
+/// One `roles.0` grant write of a role commit: the grant of `holder` on `target`, `None`
 /// for a removal.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GrantOp {
     pub target: Tid,
     /// A thing (`roles.0`) or a key (`signers.0`).
     pub holder: Holder,
-    pub edge: Option<Grant>,
+    pub grant: Option<Grant>,
 }
 
 /// The grant writes of a role commit (spec/commits.md §2).

@@ -8,7 +8,7 @@
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use crate::rotation::tests::edge;
+use crate::rotation::tests::grant;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_store::Fault;
 
@@ -27,7 +27,7 @@ fn world(n: usize) -> (LocalPeer, Tid) {
         lp.hold(t);
         for i in [1, 2] {
             let who = lp.peers[i].engine.tid();
-            lp.peers[0].engine.grant(&t, &who, &edge(Role::Admin)).unwrap();
+            lp.peers[0].engine.grant(&t, &who, &grant(Role::Admin)).unwrap();
         }
         lp.sync_all().unwrap();
         lp.advance(1000);
@@ -36,9 +36,9 @@ fn world(n: usize) -> (LocalPeer, Tid) {
 }
 
 /// Peer `by` grants peer `to` `role` on `t`: the grant's commit.
-fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> CommitId {
+fn grant_by(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> CommitId {
     let who = lp.peers[to].engine.tid();
-    let id = *lp.peers[by].engine.grant(&t, &who, &edge(role)).unwrap().commits.last().unwrap();
+    let id = *lp.peers[by].engine.grant(&t, &who, &grant(role)).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
 }
@@ -97,7 +97,7 @@ fn set(lp: &mut LocalPeer, by: usize, t: Tid, v: &str) -> osis_base::CommitId {
 fn an_arrival_waking_a_wait() {
     let make = || {
         let (mut lp, t) = world(4);
-        let g = grant(&mut lp, 0, t, 3, Role::Write);
+        let g = grant_by(&mut lp, 0, t, 3, Role::Write);
         lp.sync(0, 3).unwrap();
         let c = set(&mut lp, 3, t, "written");
         let cp = lp.peers[3].engine.package(&c).unwrap().unwrap();

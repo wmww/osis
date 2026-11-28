@@ -5,10 +5,10 @@
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
-use super::{Done, put_edge};
+use super::{Done, put_grant};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::edges::{History, grant_history};
+use crate::flows::grants::{History, grant_history};
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{Role, Tid, Value, Time};
@@ -53,8 +53,8 @@ pub struct LinkSpec {
 impl Engine {
     /// Creates a link to `spec.target` for `sharer` (a thing this node is admin of): K (mint
     /// admin `sharer`, independent, with its sync ID), L (minted with the key
-    /// of a fresh seed, its minting signed by that key as L), L's edge (r, may-grant, `until`) on
-    /// K with its boxes, K's edge on the target, and a thing minted with K's mint admin as admin
+    /// of a fresh seed, its minting signed by that key as L), L's grant (r, may-grant, `until`) on
+    /// K with its boxes, K's grant on the target, and a thing minted with K's mint admin as admin
     /// keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
@@ -74,7 +74,7 @@ impl Engine {
     /// Redeems a link once K's sync ID was downloaded (node-sync;
     /// `hold_link_key` came first so L's boxes open): signing as L, a may-grant grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
-    /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
+    /// `single_use` also removes L's own grant in the same commit. Deposited under K's sync ID
     /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
     /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
@@ -104,8 +104,8 @@ impl Engine {
 
     fn redeem_in(&mut self, l: Tid, link: &ShareLink, grantee: Tid, single_use: bool) -> Result<Done> {
         let k = link.k;
-        let edge = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no holder of K (finalized or unknown)"))?;
-        if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
+        let cur = self.roster(&k).get(&l).copied().ok_or(Error::Misuse("the link is no holder of K (finalized or unknown)"))?;
+        if !cur.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
         if !self.core.is_independent(&k) {
@@ -114,7 +114,7 @@ impl Engine {
         if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
-        let grant = Grant { role: edge.role, until: None, may_grant: false, retain: false, floor: None };
+        let grant = Grant { role: cur.role, until: None, may_grant: false, retain: false, floor: None };
         // L signs with its own role, so the grant deposits only below write; a redeem holds K
         // and the target (spec/sync-set.md §4): strongs to both in the joiner's `holds.0`,
         // unless the node closure holds them
@@ -175,34 +175,34 @@ impl Engine {
         self.public_reads(t) || self.core.exists(t) && crate::rotation::role_here(&self.core, t).is_some()
     }
 
-    /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
-    /// past `until` (spec/permissions.md §7). A holder not seen yet says nothing: its edge may be
+    /// Whether the held role history shows `holder` put on `thing` and its grant over: removed, or
+    /// past `until` (spec/permissions.md §7). A holder not seen yet says nothing: its grant may be
     /// on its way.
-    pub fn edge_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
+    pub fn grant_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
         let ts = super::now_ts(&self.core);
         self.core.timelines().get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
     /// Whether a link being redeemed has ended here (spec/permissions.md §7): the held role history
-    /// shows L's edge on K, or K's on the target the link names, removed or past `until`. Reads
+    /// shows L's grant on K, or K's on the target the link names, removed or past `until`. Reads
     /// the clock up to the next `until` or role commit of K's and the target's components, so an
     /// `until` passing moves it.
     pub fn link_ended(&mut self, link: &ShareLink) -> bool {
         let l = crate::identity::link_key_tid(&link.seed, link.k);
         let _horizon = self.core.bound_to_horizon([link.k, link.target].into_iter());
-        self.edge_gone(&link.k, &l) || self.edge_gone(&link.target, &link.k)
+        self.grant_gone(&link.k, &l) || self.grant_gone(&link.target, &link.k)
     }
 
     /// Whether `k` is a link a joiner this node acts as joined that has ended (spec/permissions.md
     /// §7, Joiner's leave): it holds K by a grant (`joiner_of`), and the held role
-    /// history shows K's edge on the target K's record names removed or past `until`. The caller
+    /// history shows K's grant on the target K's record names removed or past `until`. The caller
     /// leaves K (`leave_link`): sync's duty follows it per thing (`osis_sync::life`). Only K's
     /// creator wrote that target, and it may remove any joiner anyway. Reads the clock up to the
     /// next `until` or role commit of K's and the target's components.
     pub fn joined_link_ended(&mut self, k: &Tid) -> bool {
         let Some(target) = self.core.created(k).and_then(|r| r.link_target()) else { return false };
         let _horizon = self.core.bound_to_horizon([*k, target].into_iter());
-        self.joined_link(k) && self.edge_gone(&target, k)
+        self.joined_link(k) && self.grant_gone(&target, k)
     }
 
     /// Whether a joiner this node acts as holds link's thing `k` by a live grant (`joiner_of`): a
@@ -219,8 +219,8 @@ impl Engine {
     pub fn joiner_of(&mut self, k: &Tid) -> Option<Tid> {
         let me = self.core.tid();
         let mint = self.mint_admin(k);
-        let edges: Vec<(Tid, osis_perm::Grant)> = self.core.timelines().get(k).map(|tl| tl.edges_at(None).holders(k).map(|(h, e)| (*h, *e)).collect()).unwrap_or_default();
-        let ours: Vec<(Tid, osis_perm::Grant)> = edges.into_iter().filter(|(h, _)| Some(*h) != mint && self.core.created(h).is_none_or(|r| r.link_target() != Some(*k)) && (*h == me || self.core.role_now(&me, h) == Some(Role::Admin))).collect();
+        let grants: Vec<(Tid, osis_perm::Grant)> = self.core.timelines().get(k).map(|tl| tl.edges_at(None).holders(k).map(|(h, e)| (*h, *e)).collect()).unwrap_or_default();
+        let ours: Vec<(Tid, osis_perm::Grant)> = grants.into_iter().filter(|(h, _)| Some(*h) != mint && self.core.created(h).is_none_or(|r| r.link_target() != Some(*k)) && (*h == me || self.core.role_now(&me, h) == Some(Role::Admin))).collect();
         self.core.time.at(|now| {
             let alive = ours.iter().find(|(_, e)| e.alive_at(Some(super::ts_at(now)))).map(|(h, _)| *h);
             (alive, ours.iter().filter_map(|(_, e)| e.until).map(|u| u.0).filter(|u| *u > now).min())
@@ -236,7 +236,7 @@ impl Engine {
 
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
     /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
-    /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
+    /// redemption (L's grant already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure). The link ends
     /// with it, and so does its seed (`let_seeds_go`).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
@@ -278,7 +278,7 @@ impl Engine {
     }
 
     /// The links this node should finalize now (spec/permissions.md §7): it holds the seed and
-    /// admin on K, and L's edge on K expired (`until`, given) or was removed by a single-use
+    /// admin on K, and L's grant on K expired (`until`, given) or was removed by a single-use
     /// redemption, with no explicit write on it since. The caller finalizes each after a
     /// complete pass of K's sync IDs, so the frontier covers the grants made while the link
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
@@ -304,7 +304,7 @@ impl Engine {
     }
 
     /// When the next link this node may finalize expires (wall ms): the earliest
-    /// `until` of a live L edge on a K it is admin of.
+    /// `until` of a live L grant on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
         let me = self.core.tid();
         let ts = super::now_ts(&self.core);
@@ -375,7 +375,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     // L: minted with the seed's key, its secrets the seed's, signed by that key as L
     rotation::own_secrets_new(tx, lid.record().clone(), Some(seed), Vec::new(), &mut done)?;
     debug_assert_eq!(lid.tid(), l);
-    // L's edge (r, may-grant, until) with its boxes, sealed to L's keysets
+    // L's grant (r, may-grant, until) with its boxes, sealed to L's keysets
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let rcpt = super::recipient(tx, l, spec.role)?;
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
@@ -383,7 +383,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     let mut m = Mutation::new();
     // its `until` passing says what the target's default says now (spec/permissions.md §3, Retain)
     let retain = spec.until.is_some() && crate::apply::validity::retain_default(tx.core, &spec.target);
-    put_edge(&mut m, k, l, &Grant { role: spec.role, until: spec.until, may_grant: true, retain, floor: None })?;
+    put_grant(&mut m, k, l, &Grant { role: spec.role, until: spec.until, may_grant: true, retain, floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let sync_id = super::sync_id_of(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
@@ -395,9 +395,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     }
     // K on the target, which K holds by a strong: K's sync unit carries the target, and so K's
     // grant on it, to a redeemer (spec/permissions.md §7 Redeem step 3)
-    let target_edge = Grant { role: spec.role, until: None, may_grant: false, retain: false, floor: None };
+    let target_grant = Grant { role: spec.role, until: None, may_grant: false, retain: false, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
-    done.extend(grant_history(tx, None, spec.target, k, &target_edge, false, None, History::All)?);
+    done.extend(grant_history(tx, None, spec.target, k, &target_grant, false, None, History::All)?);
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
     done.add(Engine::commit_tx(tx, m)?);

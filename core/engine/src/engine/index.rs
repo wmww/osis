@@ -434,8 +434,8 @@ impl Rec for crate::apply::validity::AddendaParts {
 
 impl Rec for crate::apply::validity::PermParts {
     fn to(&self) -> Value {
-        let edges = self
-            .edges
+        let grants = self
+            .grants
             .iter()
             .map(|(ai, es)| {
                 let es = es
@@ -451,12 +451,12 @@ impl Rec for crate::apply::validity::PermParts {
                 Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
             })
             .collect();
-        Value::List(edges)
+        Value::List(grants)
     }
     fn from(v: &Value) -> Option<Self> {
-        let Value::List(edges) = v else { return None };
+        let Value::List(grants) = v else { return None };
         let mut out = crate::apply::validity::PermParts::default();
-        for p in edges {
+        for p in grants {
             let Value::List(p) = p else { return None };
             let [ai, Value::List(items)] = p.as_slice() else { return None };
             let es = items
@@ -471,7 +471,7 @@ impl Rec for crate::apply::validity::PermParts {
                     Some((records::dot_of(d).ok()?, Rec::from(k)?, v))
                 })
                 .collect::<Option<Vec<_>>>()?;
-            out.edges.push((<usize as Rec>::from(ai)?, es));
+            out.grants.push((<usize as Rec>::from(ai)?, es));
         }
         Some(out)
     }
@@ -609,8 +609,8 @@ fn write_perm_all(tx: &mut Tx<'_>) -> Result<()> {
 /// The `PERM_PARTS` rows of the held role commits; an error when one is missing or does not
 /// decode (the open then rebuilds).
 pub(crate) fn load_perm(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::PermParts>> {
-    let _s = osis_base::costs::span("open: edges rows");
-    load_commit_rows(tx, PERM_PARTS, "edges row")
+    let _s = osis_base::costs::span("open: grants rows");
+    load_commit_rows(tx, PERM_PARTS, "grants row")
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped

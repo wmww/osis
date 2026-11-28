@@ -59,7 +59,7 @@ pub struct ShareLink {
     pub k_sync_id: SyncId,
     /// The nodes to dial for first contact (spec/wire.md §10 `peer`).
     pub peers: Vec<DialHint>,
-    /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §7).
+    /// `flags` bit 0: the redemption removes L's own grant (spec/permissions.md §7).
     pub single_use: bool,
 }
 

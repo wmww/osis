@@ -23,7 +23,7 @@ fn base() -> (LocalPeer, Tid, Tid) {
     let mut m = Mutation::new();
     let x = e0.new_thing(&mut m, ps[0]);
     e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     let d1 = lp.peers[1].engine.node_root().unwrap();
     let mut m = Mutation::new();
     m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();

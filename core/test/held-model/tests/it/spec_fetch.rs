@@ -14,8 +14,8 @@ const L: SyncId = 2;
 const NO_SYNC_ID: SyncId = 999;
 
 /// The grant (mint admin 0 gives `ME` read on T) with its key box.
-fn grant(key: SyncId) -> Commit {
-    let mut c = edge(30, MINT_ADMIN, 1, ME, Some(Role::Read), None);
+fn keyed_grant(key: SyncId) -> Commit {
+    let mut c = grant(30, MINT_ADMIN, 1, ME, Some(Role::Read), None);
     c.boxes = vec![KeyBox { thing: T, key }];
     c
 }
@@ -33,7 +33,7 @@ fn granted(key: SyncId) -> Library {
     let mut copies = BTreeMap::new();
     copies.insert(30, BTreeSet::from([MINE]));
     let w = reg(40, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 5);
-    Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![grant(key), made(), w], keys: BTreeSet::from([MINE]) }
+    Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![keyed_grant(key), made(), w], keys: BTreeSet::from([MINE]) }
 }
 
 fn reads(lib: &Library, reading_only: bool) -> Option<Value> {
@@ -124,7 +124,7 @@ fn world(seed: u64) -> Library {
         // a grant for ME, with a box for a sync ID this thing is under
         if r.chance(70) {
             id += 1;
-            let mut g = edge_on(id, admin, 1, thing, EdgeWrite::role(ME, Some(Role::Read)), None);
+            let mut g = grant_on(id, admin, 1, thing, GrantWrite::role(ME, Some(Role::Read)), None);
             let key = if r.chance(15) { NO_SYNC_ID } else { *ls.iter().next().unwrap() };
             g.boxes = vec![KeyBox { thing, key }];
             if r.chance(70) {
@@ -203,7 +203,7 @@ fn covered(c: Commit) -> (Held, Commit) {
     let b = Commit { parts: vec![Part { ..part(REG, PurgeBy::Writer, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, PurgeBy::Writer, 1) };
     let x = reg(15, MINT_ADMIN, 2, REG, PurgeBy::Writer, 2);
     let s = snap(20, 1, 3, REG, PurgeBy::Writer, vec![set(2, 15, 2)]);
-    let g = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    let g = grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
     (held(5, vec![g, b, x, s]), c)
 }
 
@@ -227,7 +227,7 @@ fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
 // not arrived at all. Not specific to a wait: the node could not tell before it came.
 #[test]
 fn delete_during_a_demotion_wait_counts_as_never_received_spec_sync_6() {
-    let c = edge(6, MINT_ADMIN, 2, 1, None, Some(vec![10]));
+    let c = grant(6, MINT_ADMIN, 2, 1, None, Some(vec![10]));
     let (h, c) = covered(c);
     let o = evaluate(&h);
     let mut dropped = act(&h, &o, Some((10, 0)));

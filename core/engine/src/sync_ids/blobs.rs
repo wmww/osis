@@ -846,7 +846,7 @@ impl Engine {
             // a node removed from its account wraps nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
             let who = tx.core.tid();
-            if encrypt && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
+            if encrypt && !crate::flows::grants::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }
             Ok(crate::rotation::blocked_roles_of(tx, &who, &a, walk)?.contains(&Role::Read))

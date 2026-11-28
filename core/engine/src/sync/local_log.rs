@@ -1,8 +1,8 @@
 //! The local part's log (spec/sync-set.md §2 The local part's log): the local part is a unit like
 //! any other, and what it carries of things outside it is what this node logged there. The node
-//! logs thing X when an edge of the local part carries a vertex of X (a dependent it opens there
+//! logs thing X when a grant of the local part carries a vertex of X (a dependent it opens there
 //! too, so one made independent stays logged), judged while it
-//! held X's role entries by another route (`founded_otherwise`); the row stays while some edge of
+//! held X's role entries by another route (`founded_otherwise`); the row stays while some grant of
 //! the local part still carries X, whatever became of that route, and goes with the last. The
 //! local part's carriage reads the grants on a thing only where it is an own thing, logged, or
 //! founded otherwise (`counts`): grants held as evidence, or handed over with no route, carry
@@ -42,14 +42,14 @@ pub(crate) fn counts(core: &Core, y: &Tid) -> bool {
 /// carriage of it: a link it redeems or a grant signal it follows naming `a` (a share link's K,
 /// its record naming `a` the link's target, holding a role on it, spec/permissions.md §7), its own
 /// commits minting `a` or giving it a keyset in the running transaction (`Core::made`), or a
-/// vertex of `a` that an edge of another unit gives on a path avoiding `a` (a unit it syncs
+/// vertex of `a` that a grant of another unit gives on a path avoiding `a` (a unit it syncs
 /// carrying `a` whole or as a stub).
 fn founded_otherwise(core: &Core, a: &Tid) -> bool {
     let fl = &core.followed_links;
     fl.contains(a) || core.made.contains(a) || core.roster_of(a).keys().any(|k| fl.contains(k) && core.created(k).is_some_and(|r| r.link == Some(*a))) || crate::sync::units::given_elsewhere(core, a)
 }
 
-/// The local part's log brought up to its edges as they stand (a settle's end): each thing an edge
+/// The local part's log brought up to its grants as they stand (a settle's end): each thing a grant
 /// from the local part was linked to or unlinked from is logged while one carries it, and goes
 /// with the last. Whether a row moved.
 pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {

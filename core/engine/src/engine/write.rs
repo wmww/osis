@@ -67,7 +67,7 @@ pub struct Mutation {
     /// The thing signed as where it is not the node's (commit form).
     pub(crate) signer: Option<Tid>,
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
-    /// of an edge already removed (role flows).
+    /// of a grant already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
     /// Map keys holding no entry to reset anyway (spec/permissions.md §2: a removal of a mint
     /// admin's record grant, stored nowhere): each gets an entry of the delta's own, at a fresh
@@ -266,7 +266,7 @@ impl Mutation {
     }
 }
 
-/// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
+/// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for grants,
 /// `sync.0` and admin-only (`^`) aspects; write for rotations
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
@@ -420,7 +420,7 @@ pub(crate) fn plain_path(signer: Tid, actor: Tid) -> osis_commit::Path {
 pub(crate) type Found = (Vec<Tid>, osis_base::format::PathMarks, bool);
 
 /// The path from `node` into `tid` giving at least `need` at `ts` (spec/permissions.md §1 Path):
-/// `Found`, the fewest edges, then the fewest hops marked direct: a mint ancestor's direct grant
+/// `Found`, the fewest grants, then the fewest hops marked direct: a mint ancestor's direct grant
 /// giving it is stated, marked, before the descent (`osis_perm::graph::View::ways_to`). A thing the commit creates
 /// (`records`) is reached as its mint admin is, then by its record grant. `None`: no path gives it.
 pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, need: Need, ts: Ts) -> Option<Found> {
@@ -460,11 +460,11 @@ pub(crate) enum Stated {
 /// so that one path serves all. A role commit states `role_path`. A commit where no path gives the role on a thing it writes states
 /// `plain_path` (a fire valid by its thing's setting); acting as a thing through which no path
 /// gives the role is refused. A path listing more than `MAX_PATH_THINGS` things is refused.
-pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Stated> {
+pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], grants: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Stated> {
     let (node, actor) = (plan.signer, plan.actor);
     let fallback = Stated::One(plain_path(node, actor));
     if plan.kind.is_role() {
-        let real = role_path(core, plan, writes, edges)?;
+        let real = role_path(core, plan, writes, grants)?;
         return Ok(Stated::One(real.unwrap_or_else(|| plain_path(node, node))));
     }
     let mut need: BTreeMap<Tid, Role> = BTreeMap::new();
@@ -533,9 +533,9 @@ enum RoleWay {
     Leave(Tid),
 }
 
-/// The way of `edges` (a role commit's grant writes, (target, holder, new edge)) on thing `t`.
-fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Option<RoleWay> {
-    let on: Vec<(Holder, Option<osis_perm::Grant>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
+/// The way of `grants` (a role commit's grant writes, (target, holder, new grant)) on thing `t`.
+fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, grants: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Option<RoleWay> {
+    let on: Vec<(Holder, Option<osis_perm::Grant>)> = grants.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
     let (h, _) = on.first()?;
     let node = plan.signer;
     let old = |m: &Holder| match (core.timelines().get(t), m) {
@@ -564,20 +564,20 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Holder, Opti
 /// The one path a role commit states (notes/a1-spec/README.md step 3, Role paths; a role commit
 /// never states the split form, spec/wire.md §4): for each thing it writes, the path from the
 /// signer giving its role there (`role_with`, so a rotation reaches every role it rotates and an
-/// admin's grant write admin), shortest by edges as for content (`path_with`); a compaction
+/// admin's grant write admin), shortest by grants as for content (`path_with`); a compaction
 /// snapshot's, the role it needs (`snapshot_role`); a may-grant grant's, the path giving the grant's
 /// role as may-grant; a self-removal's, the path ending at the holder (`role_way`). A grant the
 /// signer gives itself on a thing it reaches by descent states a path not ending at the signer
 /// (which would make it a self-removal): the path to the thing's mint admin, then the mint admin
 /// (its record grant the last hop). One `Path` serves every thing a role commit writes
 /// (`Path::one_of`). `None` where no path gives what a thing needs.
-fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Option<osis_commit::Path>> {
+fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], grants: &[(Tid, Holder, Option<osis_perm::Grant>)]) -> Result<Option<osis_commit::Path>> {
     let node = plan.signer;
     let records: Records<'_> = &|t| plan.creates.get(t);
     let things: BTreeSet<Tid> = writes.iter().map(|w| w.tid).collect();
     let mut each: BTreeMap<Tid, osis_commit::Path> = BTreeMap::new();
     for t in things {
-        let found = match role_way(core, plan, &t, edges) {
+        let found = match role_way(core, plan, &t, grants) {
             Some(RoleWay::Leave(h)) => path_with(core, node, records, &h, Need::Role(Role::Admin), plan.ts).map(|(mut listed, marks, _)| {
                 if h != node {
                     listed.push(h);
@@ -588,7 +588,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
             None => {
                 let need = if plan.kind.is_compaction() { writes.iter().filter(|w| w.tid == t).map(|w| snapshot_role(w.ak.as_str())).max() } else { role_with(core, node, records, &t, plan.ts) };
                 let found = need.and_then(|r| path_with(core, node, records, &t, Need::Role(r), plan.ts));
-                let own = edges.iter().any(|(x, h, _)| *x == t && *h == Holder::Thing(node));
+                let own = grants.iter().any(|(x, h, _)| *x == t && *h == Holder::Thing(node));
                 match (found, plan.creates.get(&t).or_else(|| core.created(&t)).and_then(CreationRecord::mint_admin)) {
                     (Some((listed, _, _)), Some(m)) if own && listed.is_empty() && m != node => path_with(core, node, records, &m, Need::Role(Role::Admin), plan.ts).map(|(mut l, marks, _)| {
                         l.push(m);
@@ -639,10 +639,10 @@ fn forced_split(things: usize) -> bool {
 /// it could not read already (notes/path-form.md, One path). Every thing's chain up to
 /// the end is a prefix of each reader's own. On the empty path every thing hangs off the signer:
 /// that the signer holds a role on what it writes is what "written by the signer" shows. Else what
-/// `q` adds, for a thing `t` one hop past its end (not the end itself), is `t`'s last edge, read by
+/// `q` adds, for a thing `t` one hop past its end (not the end itself), is `t`'s last grant, read by
 /// the readers of every other thing `w` written.
 /// They read it already where `t` derives its read secret from `w` (`w` on `t`'s record chain up
-/// to `t`'s independent: `w`'s readers read `t` whole, roster and record), or where that edge is
+/// to `t`'s independent: `w`'s readers read `t` whole, roster and record), or where that grant is
 /// `t`'s record grant (by descent) and `w` descends from `t` (`w`'s readers hold `w`'s record chain,
 /// `t`'s record on it).
 fn clear_tells_nothing(core: &Core, plan: &CommitPlan, q: &osis_commit::Path, each: &BTreeMap<Tid, (osis_commit::Path, bool)>) -> bool {
@@ -997,7 +997,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     // the mark goes only on a commit that needs it: one marking nothing it leaves would say
     // more than its author meant
     let adminless = plan.adminless && crate::apply::validity::needs_adminless_mark(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment)));
-    let edges = if plan.kind == Kind::Role { crate::apply::validity::edge_writes(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment))) } else { Vec::new() };
+    let grants = if plan.kind == Kind::Role { crate::apply::validity::grant_writes(tx.core, deltas.iter().map(|d| (d.tid, &d.ak, &d.fragment))) } else { Vec::new() };
     let mut writes = Vec::with_capacity(deltas.len());
     for mut d in deltas {
         let (purge_by, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.purge_by, d.expires)?;
@@ -1058,7 +1058,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
             writes.push(AspectWrite { tid: d.tid, ak: d.ak.clone(), lo: d.lo, hi: d.hi, delta: bytes, purge_by, replaces: d.replaces, original_floor: d.original_floor });
         }
     }
-    let stated = stated_paths(tx.core, &plan, &writes, &edges)?;
+    let stated = stated_paths(tx.core, &plan, &writes, &grants)?;
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, osis_commit::Path::default(), plan.form);
     match stated {
         Stated::One(p) => {
@@ -1280,7 +1280,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         m.purge.push(item);
     }
     // under `Engine::leaving_adminless`, a grant write may carry the adminless mark (`build`)
-    let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| crate::apply::validity::edge_ak(ak.as_str()));
+    let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| crate::apply::validity::grant_ak(ak.as_str()));
     let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), minted: std::mem::take(&mut m.minted), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, key, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;

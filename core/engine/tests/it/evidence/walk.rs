@@ -57,7 +57,7 @@ impl World {
         // A1's single list: each commit in the leaf of every thing it writes
         let entries = frontier.iter().flat_map(|x| self.commits.iter().filter(move |c| c.id == *x).flat_map(|c| c.parts.iter().map(|p| (p.on, c.id))));
         let frontier = Some(Arc::new(List::new(entries.collect::<Vec<_>>())));
-        self.push(t, signer, vec![edge_part(&[], on, holder, value, frontier)])
+        self.push(t, signer, vec![grant_part(&[], on, holder, value, frontier)])
     }
     fn content(&mut self, t: u64, signer: u8, path: &[u8], on: u8) -> CommitId {
         self.push(t, signer, vec![content_part(path, on)])
@@ -79,7 +79,7 @@ fn own(t: Tid) -> SignKey {
     SignKey(b)
 }
 
-fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Grant>, frontier: Option<Arc<List>>) -> PPart {
+fn grant_part(path: &[u8], on: u8, holder: u8, value: Option<Grant>, frontier: Option<Arc<List>>) -> PPart {
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(tid(holder)), value, frontier }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
@@ -87,7 +87,7 @@ fn content_part(path: &[u8], on: u8) -> PPart {
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Delta(delta) }
 }
 
-/// The edges joining path members (draft §1 Hops): record grants down a mint chain, else direct.
+/// The grants joining path members (draft §1 Hops): record grants down a mint chain, else direct.
 fn joins(records: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)> {
     let mut down = vec![];
     let mut t = q;
@@ -276,9 +276,9 @@ fn a_trust_set_moves_no_evidence_and_the_reader_under_it_judges_as_the_writer_sp
 
 /// A path of three hops with churn: Z writes D along [B, A] (Z on B, B on A, A on D); Y lowers A on
 /// D (to read) and grants it write again, X removes B on A and grants it again, between Z's writes:
-/// the writes on A's and B's edges are required, and the reader judges as the writer.
+/// the writes on A's and B's grants are required, and the reader judges as the writer.
 #[test]
-fn a_longer_path_with_churn_on_each_edge_spec_permissions_4() {
+fn a_longer_path_with_churn_on_each_grant_spec_permissions_4() {
     let mut w = World::new(&[(X, A), (Y, D), (X, B)]);
     w.set(1, Y, D, A, Some(Role::Write), &[]);
     w.set(1, X, A, B, Some(Role::Write), &[]);
@@ -295,7 +295,7 @@ fn a_longer_path_with_churn_on_each_edge_spec_permissions_4() {
     let things: BTreeSet<Tid> = req.iter().map(|c| c.1).collect();
     assert_eq!(things, BTreeSet::from([tid(A), tid(B)]));
     assert_eq!(req.len(), 4);
-    // the later writes are valid by the re-grant rule, which reads the churn on the path's edges
+    // the later writes are valid by the re-grant rule, which reads the churn on the path's grants
     assert!(wv.values().filter(|v| v.contains("Regranted")).count() >= 2, "{wv:?}");
 }
 
@@ -321,11 +321,11 @@ fn a_split_commits_part_on_another_thing_is_neither_held_nor_required_spec_permi
 }
 
 /// A node trusting a write no chain gives authority (Z, a writer, removing K on A): the walk leaves
-/// it void, so it moves no verdict. Under E1 it is a copy (a grant write on K's path edge, whatever
+/// it void, so it moves no verdict. Under E1 it is a copy (a grant write on K's path grant, whatever
 /// its validity), with its own evidence (X's grant to Z), and the reader holding them, trusting it
 /// too, judges as the writer: trust never reaches evidence.
 #[test]
-fn a_trusted_void_write_on_a_path_edge_is_a_copy_and_moves_no_verdict_spec_permissions_4() {
+fn a_trusted_void_write_on_a_path_grant_is_a_copy_and_moves_no_verdict_spec_permissions_4() {
     let mut w = World::new(&[(X, A), (Y, D)]);
     w.set(1, Y, D, A, Some(Role::Write), &[]);
     let gk = w.set(1, X, A, K, Some(Role::Write), &[]);
@@ -340,7 +340,7 @@ fn a_trusted_void_write_on_a_path_edge_is_a_copy_and_moves_no_verdict_spec_permi
 }
 
 /// Finding 9 under the walk: X removes K and Q from A in one commit; K writes D through [A]. D's
-/// evidence holds the removal (on K's edge) and every write on the edges it writes, the creation
+/// evidence holds the removal (on K's grant) and every write on the grants it writes, the creation
 /// of Q's entry its other part resets among them (X's grant to Q, on no stated path); the reader holding them judges as the writer. The wait
 /// itself (a removal applies only once each reset entry's creation is held, spec/permissions.md §2)
 /// is the engine's (`apply::validity`), not the walk's: its engine test is
@@ -353,7 +353,7 @@ fn f9_a_removal_of_two_holders_brings_both_creations_under_the_walk_spec_permiss
     let gq = w.set(1, X, A, Q, Some(Role::Write), &[]);
     let ck = w.content(2, K, &[A], D);
     let fr = Some(Arc::new(List::new([(tid(D), ck)])));
-    let rm = w.push(5, X, vec![edge_part(&[], A, K, None, fr.clone()), edge_part(&[], A, Q, None, fr)]);
+    let rm = w.push(5, X, vec![grant_part(&[], A, K, None, fr.clone()), grant_part(&[], A, Q, None, fr)]);
     let ck2 = w.content(6, K, &[A], D);
     let (req, wv) = reader_agrees(&w, &[D], &[]);
     let a = tid(A);

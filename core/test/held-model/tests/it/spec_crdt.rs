@@ -4,9 +4,9 @@ use held_model::gen::{MAP, REG, TEXT};
 use held_model::*;
 
 fn demoted(mut cs: Vec<Commit>, demote: bool) -> Held {
-    cs.insert(0, edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None));
+    cs.insert(0, grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None));
     if demote {
-        cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
+        cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
     }
     held(4, cs)
 }

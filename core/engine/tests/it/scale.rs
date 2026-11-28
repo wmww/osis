@@ -5,7 +5,7 @@
 //! The engine, store, crdt and commit layers alone (`osis_engine::local_peer`); sync's checks come
 //! with the new sync (notes/test-scale.md, Checks to restore).
 
-use crate::common::{BIG, GONEMAP, REFS, TEXT, edge, net, new_thing, s, set_edge, edge_write};
+use crate::common::{BIG, GONEMAP, REFS, TEXT, grant, net, new_thing, s, set_grant, grant_write};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, Secret32, SeededRng};
@@ -669,7 +669,7 @@ fn shared_thing(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
         let t = new_thing(&mut lp, 0);
         for (i, r) in roles.iter().enumerate() {
             let x = lp.peers[i + 1].engine.tid();
-            set_edge(&mut lp.peers[0].engine, t, x, Some(edge(*r)), None);
+            set_grant(&mut lp.peers[0].engine, t, x, Some(grant(*r)), None);
         }
         lp.sync_all().unwrap();
         (lp, t)
@@ -957,8 +957,8 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
         let (mut lp, t) = shared_thing(5, &[Role::Write, Role::Write, Role::Write]);
         let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
         let holder = new_thing(&mut lp, 0);
-        set_edge(&mut lp.peers[0].engine, holder, ids[3], Some(edge(Role::Admin)), None);
-        set_edge(&mut lp.peers[0].engine, t, holder, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, holder, ids[3], Some(grant(Role::Admin)), None);
+        set_grant(&mut lp.peers[0].engine, t, holder, Some(grant(Role::Write)), None);
         lp.sync_all().unwrap();
         for i in 0..n {
             add(&mut lp, 0, t, &TAGS, format!("e{i}"));
@@ -982,7 +982,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     }
     let Some(Value::Set(v)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!() };
     assert_eq!(v.len(), n + usize::from(with), "C's addendum keeps B's add");
-    let g = set_edge(&mut lp.peers[3].engine, holder, ids[4], Some(edge(Role::Write)), None);
+    let g = set_grant(&mut lp.peers[3].engine, holder, ids[4], Some(grant(Role::Write)), None);
     let pk = lp.packages_for(3, 0).unwrap().into_iter().find(|p| p.id == g).unwrap();
     measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap()).1
 }
@@ -1015,7 +1015,7 @@ fn addenda_wake(k: usize) -> Work {
     let mut sent = Vec::new();
     for (i, q) in mine.iter().take(3).enumerate() {
         sent.push(add(&mut lp, 1, t, &TAGS, format!("b{i}")));
-        sent.push(set_edge(&mut lp.peers[1].engine, *q, alice, Some(edge(Role::Read)), None));
+        sent.push(set_grant(&mut lp.peers[1].engine, *q, alice, Some(grant(Role::Read)), None));
     }
     lp.advance(1_000);
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
@@ -1034,7 +1034,7 @@ fn addenda_wake(k: usize) -> Work {
 // spec/permissions.md §5.2 (Addenda); spec/requirements.md, Scale; notes/principles.md
 // (Fast by construction): a removed party's commits stamped before its removal arriving after
 // it, grant writes among them, cost the same whatever the removed party holds: the removal is
-// woken by what the commits name (their edges and stated paths), never by the removed party's
+// woken by what the commits name (their grants and stated paths), never by the removed party's
 // reach.
 #[test]
 fn addenda_wake_is_flat_in_the_removed_partys_reach_spec_permissions_5_2() {
@@ -1190,7 +1190,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
         lp.deliver(0, p).unwrap();
     }
     let z = lp.peers[2].engine.tid();
-    let step = |lp: &mut LocalPeer, who: Tid, e: Option<Role>| measured_at(lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, who, e.map(edge), None)).1;
+    let step = |lp: &mut LocalPeer, who: Tid, e: Option<Role>| measured_at(lp, 0, |lp| set_grant(&mut lp.peers[0].engine, t, who, e.map(grant), None)).1;
     [step(&mut lp, z, Some(Role::Write)), step(&mut lp, x, None), step(&mut lp, x, Some(Role::Admin))]
 }
 
@@ -1258,7 +1258,7 @@ fn grant_and_open(n: usize) -> [Work; 2] {
         m.set(things[i % 10], &crate::common::REG, &s(&format!("v{i}"))).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
-    let (_, grant) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, things[0], Tid::from_bytes([7; 15]), Some(edge(Role::Read)), None));
+    let (_, grant) = measured_at(&mut lp, 0, |lp| grant_write(&mut lp.peers[0].engine, things[0], Tid::from_bytes([7; 15]), Some(grant(Role::Read)), None));
     let roster = lp.peers[0].engine.roster(&things[0]);
     let (_, open) = measured_at(&mut lp, 0, |lp| lp.peers[0].restart(1).unwrap());
     assert_eq!(lp.peers[0].engine.roster(&things[0]), roster);
@@ -1323,7 +1323,7 @@ fn role_history_join(n: usize) -> [Work; 4] {
     let t = new_thing(&mut lp, 0);
     // a history `roles.0` pages at before the measured one, so n and 10n compare paged states
     for i in 0..PAGED_HISTORY {
-        edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([i as u8 + 100; 15]), Some(edge(Role::Read)), None);
+        grant_write(&mut lp.peers[0].engine, t, Tid::from_bytes([i as u8 + 100; 15]), Some(grant(Role::Read)), None);
     }
     let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
     for i in 0..n {
@@ -1331,8 +1331,8 @@ fn role_history_join(n: usize) -> [Work; 4] {
         // reads the key's few records, not the history (a paged map's join loads every record
         // of the keys it touches)
         let h = Tid::from_bytes([(i / 2) as u8 + 1; 15]);
-        let e = (i % 2 == 0).then(|| edge(Role::Read));
-        edge_write(&mut lp.peers[0].engine, t, h, e, None);
+        let e = (i % 2 == 0).then(|| grant(Role::Read));
+        grant_write(&mut lp.peers[0].engine, t, h, e, None);
     }
     let pks = lp.packages_for(0, 1).unwrap();
     for p in pks.iter().filter(|p| base.contains(&p.id)) {
@@ -1343,8 +1343,8 @@ fn role_history_join(n: usize) -> [Work; 4] {
             lp.deliver(1, p).unwrap();
         }
     });
-    let (g, grant) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), Some(edge(Role::Read)), None));
-    let (r, removal) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), None, None));
+    let (g, grant) = measured_at(&mut lp, 0, |lp| grant_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), Some(grant(Role::Read)), None));
+    let (r, removal) = measured_at(&mut lp, 0, |lp| grant_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), None, None));
     let pks: Vec<_> = [g, r].iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
     let (_, arrive) = measured_at(&mut lp, 1, |lp| {
         for p in &pks {
@@ -1591,13 +1591,13 @@ fn chunk_drop_judgment_is_flat() {
 /// removes him from `d`: (the commits his drop of the lost secrets looks at, `forget: commits
 /// scanned`; the store rows it reads). His indexes then read as an open of his store does.
 fn lost_forget(n: usize) -> (u64, u64) {
-    use crate::flows::{edge_of, people, spread, thing_of};
+    use crate::flows::{grant_of, people, spread, thing_of};
     let (mut lp, ps) = people(2);
     let (reg, big) = (ak("t:reg.0"), ak("x:b.0"));
     let d = thing_of(&mut lp, 0, ps[0]);
     let other = thing_of(&mut lp, 0, ps[0]);
     for t in [d, other] {
-        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     }
     for v in 0..3 {
         let mut m = Mutation::new();
@@ -1662,11 +1662,11 @@ fn losing_access_costs_what_was_lost() {
 /// Alice grants bob read on her thing and removes him `n` times (each a role commit at her
 /// account's epoch); the commit records an open of her store decodes.
 fn open_role_reads(n: usize) -> u64 {
-    use crate::flows::{edge_of, people, thing_of};
+    use crate::flows::{grant_of, people, thing_of};
     let (mut lp, ps) = people(2);
     let d = thing_of(&mut lp, 0, ps[0]);
     for _ in 0..n {
-        lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&d, &ps[1], &grant_of(Role::Read)).unwrap();
         lp.advance(10);
         lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
         lp.advance(10);
@@ -1798,7 +1798,7 @@ fn grants_and_open(n: usize) -> Work {
     for i in 0..n {
         let mut b = [7u8; 15];
         b[..2].copy_from_slice(&(i as u16).to_be_bytes());
-        edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes(b), Some(edge(Role::Read)), None);
+        grant_write(&mut lp.peers[0].engine, t, Tid::from_bytes(b), Some(grant(Role::Read)), None);
     }
     let roster = lp.peers[0].engine.roster(&t);
     let (_, open) = measured_at(&mut lp, 0, |lp| lp.peers[0].restart(1).unwrap());
@@ -1818,8 +1818,8 @@ fn open_is_linear_in_role_commits() {
 /// The path wait's work for a write acting as `r` on `x` at a node holding three layers of forged
 /// grant writes on `x`, each unjudgeable (spec/commits.md §4 Unjudgeable) though its part is held
 /// (it also writes its own path's end, which is judgeable): one through each of `n` fresh things
-/// (`fs`) on `e`'s edge, one through `e` on each of `n` things' (`qs`), one through each of those
-/// on `r`'s. The write reads `r`'s edge: `n` writes, each reading one `qs` edge, each reading `e`'s.
+/// (`fs`) on `e`'s grant, one through `e` on each of `n` things' (`qs`), one through each of those
+/// on `r`'s. The write reads `r`'s grant: `n` writes, each reading one `qs` grant, each reading `e`'s.
 fn forged_layers(n: usize) -> u64 {
     use osis_engine::Ingested;
     let mut lp = net(2, 0);
@@ -1832,8 +1832,8 @@ fn forged_layers(n: usize) -> u64 {
     let mut forge = |lp: &mut LocalPeer, via: Tid, to: &[Tid]| {
         lp.advance(1_000);
         lo += 1 << 20;
-        let mut v = osis_base::ValueMap::from([(Value::Weak(via), edge(Role::Read).to_value())]);
-        v.extend(to.iter().map(|t| (Value::Weak(*t), edge(Role::Admin).to_value())));
+        let mut v = osis_base::ValueMap::from([(Value::Weak(via), grant(Role::Read).to_value())]);
+        v.extend(to.iter().map(|t| (Value::Weak(*t), grant(Role::Admin).to_value())));
         let f = crate::validity::forge_by(lp, 0, x, &ak("roles.0"), &Value::Map(v), lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![via], direct: 0 });
         assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)));
     };
@@ -1855,7 +1855,7 @@ fn forged_layers(n: usize) -> u64 {
 }
 
 // spec/commits.md §4 Unjudgeable, spec/requirements.md Scale: the path wait reads each held write
-// on an edge once per part judged, however many writes' paths share that edge: linear in the
+// on a grant once per part judged, however many writes' paths share that grant: linear in the
 // writes held, n forged writes on each layer.
 #[test]
 fn the_path_wait_reads_each_write_once_spec_commits_4() {
@@ -1875,7 +1875,7 @@ fn expired_charge(n: usize, map: bool) -> [u64; 2] {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     let mut taken = BTreeSet::new();
     // x's memory commits not handed to b before, as blobs

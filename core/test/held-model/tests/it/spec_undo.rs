@@ -82,9 +82,9 @@ fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {
 #[test]
 fn invalid_writes_are_not_undone_spec_crdt_4_6() {
     let hd = held(5, vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
-        edge(6, MINT_ADMIN, 2, 1, None, Some(vec![])),
+        grant(6, MINT_ADMIN, 2, 1, None, Some(vec![])),
     ]);
     assert_eq!(undo_at(&hd, 10, 20, 3), None);
 }
@@ -98,13 +98,13 @@ fn undelete_char_goes_with_its_creation_spec_crdt_4_7() {
     };
     let base = |demote: bool| {
         let mut cs = vec![
-            edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+            grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
             content(10, 1, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(7))])]),
             content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![del(2, 11, 10)])]),
             undel(),
         ];
         if demote {
-            cs.push(edge(6, MINT_ADMIN, 4, 1, None, Some(vec![])));
+            cs.push(grant(6, MINT_ADMIN, 4, 1, None, Some(vec![])));
         }
         held(5, cs)
     };

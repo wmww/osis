@@ -16,7 +16,7 @@ use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-fn edge(on: u32, path: &[u32], holder: u32, value: Option<Grant>, frontier: Option<&[u64]>) -> Part {
+fn grant(on: u32, path: &[u32], holder: u32, value: Option<Grant>, frontier: Option<&[u64]>) -> Part {
     let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Grant(GrantWrite { holder: Holder::Thing(t(holder)), value, frontier }) }
 }
@@ -94,15 +94,15 @@ fn records() -> BTreeMap<Tid, Holder> {
     super::hand_records([(t(A), t(H)), (t(LK), t(A)), (t(T1), t(A))])
 }
 
-// spec/permissions.md §5.1 step 1 (draft): the part setting an edge of the commit's own path
+// spec/permissions.md §5.1 step 1 (draft): the part setting a grant of the commit's own path
 // comes after every other part on its thing, so no part's path is changed by an earlier part of
 // its commit: Y, admin on LK, leaves LK and grants Z admin on LK in one commit along the empty
 // path; the grant is taken first and applies.
 #[test]
 fn a_part_is_taken_before_its_commits_own_path_part() {
-    let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Grant::new(Role::Admin)), Some(&[]))]);
-    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None), edge(LK, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]);
-    let p = Paths::evaluate(&records(), BTreeSet::new(), &[grant, both]);
+    let granted = commit(1, ms(1), H, vec![grant(LK, &[A], Y, Some(Grant::new(Role::Admin)), Some(&[]))]);
+    let both = commit(2, ms(3), Y, vec![grant(LK, &[], Y, None, None), grant(LK, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]);
+    let p = Paths::evaluate(&records(), BTreeSet::new(), &[granted, both]);
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied), "the self-removal");
     assert_eq!(p.status(&WriteId(cid(2), 1)), Some(Status::Applied), "the grant");
 }
@@ -116,10 +116,10 @@ fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
     const N5: u32 = 4;
     let timed = Some(Grant { until: Some(Time(3)), ..Grant::new(Role::Admin) });
     let commits = [
-        commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]),
-        commit(2, ms(1), H, vec![edge(T1, &[A], Z, timed, Some(&[]))]),
-        commit(3, ms(2), Z, vec![edge(T1, &[], N5, Some(Grant::new(Role::Write)), Some(&[]))]),
-        commit(4, ms(5), Z, vec![edge(T1, &[A], Z, None, None)]),
+        commit(1, ms(1), H, vec![grant(A, &[], Z, Some(Grant::new(Role::Admin)), Some(&[]))]),
+        commit(2, ms(1), H, vec![grant(T1, &[A], Z, timed, Some(&[]))]),
+        commit(3, ms(2), Z, vec![grant(T1, &[], N5, Some(Grant::new(Role::Write)), Some(&[]))]),
+        commit(4, ms(5), Z, vec![grant(T1, &[A], Z, None, None)]),
     ];
     let p = robust(&records(), &commits, &mut Rng(1));
     assert_eq!(p.status(&WriteId(cid(4), 0)), Some(Status::Applied));
@@ -133,46 +133,46 @@ fn hostile_shapes_judge_alike_without_panicking() {
     let mut rng = Rng(7);
     let admin = Some(Grant::new(Role::Admin));
     let made_up = |n: u32| (0..n).map(|i| 5000 + i).collect::<Vec<u32>>();
-    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
+    let gy = commit(1, ms(1), H, vec![grant(A, &[], Y, admin, Some(&[]))]);
 
     // paths of 0, 64 and 200 made-up things: a stranger's grant applies nowhere
     for n in [0, 64, 200] {
-        let c = commit(2, ms(2), 999, vec![edge(T1, &made_up(n), Z, admin, Some(&[]))]);
+        let c = commit(2, ms(2), 999, vec![grant(T1, &made_up(n), Z, admin, Some(&[]))]);
         let p = robust(&records(), &[gy.clone(), c], &mut rng);
         assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied), "path of {n}");
     }
     // a path naming a thing twice is bad input, also when the repeat is the signer or the target
-    let twice = commit(2, ms(2), Y, vec![edge(T1, &[A, Y], Z, admin, Some(&[]))]);
-    let into = commit(3, ms(2), Y, vec![edge(T1, &[A, T1], Z, admin, Some(&[]))]);
+    let twice = commit(2, ms(2), Y, vec![grant(T1, &[A, Y], Z, admin, Some(&[]))]);
+    let into = commit(3, ms(2), Y, vec![grant(T1, &[A, T1], Z, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), twice, into], &mut rng);
     assert_eq!((p.status(&WriteId(cid(2), 0)), p.status(&WriteId(cid(3), 0))), (Some(Status::Unapplied), Some(Status::Unapplied)));
-    // a part setting an edge of its own path (the record grant its descent ends with), alone and
+    // a part setting a grant of its own path (the record grant its descent ends with), alone and
     // beside another part
-    let own = commit(2, ms(2), H, vec![edge(T1, &[A], A, None, Some(&[]))]);
-    let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Grant::new(Role::Write)), Some(&[])), edge(T1, &[A], Z, admin, Some(&[]))]);
+    let own = commit(2, ms(2), H, vec![grant(T1, &[A], A, None, Some(&[]))]);
+    let mixed = commit(3, ms(3), H, vec![grant(T1, &[A], A, Some(Grant::new(Role::Write)), Some(&[])), grant(T1, &[A], Z, admin, Some(&[]))]);
     robust(&records(), &[gy.clone(), own, mixed], &mut rng);
     // a repeated holder makes the whole commit bad input
-    let rep = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[])), edge(A, &[], Z, Some(Grant::new(Role::Read)), Some(&[])), edge(A, &[], 77, admin, Some(&[]))]);
+    let rep = commit(2, ms(2), Y, vec![grant(A, &[], Z, admin, Some(&[])), grant(A, &[], Z, Some(Grant::new(Role::Read)), Some(&[])), grant(A, &[], 77, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), rep], &mut rng);
     assert!((0..3).all(|i| p.status(&WriteId(cid(2), i)) == Some(Status::Unapplied)));
     // holders holding each other, and a record cycle (descent bounded by MAX_CHAIN_DEPTH)
     let cyc = super::hand_records([(t(A), t(H)), (t(20), t(21)), (t(21), t(20))]);
     let holders = [
         gy.clone(),
-        commit(2, ms(2), Y, vec![edge(A, &[], 20, admin, Some(&[]))]),
-        commit(3, ms(3), 20, vec![edge(21, &[], 21, admin, Some(&[]))]),
-        commit(4, ms(4), 21, vec![edge(20, &[], 20, admin, Some(&[])), edge(A, &[20], Y, None, Some(&[]))]),
-        commit(5, ms(5), H, vec![edge(A, &[], Y, None, Some(&[]))]),
+        commit(2, ms(2), Y, vec![grant(A, &[], 20, admin, Some(&[]))]),
+        commit(3, ms(3), 20, vec![grant(21, &[], 21, admin, Some(&[]))]),
+        commit(4, ms(4), 21, vec![grant(20, &[], 20, admin, Some(&[])), grant(A, &[20], Y, None, Some(&[]))]),
+        commit(5, ms(5), H, vec![grant(A, &[], Y, None, Some(&[]))]),
     ];
     robust(&cyc, &holders, &mut rng);
     // extreme times: ts 0 and the greatest; an `until` in the past, at the ts, far ahead
     let until = |u: u64| Some(Grant { until: Some(Time(u)), ..Grant::new(Role::Admin) });
     let times = [
-        commit(1, Ts::ZERO, H, vec![edge(A, &[], Y, until(0), Some(&[]))]),
-        commit(2, Ts::ZERO, H, vec![edge(A, &[], Z, until(u64::MAX), Some(&[]))]),
-        commit(3, ms(5), H, vec![edge(A, &[], 30, until(5), Some(&[])), edge(A, &[], 31, until(4), Some(&[]))]),
-        commit(4, Ts::MAX, Z, vec![edge(A, &[], Y, None, None)]),
-        commit(5, Ts::MAX, Y, vec![edge(A, &[], 40, admin, Some(&[]))]),
+        commit(1, Ts::ZERO, H, vec![grant(A, &[], Y, until(0), Some(&[]))]),
+        commit(2, Ts::ZERO, H, vec![grant(A, &[], Z, until(u64::MAX), Some(&[]))]),
+        commit(3, ms(5), H, vec![grant(A, &[], 30, until(5), Some(&[])), grant(A, &[], 31, until(4), Some(&[]))]),
+        commit(4, Ts::MAX, Z, vec![grant(A, &[], Y, None, None)]),
+        commit(5, Ts::MAX, Y, vec![grant(A, &[], 40, admin, Some(&[]))]),
     ];
     let p = robust(&records(), &times, &mut rng);
     assert_eq!(p.status(&WriteId(cid(5), 0)), Some(Status::Unapplied), "Y's grant ended at 0");
@@ -267,10 +267,10 @@ fn ids(l: &[u64]) -> Frontier {
 fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let mut rng = Rng(11);
     let admin = Some(Grant::new(Role::Admin));
-    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
-    let gz = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]))]);
+    let gy = commit(1, ms(1), H, vec![grant(A, &[], Y, admin, Some(&[]))]);
+    let gz = commit(2, ms(2), Y, vec![grant(A, &[], Z, admin, Some(&[]))]);
     let zc = commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]);
-    let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]);
+    let rz = commit(4, ms(4), H, vec![grant(A, &[], Z, None, Some(&[]))]);
     let base = [gy, gz, zc, rz];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
     // an addendum keyed by a grant and by itself, naming role commits and itself
@@ -315,10 +315,10 @@ fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
     let mut per = vec![];
     for k in [200u64, 2000] {
         let mut c = vec![
-            commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]),
-            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
+            commit(1, ms(1), H, vec![grant(A, &[], Y, admin, Some(&[]))]),
+            commit(2, ms(1), H, vec![grant(A, &[], Z, admin, Some(&[]))]),
             commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
-            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]),
+            commit(4, ms(4), H, vec![grant(A, &[], Z, None, Some(&[]))]),
         ];
         // Z's own (vouching for nothing of its signer), then one by Y that vouches
         c.extend((0..k).map(|i| commit(100 + i, ms(5), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })])));
@@ -352,10 +352,10 @@ fn hostile_requests_judge_alike_without_panicking() {
     let mut rng = Rng(12);
     let admin = Some(Grant::new(Role::Admin));
     let base = [
-        commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]),
-        commit(2, ms(2), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
+        commit(1, ms(1), H, vec![grant(A, &[], Y, admin, Some(&[]))]),
+        commit(2, ms(2), H, vec![grant(A, &[], Z, admin, Some(&[]))]),
         commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
-        commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[3]))]),
+        commit(4, ms(4), H, vec![grant(A, &[], Z, None, Some(&[3]))]),
     ];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
     let made_up: Vec<u32> = (0..64).map(|i| 5000 + i).collect();
@@ -403,8 +403,8 @@ fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
     let mut per = vec![];
     for k in [0u64, 200, 2000] {
         let mut c = vec![
-            commit(1, ms(1), H, vec![edge(A, &[], Y, write, Some(&[]))]),
-            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
+            commit(1, ms(1), H, vec![grant(A, &[], Y, write, Some(&[]))]),
+            commit(2, ms(1), H, vec![grant(A, &[], Z, admin, Some(&[]))]),
             commit(3, ms(3), H, vec![{
                 let mut d = delta(T1, &[A], Role::Write, DeltaClass::Plain);
                 if let PartKind::Delta(x) = &mut d.kind {
@@ -412,7 +412,7 @@ fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
                 }
                 d
             }]),
-            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]),
+            commit(4, ms(4), H, vec![grant(A, &[], Z, None, Some(&[]))]),
         ];
         c.extend((0..k).map(|i| commit(100 + i, ms(5), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
         c.extend((0..k).map(|i| commit(100_000 + i, ms(5), Z, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));

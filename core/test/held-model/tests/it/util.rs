@@ -160,12 +160,12 @@ pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit
 pub fn reg(id: CommitId, author: NodeId, h: u64, a: Aspect, r: PurgeBy, v: i64) -> Commit {
     content(id, author, h, vec![part(a, r, vec![set(h, id, v)])])
 }
-pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
-    edge_on(id, author, h, T, EdgeWrite::role(holder, role), frontier)
+pub fn grant(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
+    grant_on(id, author, h, T, GrantWrite::role(holder, role), frontier)
 }
-/// A role commit writing one edge on `thing`.
-pub fn edge_on(id: CommitId, author: NodeId, h: u64, thing: ThingId, e: EdgeWrite, frontier: Option<Vec<CommitId>>) -> Commit {
-    let body = Body::Held(Delta::Edge(e));
+/// A role commit writing one grant on `thing`.
+pub fn grant_on(id: CommitId, author: NodeId, h: u64, thing: ThingId, e: GrantWrite, frontier: Option<Vec<CommitId>>) -> Commit {
+    let body = Body::Held(Delta::Grant(e));
     let part = Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None, keys: Default::default() };
     Commit { kind: CommitKind::Role, frontier, ..content(id, author, h, vec![part]) }
 }

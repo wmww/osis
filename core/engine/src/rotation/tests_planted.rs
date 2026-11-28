@@ -4,7 +4,7 @@
 //! epoch it keys, so it leaves those out and never waits for them.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Rng, drop_covered, edge, granted, newest_read, put_on, reads_key, rotate_leaving_out, rounds_to_settle, secrets_verdicts};
+use super::tests::{Rng, drop_covered, grant, granted, newest_read, put_on, reads_key, rotate_leaving_out, rounds_to_settle, secrets_verdicts};
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid};
@@ -126,7 +126,7 @@ fn planted_epoch_never_blocks_compaction_plain_spec_crypto_4() {
             dropped += drop_covered(&mut lp, c, g);
         }
         // N, granted now, gets what c holds, in some order
-        lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[4], &grant(Role::Read)).unwrap();
         lp.sync(0, c).unwrap();
         let mut pks = lp.packages_to(c, 4).unwrap();
         for k in (1..pks.len()).rev() {
@@ -166,7 +166,7 @@ fn granted_before_rotation(lp: &mut LocalPeer, g: Tid, n: Tid, role: Role, put: 
     rotate_leaving_out(lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let e = newest_read(lp, 0, g).unwrap();
     let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
-    lp.peers[0].engine.grant(&g, &n, &edge(role)).unwrap();
+    lp.peers[0].engine.grant(&g, &n, &grant(role)).unwrap();
     let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
     if let Some(k) = put {
         put_on(lp, 0, g, k, 1);
@@ -287,7 +287,7 @@ fn a_grantee_reads_its_target_once_the_keyset_arrives_spec_permissions_4() {
     let g = super::tests::target_thing(&mut lp, 0);
     put_on(&mut lp, 0, g, "k", 1);
     let gr = lp.peers[1].engine.tid();
-    lp.peers[0].engine.grant(&g, &gr, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &gr, &grant(Role::Read)).unwrap();
     let keys = Ak::new("keys.0").unwrap();
     for pk in lp.packages_to(0, 1).unwrap() {
         let h = lp.peers[0].engine.header(&pk.id).unwrap();
@@ -349,7 +349,7 @@ fn dependent_of(lp: &mut LocalPeer, g: Tid) -> Tid {
 fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     let y = dependent_of(&mut lp, g);
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     plant_step_box(&mut lp, 1, y, tids[2], 40);
     lp.sync_all().unwrap();
@@ -379,7 +379,7 @@ fn an_admins_plant_splits_no_read_after_its_demotion_spec_sync_set_2() {
     let y = dependent_of(&mut lp, g);
     plant_step_box(&mut lp, 1, y, tids[2], 60);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[2].restart(7).unwrap();
     assert!(lp.peers[2].engine.core.ix.secrets.get(&y).is_some_and(|e| e.sync.held().next().is_some()), "R opens no box of D's");

@@ -35,9 +35,9 @@ fn commit_with_no_part_held_applies_as_its_header_spec_commits_4() {
 #[test]
 fn missing_part_of_lowered_author_is_judged_spec_commits_4() {
     let cs = vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         missing(reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 7), 0),
-        edge(20, MINT_ADMIN, 2, 1, None, Some(vec![])),
+        grant(20, MINT_ADMIN, 2, 1, None, Some(vec![])),
     ];
     let o = evaluate(&held(3, cs));
     assert!(o.applied.contains(&10));
@@ -48,7 +48,7 @@ fn missing_part_of_lowered_author_is_judged_spec_commits_4() {
 #[test]
 fn author_purge_leaves_a_leftover_and_no_value_spec_commits_5() {
     let cs = vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 7),
         purge(20, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
@@ -75,7 +75,7 @@ fn purge_by_commit_names_one_aspect_spec_commits_5() {
 #[test]
 fn purge_without_the_right_drops_nothing_spec_commits_5() {
     let cs = vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, PurgeBy::Admin, 7),
         purge(20, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
@@ -384,7 +384,7 @@ fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
 #[test]
 fn out_of_history_drops_under_any_writers_cover_spec_commits_5() {
     let admin = PurgeBy::Admin;
-    let base = vec![edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, MINT_ADMIN, 1, REG, admin, 1), reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2)];
+    let base = vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, MINT_ADMIN, 1, REG, admin, 1), reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2)];
     let by_writer = snap(12, 1, 3, REG, PurgeBy::Writer, vec![set(2, 11, 2)]);
     let by_admin = snap(13, MINT_ADMIN, 3, REG, PurgeBy::Writer, vec![set(2, 11, 2)]);
     let with = |more: &[Commit]| held(4, [base.clone(), more.to_vec()].concat());
@@ -445,7 +445,7 @@ fn leftover_without_reason_is_never_received_spec_commits_5() {
 // read; the node's own invalid write stays (its user may write it again)
 #[test]
 fn invalid_body_drops_unless_own_spec_permissions_6() {
-    let cs = vec![setting(6, 0, REG, Opt::Purge), edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1), edge(20, MINT_ADMIN, 3, 1, None, Some(vec![]))];
+    let cs = vec![setting(6, 0, REG, Opt::Purge), grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1), grant(20, MINT_ADMIN, 3, 1, None, Some(vec![]))];
     let h = held(3, cs);
     let o = evaluate(&h);
     assert_eq!(o.valid[&(10, 0)], false);
@@ -475,11 +475,11 @@ fn invalid_text_body_drops_anchored_insert_reads_spec_permissions_6() {
     use held_model::gen::TEXT;
     let a = (10, 1);
     let cs = vec![
-        edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
+        grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
         setting(6, 0, TEXT, Opt::Purge),
         content(10, 1, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(1))])]),
         content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(2, 11, 1, Some(a), Some(2))])]),
-        edge(20, MINT_ADMIN, 3, 1, None, Some(vec![])),
+        grant(20, MINT_ADMIN, 3, 1, None, Some(vec![])),
     ];
     let h = held(5, cs);
     let o = evaluate(&h);

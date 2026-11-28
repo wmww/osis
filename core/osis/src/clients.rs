@@ -77,7 +77,7 @@ impl Osis {
         let entry = secret.entry(until);
         let root = self.inner.node_root;
         // Invariant: the node reaches the thing only through `admin` (its path to it, then the
-        // thing's record grant: spec/permissions.md §1 Path), never by an edge of its own, so the
+        // thing's record grant: spec/permissions.md §1 Path), never by a grant of its own, so the
         // thing acts for `admin` no longer than the node may (a node removed from the account,
         // spec/permissions.md §8 Removing, loses its clients' roles there by the ordinary rules).
         // The node root holds the thing by a strong, in the transaction minting it

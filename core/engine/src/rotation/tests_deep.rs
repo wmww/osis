@@ -10,7 +10,7 @@
 //! and every holder with key access is boxed.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, all_boxed, blocked_at, edge, independent_thing, held_by, newest_read, opens_in, settle, synced};
+use super::tests::{Key, Rng, all_boxed, blocked_at, grant, independent_thing, held_by, newest_read, opens_in, settle, synced};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -43,37 +43,37 @@ fn world(seed: u64) -> World {
     lp.sync_all().unwrap();
     let at = 1 + rng.next(2) as usize;
     let mut log = vec![format!("depth {depth}, admins {adm:?}, V reads X{at}")];
-    // readers of each actor below G, V of X`at` only; the actor edges before or after them
+    // readers of each actor below G, V of X`at` only; the actor grants before or after them
     let mut members: Vec<(usize, usize)> = (1..=depth).flat_map(|k| (0..V).filter(|p| *p != adm[k]).map(|p| (k, p)).collect::<Vec<_>>()).collect();
     members.retain(|_| rng.next(3) == 0);
     members.push((at, V));
-    let edges_first = rng.next(2) == 0;
-    let actor_edges = |lp: &mut LocalPeer| {
+    let grants_first = rng.next(2) == 0;
+    let actor_grants = |lp: &mut LocalPeer| {
         for k in (1..=depth).rev() {
             // X(k) refers to X(k-1): its readers find the chain by references
-            lp.grant_through(adm[k - 1], xs[k - 1], xs[k], &edge(Role::Read));
+            lp.grant_through(adm[k - 1], xs[k - 1], xs[k], &grant(Role::Read));
             lp.sync_all().unwrap();
         }
     };
-    if edges_first {
-        actor_edges(&mut lp);
+    if grants_first {
+        actor_grants(&mut lp);
     }
     for &(k, p) in &members {
-        lp.peers[adm[k]].engine.grant(&xs[k], &tids[p], &edge(Role::Read)).unwrap();
+        lp.peers[adm[k]].engine.grant(&xs[k], &tids[p], &grant(Role::Read)).unwrap();
     }
     lp.sync_all().unwrap();
-    if !edges_first {
-        actor_edges(&mut lp);
+    if !grants_first {
+        actor_grants(&mut lp);
     }
     let mut writers = vec![adm[0]];
     for p in (0..V).filter(|p| *p != adm[0]) {
         if rng.next(2) == 0 {
-            lp.peers[adm[0]].engine.grant(&xs[0], &tids[p], &edge(Role::Write)).unwrap();
+            lp.peers[adm[0]].engine.grant(&xs[0], &tids[p], &grant(Role::Write)).unwrap();
             writers.push(p);
         }
     }
     lp.sync_all().unwrap();
-    log.push(format!("members {members:?}, edges first {edges_first}, writers {writers:?}"));
+    log.push(format!("members {members:?}, grants first {grants_first}, writers {writers:?}"));
     let kept = held_by(&lp, V, &xs);
     assert!(kept.iter().any(|k| k.0 == xs[0]), "V reads G before its removal");
     lp.peers[adm[at]].engine.demote(&xs[at], &Demotion { holder: tids[V], new: None, retain: None }).unwrap();
@@ -192,14 +192,14 @@ fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
             let mut lp = synced(6);
             let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.tid()).collect();
             let [g, a, m] = [0, 2, 3].map(|i| independent_thing(&mut lp, i));
-            lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+            lp.peers[0].engine.grant(&g, &tids[1], &grant(Role::Write)).unwrap();
             for t in &tids[4..6] {
-                lp.peers[3].engine.grant(&m, t, &edge(Role::Read)).unwrap();
+                lp.peers[3].engine.grant(&m, t, &grant(Role::Read)).unwrap();
             }
             lp.sync_all().unwrap();
-            lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+            lp.peers[2].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
             lp.sync_all().unwrap();
-            lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+            lp.peers[0].engine.grant(&g, &a, &grant(Role::Read)).unwrap();
             lp.sync_all().unwrap();
             (lp, (tids, [g, a, m]))
         });
@@ -210,7 +210,7 @@ fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
             let n = if change % 2 == 0 {
                 lp.peers[3].engine.demote(&m, &Demotion { holder: tids[p], new: None, retain: None }).unwrap().commits.len()
             } else {
-                lp.peers[3].engine.grant(&m, &tids[p], &edge(Role::Read)).unwrap();
+                lp.peers[3].engine.grant(&m, &tids[p], &grant(Role::Read)).unwrap();
                 0
             };
             m_rot += usize::from(n > 0);

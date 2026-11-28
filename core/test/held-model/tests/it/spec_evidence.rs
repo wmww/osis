@@ -85,13 +85,13 @@ fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
     let pw = roles_model::paths::World::new(&[(X, A), (X, T1), (Y, B), (Y, T2)]);
     let mut w = World::new(pw, &[A, B, T1, T2]);
     let (x, y, k) = (w.node(true, &[A, T1]), w.node(true, &[B, T2]), w.node(true, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], T1, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], B, K, Role::Write, &[]));
-    let gt2 = w.write(y, |p| p.edge(Y, 1, &[], T2, B, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], T1, A, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], B, K, Role::Write, &[]));
+    let gt2 = w.write(y, |p| p.grant(Y, 1, &[], T2, B, Role::Write, &[]));
     // the split commit: two parts, one commit (`World::split`)
     let parts = w.write_parts(k, |p| p.split(K, 2, K, &[(&[A], T1), (&[B], T2)]));
-    w.write(y, |p| p.edge(Y, 6, &[], B, K, Role::None, &[]));
+    w.write(y, |p| p.grant(Y, 6, &[], B, K, Role::None, &[]));
     let st = w.run(&Rule::fixed(), |_| {});
     let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
     assert_eq!((full[&parts[0]], full[&parts[1]]), (Verdict::Valid, Verdict::Invalid));
@@ -103,8 +103,8 @@ fn split_a_part_on_another_thing_adds_no_evidence_requirement() {
 }
 
 /// Finding 11, pinned as the draft has it: a writer of A without admin writes `n` grants of
-/// admin on Q's edge, none of which applies; Q writes D through [A], so every one is in D's
-/// evidence (a grant write on an edge of the stated path, whatever its validity) and Q's node
+/// admin on Q's grant, none of which applies; Q writes D through [A], so every one is in D's
+/// evidence (a grant write on a grant of the stated path, whatever its validity) and Q's node
 /// copies each under D. D's copies grow with what a non-admin of A writes, unbounded.
 #[test]
 fn f11_a_non_admin_of_a_path_thing_grows_the_evidence_with_writes_that_never_apply() {
@@ -112,10 +112,10 @@ fn f11_a_non_admin_of_a_path_thing_grows_the_evidence_with_writes_that_never_app
         let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
         let mut w = World::new(pw, &[A, D]);
         let (x, y, k, q) = (w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A]));
-        w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-        w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
-        w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-        let junk: Vec<Id> = (0..n).map(|i| w.write(k, |p| p.edge(K, 2 + i, &[], A, Q, Role::Admin, &[]))).collect();
+        w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+        let junk: Vec<Id> = (0..n).map(|i| w.write(k, |p| p.grant(K, 2 + i, &[], A, Q, Role::Admin, &[]))).collect();
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
         let st = w.run(&Rule::fixed(), |_| {});
         let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
@@ -163,9 +163,9 @@ fn gap_a_removal_no_node_holding_it_brings_leaves_the_write_showing() {
     let mut risk3 = World::new(pw, &[A, R]);
     risk3.member(E, R);
     let (x, y, k) = (risk3.node(true, &[A]), risk3.node(true, &[R]), risk3.node(false, &[]));
-    risk3.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    risk3.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
-    risk3.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    risk3.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    risk3.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
+    risk3.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     risk3.write(k, |p| p.content(K, 8, &[A, R], E));
     for (name, w, s) in [("f1", org_apart(), D), ("f3", family(raised), D), ("risk3", risk3, R)] {
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{name}");
@@ -215,9 +215,9 @@ fn keysets_a_rotation_carries_the_demotions_its_writer_holds() {
     let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, k) = (w.node(true, &[A]), w.node(true, &[A, D]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    let r = w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     let ks = w.rotate(y, &[r], |p| p.content(Y, 7, &[], D));
     let late = w.write(k, |p| p.content(K, 8, &[A], D));
     let rule = Rule::fixed();
@@ -242,11 +242,11 @@ fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
     let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, k, z) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    let gz = w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Admin, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    let gz = w.write(k, |p| p.grant(K, 2, &[], A, Z, Role::Write, &[]));
     let zc = w.write(z, |p| p.content(Z, 3, &[A], D));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[gz]));
+    w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[gz]));
     let f = fails(&w, &Rule { lists: Lists::Unit, ..Rule::fixed() });
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == zc && f.reader == Some(Verdict::Invalid)), "{f:?}");
     assert_eq!(fails(&w, &Rule::fixed()), vec![]);
@@ -254,7 +254,7 @@ fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
 
 /// Finding 5: a reader holding part of a path's evidence judges where it should wait. D's reader
 /// holds K's write and K's grant on A but not X's earlier removal (stamped before the write): no
-/// edge lacks a setter, so the write is not pending, and it reads valid until the removal comes.
+/// grant lacks a setter, so the write is not pending, and it reads valid until the removal comes.
 /// No rule over the held set alone tells it apart: only a complete pass of D's sync ID does.
 #[test]
 fn f5_partial_evidence_judges_before_a_complete_pass() {
@@ -268,7 +268,7 @@ fn f5_partial_evidence_judges_before_a_complete_pass() {
     let v = w.reader(&Rule::fixed(), &st, D, &Set::from([r]));
     assert_eq!(w.verdicts(&v, &Set::from([thief]))[&thief], Verdict::Valid);
     assert_eq!(w.verdicts(&w.reader(&Rule::fixed(), &st, D, &Set::new()), &Set::from([thief]))[&thief], Verdict::Invalid);
-    // with no grant write on K's edge at all, it pends
+    // with no grant write on K's grant at all, it pends
     let g = 0;
     let v = w.reader(&Rule::fixed(), &st, D, &Set::from([g, r]));
     assert_eq!(w.verdicts(&v, &Set::from([thief]))[&thief], Verdict::Pending);

@@ -33,7 +33,7 @@ fn a_write_in_one_of_n_read_things_costs_the_certificate_follow_the_same_at_n_an
         let (mut lp, ps) = people(2);
         let ts: Vec<Tid> = (0..n).map(|_| thing_of(&mut lp, 0, ps[0])).collect();
         for t in &ts {
-            lp.peers[0].engine.grant(t, &ps[1], &edge_of(Role::Write)).unwrap();
+            lp.peers[0].engine.grant(t, &ps[1], &grant_of(Role::Write)).unwrap();
         }
         among(&mut lp, 2);
         for t in &ts {
@@ -62,7 +62,7 @@ fn a_write_in_one_of_n_read_things_costs_the_certificate_follow_the_same_at_n_an
 }
 
 use crate::common::{REG, s};
-use crate::flows::{edge_of, people, thing_of};
+use crate::flows::{grant_of, people, thing_of};
 use osis_base::{Ak, CommitId, Role, Tid};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -102,7 +102,7 @@ fn hand(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
 
 // Finding 9 (spec/permissions.md §2 Grant writes: a removal applies only once the creations of
 // the entries it resets are held; §4 Evidence of a commit: a commit's evidence takes the writes on
-// each edge its grant writes set): X removes K and Q from A in one commit; K wrote D through [A]
+// each grant its grant writes set): X removes K and Q from A in one commit; K wrote D through [A]
 // before it (listed) and after it. Under D (its unit D alone) the evidence holds the removal and
 // both creations, X's grant to Q among them, on no path K's writes state. A reader given D's
 // writes and exactly those copies judges both of K's writes as X; one given them less X's grant to
@@ -114,15 +114,15 @@ fn f9_a_removal_of_two_holders_waits_for_both_creations_at_a_reader_spec_permiss
     let a = thing_of(&mut lp, 0, px);
     let d = thing_of(&mut lp, 0, px);
     among(&mut lp, 3);
-    let ga = lp.peers[0].engine.grant(&d, &a, &edge_of(Role::Write)).unwrap().commits;
+    let ga = lp.peers[0].engine.grant(&d, &a, &grant_of(Role::Write)).unwrap().commits;
     // A refers to D, which its writers reach through it
     lp.refer(0, a, d);
     // the readers read D (their grants are bodies of D)
     for r in [ps[3], ps[4]] {
-        lp.peers[0].engine.grant(&d, &r, &edge_of(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&d, &r, &grant_of(Role::Read)).unwrap();
     }
-    let gk = lp.peers[0].engine.grant(&a, &pk, &edge_of(Role::Write)).unwrap().commits;
-    let gq = lp.peers[0].engine.grant(&a, &pq, &edge_of(Role::Write)).unwrap().commits;
+    let gk = lp.peers[0].engine.grant(&a, &pk, &grant_of(Role::Write)).unwrap().commits;
+    let gq = lp.peers[0].engine.grant(&a, &pq, &grant_of(Role::Write)).unwrap().commits;
     among(&mut lp, 3);
     let k1 = write(&mut lp, 1, d, "k1");
     among(&mut lp, 3);
@@ -228,7 +228,7 @@ fn a_write_costs_the_kept_derivation_what_it_moved_at_n_and_10n_spec_permissions
     let cost = |n: usize| {
         let (mut lp, ps) = people(2);
         let t = thing_of(&mut lp, 0, ps[0]);
-        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
         among(&mut lp, 2);
         lp.hold_at(1, t);
         for i in 0..n {
@@ -281,7 +281,7 @@ fn a_write_listing_its_mint_admins_step_requires_that_step_spec_crypto_7() {
     let w = lp.peers[0].engine.commit(m).unwrap().unwrap();
     lp.hold(g);
     lp.peers[0].engine.make_independent(&g).unwrap();
-    lp.peers[0].engine.grant(&g, &r, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &r, &grant_of(Role::Read)).unwrap();
     let e = &mut lp.peers[0].engine;
     let copies = e.evidence_copies().unwrap();
     let minting = copies.keys().find(|k| k.1 == n && copies[*k].iter().any(|p| !p.steps.is_empty())).expect("N's minting records its genesis step").0;

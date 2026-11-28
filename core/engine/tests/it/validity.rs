@@ -20,7 +20,7 @@ const DAY: u64 = 86_400_000;
 fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
     let scope = of(holder, t);
     let f = frontier_now(lp, admin, &scope);
-    set_edge(&mut lp.peers[admin].engine, t, holder, None, Some(f.clone()));
+    set_grant(&mut lp.peers[admin].engine, t, holder, None, Some(f.clone()));
 }
 
 /// Alice (0) is mint admin of D and grants Bob (1) and Carol (2) write: built once
@@ -38,8 +38,8 @@ fn setup_built() -> (LocalPeer, Tid, Tid, Tid) {
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     (lp, d, b, c)
 }
@@ -72,7 +72,7 @@ fn bob_revocation_spec_perm_5_2() {
     // re-grant makes every write of Bob valid again, the gap included: Alice dropped them while
     // invalid (spec/permissions.md §6) and fetches them again from Bob, who kept his own
     lp.advance(DAY);
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 1, 0);
     for i in [0, 1] {
@@ -338,7 +338,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&first), "listed, compacted or not");
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     lp.advance(1_000);
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
@@ -373,7 +373,7 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
             let now = lp.peers[0].engine.now();
             let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
             assert!(f.commits.contains(&first), "listed, compacted or not");
-            set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+            set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
             lp.advance(1_000);
         }
         let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
@@ -401,7 +401,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     lp.advance(DAY);
     let f = frontier_now(&mut lp, 0, &of(b, d));
     assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     let mut fresh = fresh_net(&mut lp, 0, d, 1000); // a reader apart from lp's (its own seeds)
     fresh.advance(3 * DAY);
     give_carried(&mut lp, 0, &mut fresh, 0, |p| p.id == tag);
@@ -436,13 +436,13 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
     assert!(now.commits.contains(&one) && now.commits.contains(&two), "{now:?}");
     let f = lp.peers[0].engine.frontier(&of(b, d), cut).unwrap();
     assert!(f.commits.contains(&one) && !f.commits.contains(&two) && !f.commits.contains(&snap), "{f:?}");
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("1")), "received by the cut, should stay");
 }
 
 // spec/commits.md §3, §4 (counter ranges on one aspect overlap are both invalid): role commits use commit form and a session-form one
 // is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
-// session ranges void both commits): Bob keeps the edge Alice gave him.
+// session ranges void both commits): Bob keeps the grant Alice gave him.
 #[test]
 fn reused_counters_never_void_a_grant_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
@@ -451,7 +451,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    let g = set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
     let h = lp.peers[0].engine.header(&g).unwrap();
@@ -462,7 +462,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let empty = osis_crdt::Fragment::default();
     let form = crate::common::session_of(&lp, 0);
     let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
-    builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Weak(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
+    builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Weak(c))], op: Op::Set(grant(Role::Read).to_value()) }, &AnyView).unwrap();
     let (f, range) = builder.finish().unwrap();
     assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
@@ -478,11 +478,11 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
 }
 
 // spec/commits.md §2: a role commit changes at most
-// one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
+// one grant; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
 fn role_content_rules_spec_commits_2() {
     let (mut lp, d, b, c) = setup();
-    let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(x))], op: osis_crdt::Op::Set(edge(r).to_value()) };
+    let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(x))], op: osis_crdt::Op::Set(grant(r).to_value()) };
     let mut m = Mutation::new();
     for x in [b, c] {
         m.op(d, &osis_schema::core_types::ROLES, put(x, Role::Admin)).unwrap();
@@ -510,7 +510,7 @@ fn commit_form_order_spec_crdt_3_3() {
         let mut lp = net(2, 0);
         let d = new_thing(&mut lp, a);
         let b = lp.peers[w].engine.tid();
-        set_edge(&mut lp.peers[a].engine, d, b, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[a].engine, d, b, Some(grant(Role::Write)), None);
         sync(&mut lp, a, w);
         let map = ak("t:map.0");
         let mut m = Mutation::new();
@@ -537,7 +537,7 @@ fn foreign_actor_claim_refused_spec_wire_4() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("forged")).unwrap();
@@ -553,7 +553,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
 }
 
 // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: Bob, a writer of D, signs a write
-// stated through Carol though nothing was ever granted him on her: no write is held on that edge
+// stated through Carol though nothing was ever granted him on her: no write is held on that grant
 // of its path, so receivers cannot judge it; it pends and never reads as Carol's. The same write
 // stated as Bob himself is valid.
 #[test]
@@ -573,21 +573,21 @@ fn a_write_stated_through_an_ungranted_actor_pends_spec_commits_4() {
 // spec/commits.md §4 (Unjudgeable): a grant write that is itself unjudgeable is no evidence, and
 // hides none that is. 0 makes x (shared with 1), o, o2 and q, all its own. Stating its path
 // through o, which holds nothing on x, it writes one `roles.0` part on x giving o read (its path
-// ends at o: judgeable, so the part is held) and q admin (on o's edge on x, which no write set
+// ends at o: judgeable, so the part is held) and q admin (on o's grant on x, which no write set
 // before it: unjudgeable). A write acting as q on x after it waits at 1: q's grant is no write it
 // could rely on. Once 0 grants q write on x, the same forgery through o2 and a write as q after
 // both apply, the write valid: the forgery after the grant stalls nothing.
 #[test]
-fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
+fn an_unjudgeable_grant_write_is_no_evidence_spec_commits_4() {
     let mut lp = net(2, 0);
     let x = new_shared(&mut lp, 0);
     let (o, o2, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
     let forge = |lp: &mut LocalPeer, o: Tid, lo: u64| {
         lp.advance(1_000);
-        let v = Value::Map(osis_base::ValueMap::from([(Value::Weak(o), edge(Role::Read).to_value()), (Value::Weak(q), edge(Role::Admin).to_value())]));
+        let v = Value::Map(osis_base::ValueMap::from([(Value::Weak(o), grant(Role::Read).to_value()), (Value::Weak(q), grant(Role::Admin).to_value())]));
         let f = forge_by(lp, 0, x, &ak("roles.0"), &v, lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![o], direct: 0 });
-        assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)), "its write on o's edge is judgeable");
+        assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)), "its write on o's grant is judgeable");
     };
     let as_q = |lp: &mut LocalPeer, v: &str| {
         lp.advance(1_000);
@@ -601,10 +601,10 @@ fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
     forge(&mut lp, o, 1 << 40);
     let w = as_q(&mut lp, "as q");
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.pending().iter().any(|(id, r)| *id == w && matches!(r, osis_engine::Reason::MissingChain(_))), "only an unjudgeable write on q's edge on x: {:?}", e1.pending());
+    assert!(e1.pending().iter().any(|(id, r)| *id == w && matches!(r, osis_engine::Reason::MissingChain(_))), "only an unjudgeable write on q's grant on x: {:?}", e1.pending());
     assert_eq!(e1.get(&x, &ak("t:reg.0")).unwrap(), Some(s("new")));
     lp.advance(1_000);
-    set_edge(&mut lp.peers[0].engine, x, q, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, x, q, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     forge(&mut lp, o2, 1 << 41);
     let w2 = as_q(&mut lp, "as q again");
@@ -657,14 +657,14 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
         d
     };
     let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let flagged = osis_schema::core_types::Grant { may_grant: true, ..edge(Role::Read) };
+    let flagged = osis_schema::core_types::Grant { may_grant: true, ..grant(Role::Read) };
     lp.peers[0].engine.grant(&d, &b, &flagged).unwrap();
-    lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &c, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
     lp.peers[1].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
     lp.advance(1_000);
-    let grant = Value::Map(osis_base::ValueMap::from([(Value::Weak(c), edge(Role::Read).to_value())]));
+    let grant = Value::Map(osis_base::ValueMap::from([(Value::Weak(c), grant(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
     lp.sync_all().unwrap();
     lp.peers[2].receive(&forged, Vec::new()).unwrap();
@@ -693,7 +693,7 @@ fn forged_role_class_unmerged_spec_perm_1() {
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "a writer's role-class write applied");
     // control: the same write by the same key applies once its author is an admin
     let b = lp.peers[1].engine.tid();
-    edge_write(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    grant_write(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
     lp.advance(1_000);
     let honest = forge_role_commit(&mut lp, 1, d, &a, &sync_ids.to_value(), 100);
     lp.peers[0].receive(&honest, Vec::new()).unwrap();
@@ -732,7 +732,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     lp.sync_all().unwrap();
     assert!((0..3).all(|i| lp.peers[i].engine.get(&d, &key).unwrap().is_none()));
     // the same write once its author is an admin applies
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     lp.peers[1].commit(write("bob, admin")).unwrap().unwrap();
@@ -748,7 +748,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
 #[test]
 fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
     let (seen, unseen) = (ak("t:seen^.0"), ak("t:unseen^.0"));
     put(&mut lp, 1, d, &seen, &s("received"));
@@ -756,7 +756,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     lp.advance(1_000);
     put(&mut lp, 1, d, &unseen, &s("offline"));
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.get(&d, &seen).unwrap(), Some(s("received")), "{i}: a covered `^` write lost");
@@ -808,7 +808,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         lp.advance(DAY);
         // a frontier holding "mon" only
         let f = osis_schema::core_types::Frontier { commits: BTreeSet::from([mon]) };
-        let rv = set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+        let rv = set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
         let both = BTreeSet::from(["mon".to_string(), "x".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), both, "Alice: the snapshot vouches for x");
         // Dave: everything of Alice's but Bob's own commits
@@ -824,7 +824,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         lp.peers[3].restart(5).unwrap();
         assert_eq!(tags(&mut lp, 3, d), both, "after a restart");
         lp.advance(DAY);
-        let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+        let g = set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
         let pk = package_for(&mut lp, 0, 3, g);
         lp.deliver(3, &pk).unwrap();
         assert_eq!(tags(&mut lp, 3, d), both, "re-granted");
@@ -916,9 +916,9 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     let d = new_thing(&mut lp, 0);
     // Dave reads d, so he keeps what he is given of it
     let dave = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, d, dave, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, dave, Some(grant(Role::Read)), None);
     let b = lp.peers[1].engine.tid();
-    let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    let g = set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
     add_tag(&mut lp, 1, d, "x");
     sync(&mut lp, 1, 0);
@@ -967,7 +967,7 @@ fn demoted_compactor_fresh_node_spec_perm_5_2() {
     lp.peers[2].receive(&snap, Vec::new()).unwrap();
     lp.sync_all().unwrap();
     lp.advance(DAY);
-    set_edge(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default()));
+    set_grant(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default()));
     lp.sync_all().unwrap();
     let want = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
     assert_eq!(tags(&mut lp, 0, d), want);
@@ -1134,7 +1134,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
 // raw record (the record-link step) holds nothing of the write until that record arrives.
 #[test]
 #[ignore = "issues/writes-on-unheld-things-tests.md"]
-fn record_then_edge_chain_applies_spec_perm_1() {
+fn record_then_grant_chain_applies_spec_perm_1() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
@@ -1143,8 +1143,8 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     // a reader of C holding neither A nor what A writes
     let obs = reader(&mut lp, 1, c, 0x5e3);
     lp.sync_all().unwrap();
-    let ab = edge_write(&mut lp.peers[1].engine, b, a, Some(edge(Role::Write)), None);
-    let bc = edge_write(&mut lp.peers[1].engine, c, b, Some(edge(Role::Admin)), None);
+    let ab = grant_write(&mut lp.peers[1].engine, b, a, Some(grant(Role::Write)), None);
+    let bc = grant_write(&mut lp.peers[1].engine, c, b, Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
     assert!(write_reg(&mut lp, 2, c, "n2").is_err(), "no path: no write");
     let w = write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
@@ -1152,7 +1152,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     for i in [0, 2] {
         assert_eq!(lp.peers[i].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")), "peer {i}");
     }
-    // the certificates carry the edges and the records, A's among them, raw
+    // the certificates carry the grants and the records, A's among them, raw
     let certs = lp.peers[0].engine.certificates(&c).unwrap();
     assert!(certs.records.contains(&a));
     assert!(certs.commits.contains_key(&ab) && certs.commits.contains_key(&bc));
@@ -1179,11 +1179,11 @@ fn record_then_edge_chain_applies_spec_perm_1() {
 }
 
 // spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 is mint admin of a chain of things down to one
-// link past the cap. A descent runs within the cap (spec/permissions.md §1 Record chain): an edge
+// link past the cap. A descent runs within the cap (spec/permissions.md §1 Record chain): a grant
 // on C to the thing at the cap lets n0 write C, the write applying at n0 and a receiver; through
 // the thing one link past it no path gives the role, and the write is refused.
 #[test]
-fn record_chain_depth_edge_chain_spec_perm_1() {
+fn record_chain_depth_grant_chain_spec_perm_1() {
     use osis_base::format::MAX_CHAIN_DEPTH;
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
@@ -1207,9 +1207,9 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
         let c = new_thing(&mut lp, 1);
         share(&mut lp, 1, c);
         lp.sync_all().unwrap();
-        edge_write(&mut lp.peers[1].engine, c, holder, Some(edge(Role::Admin)), None);
+        grant_write(&mut lp.peers[1].engine, c, holder, Some(grant(Role::Admin)), None);
         let p0 = lp.peers[0].engine.tid();
-        set_edge(&mut lp.peers[1].engine, c, p0, Some(edge(Role::Read)), None);
+        set_grant(&mut lp.peers[1].engine, c, p0, Some(grant(Role::Read)), None);
         lp.sync_all().unwrap();
         let r = write_reg(&mut lp, 0, c, "n0");
         if k == 1 {
@@ -1225,7 +1225,7 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
     }
 }
 
-// spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it is
+// spec/permissions.md §1, §4: n0 reaches C only through grants n0 -> G1 -> G2 -> C while it is
 // mint admin of thousands of things that are mint admins of more (more than any walk-size cap): its write on C
 // applies (the chain search goes backward from C, never through the things below n0).
 #[test]
@@ -1238,9 +1238,9 @@ fn chain_found_past_owned_flood_spec_perm_4() {
     let g2 = new_thing(&mut lp, 1);
     let c = new_thing(&mut lp, 1);
     lp.sync_all().unwrap();
-    set_edge(&mut lp.peers[1].engine, g1, n0, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[1].engine, g2, g1, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[1].engine, c, g2, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[1].engine, g1, n0, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[1].engine, g2, g1, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[1].engine, c, g2, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     for _ in 0..21 {
         let mut m = Mutation::new();
@@ -1263,24 +1263,24 @@ fn index_of(e: &osis_engine::Engine) -> osis_engine::engine::IndexDigest {
 // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a write inside a holder's entry
 // is refused, so field changes cannot compose (was: a change adding `until`, then one raising
 // the role, left an admin grant with no `until`); written as remove + put, each change is the
-// whole edge.
+// whole grant.
 #[test]
-fn edge_change_is_remove_and_put_spec_perm_2() {
+fn grant_change_is_remove_and_put_spec_perm_2() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let c = lp.peers[1].engine.tid();
     let until = Some(Time(T0.0 + 30 * DAY));
-    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Write)), None);
     lp.advance(1_000);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..edge(Role::Write) }), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..grant(Role::Write) }), None);
     lp.advance(1_000);
     // the role field alone, into the entry the last change created
     let mut m = Mutation::new();
     let path = vec![osis_crdt::PathSeg::Key(Value::Weak(c))];
-    m.op(d, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(edge(Role::Admin).to_value()) }).unwrap();
+    m.op(d, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(grant(Role::Admin).to_value()) }).unwrap();
     assert_eq!(lp.peers[0].engine.commit(m).unwrap_err().class(), osis_base::ErrorClass::BadInput);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..edge(Role::Admin) }), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Grant { until, ..grant(Role::Admin) }), None);
     let e = lp.peers[0].engine.roster(&d).get(&c).cloned().unwrap();
     assert_eq!((e.role, e.until), (Role::Admin, until));
 }
@@ -1318,7 +1318,7 @@ fn churn_resets(k: usize) -> (usize, usize) {
     let mut last = (0, 0);
     for _ in 0..k {
         lp.advance(10);
-        let g = lp.peers[0].engine.grant(&d, &ps[1], &edge(Role::Write)).unwrap();
+        let g = lp.peers[0].engine.grant(&d, &ps[1], &grant(Role::Write)).unwrap();
         lp.advance(10);
         let r = lp.peers[0].engine.demote(&d, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
         last = (roles_resets(&mut lp, d, &g), roles_resets(&mut lp, d, &r));
@@ -1353,7 +1353,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         const CHARS: usize = 17_000;
         let (mut lp, d, b, _) = setup();
         let c = lp.peers[2].engine.tid();
-        set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Admin)), None);
+        set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Admin)), None);
         let pad = "x".repeat(500);
         let key = |i: usize, sfx: &str| s(&format!("key-{i:05}{sfx}"));
         let big: osis_base::ValueMap = (0..N).map(|i| (key(i, ""), s(&pad))).collect();
@@ -1403,7 +1403,7 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
         // C revokes B unseen
         let scope = of(b, d);
         let f = frontier_now(&mut lp, 2, &scope);
-        let rv = set_edge(&mut lp.peers[2].engine, d, b, None, Some(f.clone()));
+        let rv = set_grant(&mut lp.peers[2].engine, d, b, None, Some(f.clone()));
         let pk = package_for(&mut lp, 2, 0, rv);
         osis_base::costs::take();
         lp.deliver(0, &pk).unwrap();
@@ -1473,7 +1473,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
             }
         }
         lp.peers[1].know(&[who]).unwrap();
-        lp.peers[1].engine.grant(&u, &who, &edge(Role::Read)).unwrap();
+        lp.peers[1].engine.grant(&u, &who, &grant(Role::Read)).unwrap();
         i
     };
     reader(&mut lp, 9100);
@@ -1641,7 +1641,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
         let at = lp.peers[0].engine.now();
         let mut fr = lp.peers[0].engine.frontier(&scope, at).unwrap();
         fr.commits.remove(&fid.unwrap());
-        let rv = set_edge(&mut lp.peers[0].engine, d, c, None, Some(fr.clone()));
+        let rv = set_grant(&mut lp.peers[0].engine, d, c, None, Some(fr.clone()));
         let rv = package_for(&mut lp, 0, p0, rv);
         for i in [p0, p1, p2] {
             lp.deliver(i, &rv).unwrap();
@@ -1649,7 +1649,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             assert_eq!(lp.peers[i].engine.get(&d, &reg).unwrap(), Some(s("real")), "peer {i}, Carol removed");
         }
         // Carol granted again for the next round
-        set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Write)), None);
         lp.sync_all().unwrap();
         lp.advance(1_000);
     }
@@ -1667,7 +1667,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let (a, r) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, r, Some(grant(Role::Read)), None);
     let mut obs = reader(&mut lp, 0, t, 0x5f40);
     let base = packages_for_peer(&mut lp, 0, &mut obs);
     let m_ak = ak("x:m.0");
@@ -1734,7 +1734,7 @@ fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, t, w, Some(grant(Role::Write)), None);
         let m_ak = ak("x:m.0");
         let c = put(&mut lp, 0, t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))])));
         lp.advance(1_000);
@@ -1784,7 +1784,7 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     assert!(e.drop_from(&c, &d, &kept).unwrap() > e.now().0, "kept while live");
     assert!(e.body_not_dropped(&c, &d, &kept), "X's body kept");
     let fr = osis_schema::core_types::Frontier { commits: BTreeSet::new() };
-    set_edge(&mut lp.peers[0].engine, d, w, None, Some(fr.clone()));
+    set_grant(&mut lp.peers[0].engine, d, w, None, Some(fr.clone()));
     assert_eq!(lp.peers[0].engine.get(&d, &kept).unwrap(), Some(s("real")), "X's write reads again");
 }
 
@@ -1828,7 +1828,7 @@ fn dropped_commit_dot_copy_by_reader_or_demoted_writer_changes_nothing_spec_perm
         let w = lp.peers[1].engine.tid();
         let t = new_thing(&mut lp, 0);
         share(&mut lp, 0, t);
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(role)), None);
+        set_grant(&mut lp.peers[0].engine, t, w, Some(grant(role)), None);
         let (c, honest) = commit_form_tag_compacted(&mut lp, t);
         let tags = ak("t:tags.0");
         for i in 1..4 {
@@ -1846,7 +1846,7 @@ fn dropped_commit_dot_copy_by_reader_or_demoted_writer_changes_nothing_spec_perm
             continue;
         }
         lp.advance(1_000);
-        let rv = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default()));
+        let rv = set_grant(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default()));
         let rv_pk = package_for(&mut lp, 0, 2, rv);
         // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
         lp.peers[2].receive(&forged, Vec::new()).unwrap();
@@ -1893,7 +1893,7 @@ fn a_readers_snapshot_changes_nothing_spec_perm_5_2() {
     // the reader 1 and observers 2 and 3 read t
     for i in 1..4 {
         let o = lp.peers[i].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
+        set_grant(&mut lp.peers[0].engine, t, o, Some(grant(Role::Read)), None);
     }
     sync(&mut lp, 0, 3);
     let (reg, m_ak) = (ak("t:reg.0"), ak("x:m.0"));
@@ -1963,9 +1963,9 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
             let scope = of(c, d);
             let f = frontier_now(&mut lp, 0, &scope);
             assert!(f.commits.contains(&snap), "the frontier lists the snapshot");
-            set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.clone()))
+            set_grant(&mut lp.peers[0].engine, d, c, None, Some(f.clone()))
         } else {
-            set_edge(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default()))
+            set_grant(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default()))
         };
         let all = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), all, "Alice holds Bob's commit");
@@ -1995,8 +1995,8 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
         lp.sync_all().unwrap();
         let d = new_thing(&mut lp, 0);
         let (b, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
+        set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, d, r, Some(grant(Role::Read)), None);
         let mut obs = reader(&mut lp, 0, d, 0x5f84);
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "bob");
@@ -2034,8 +2034,8 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, r, Some(grant(Role::Read)), None);
     let mut obs = reader(&mut lp, 0, d, 0x5f89);
     lp.sync_all().unwrap();
     add_tag(&mut lp, 1, d, "bob");
@@ -2080,9 +2080,9 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
     lp.sync_all().unwrap();
     let w = lp.peers[1].engine.tid();
     let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, w, Some(grant(Role::Write)), None);
     let o = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, o, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, o, Some(grant(Role::Read)), None);
     let obs = reader(&mut lp, 0, t, 0x5f8b);
     let (c, honest) = commit_form_tag_compacted(&mut lp, t);
     let tags = ak("t:tags.0");
@@ -2228,7 +2228,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
         let mut late = vec![latest(&mut lp)];
         if bob_held {
             lp.advance(1_000);
-            set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
+            set_grant(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
             late.push(latest(&mut lp));
         }
         sync(&mut lp, 0, 2);
@@ -2534,7 +2534,7 @@ fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<os
 #[test]
 fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
     let mut obs = reader(&mut lp, 0, d, 0x5fe1);
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
@@ -2675,7 +2675,7 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let scope = of(c, d);
     let mut f = frontier_now(&mut lp, 0, &scope);
     f.commits.remove(&snap);
-    set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|x| lp.peers[0].engine.header(x).unwrap().ts).unwrap();
     let held = lp.commit_ids(0);
     let of_bob = of(b, d);
@@ -2734,7 +2734,7 @@ fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, BTreeSet<osis_base::
     let scope = of(c, d);
     let mut f = frontier_now(&mut lp, 0, &scope);
     f.commits.remove(&snap);
-    set_edge(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, c, None, Some(f.clone()));
     let rv = latest_of(&mut lp, 0);
     let held = lp.commit_ids(0);
     (lp, d, held, [x, snap, rv])
@@ -3048,7 +3048,7 @@ fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
 fn a_destruction_falls_with_a_later_removal_on_its_thing_in_either_order_spec_permissions_6() {
     for first in [false, true] {
         let (mut lp, d, b, _) = setup();
-        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+        set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
         lp.sync_all().unwrap();
         lp.advance(1_000);
         let q = {
@@ -3060,7 +3060,7 @@ fn a_destruction_falls_with_a_later_removal_on_its_thing_in_either_order_spec_pe
             e.commit(m).unwrap().unwrap()
         };
         lp.advance(1_000);
-        let r = edge_write(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
+        let r = grant_write(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
         if first {
             crate::flows::send_carried(&mut lp, 1, 2, &[q]);
             assert!(!lp.peers[2].engine.knows(&d), "destroyed while the removal is not held");
@@ -3088,7 +3088,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     use osis_crdt::{Op, PathOp};
     let (mut lp, d, b, _) = setup();
     // Bob makes things in d: granted by the flow (its keys), his node holds it
-    lp.peers[0].engine.grant(&d, &b, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &b, &grant(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     lp.peers[1].engine.hold(osis_base::Strong(d)).unwrap();
     let mut m = Mutation::new();
@@ -3126,7 +3126,7 @@ fn padded_durable_created_refused_spec_commits_2() {
 fn a_minting_listing_unplaced_keys_still_creates_spec_crypto_7() {
     use osis_crdt::{Op, PathOp};
     let (mut lp, d, b, _) = setup();
-    lp.peers[0].engine.grant(&d, &b, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &b, &grant(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     lp.peers[1].engine.hold(osis_base::Strong(d)).unwrap();
     let mut m = Mutation::new();
@@ -3153,8 +3153,8 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let (b, c, j) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Write)), None);
     let mut obs = reader(&mut lp, 0, d, 0x6210);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
@@ -3167,7 +3167,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     lp.advance(1000);
     lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
-    set_edge(&mut lp.peers[0].engine, d, j, Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, j, Some(grant(Role::Admin)), None);
     lp.advance(1000);
     for p in packages_reading(&mut lp, 0, 3, d).into_iter().filter(|p| !bob.contains(&p.id)) {
         lp.deliver(3, &p).unwrap();
@@ -3229,7 +3229,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     let f = frontier_now(&mut lp, 0, &of(b, d));
     assert!(f.commits.contains(&one), "a superseded write inside its keep-at-least window is listed");
     assert!(f.commits.contains(&two), "a covered live write is listed too");
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
     let mut fresh = fresh_net(&mut lp, 0, d, 1000); // a reader apart from lp's (its own seeds)
     fresh.advance(DAY);
@@ -3405,7 +3405,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", crate::common::DAY)]);
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     put(&mut lp, 0, t, &REG, &s("prior"));
@@ -3415,7 +3415,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: [c].into_iter().collect() };
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Read)), Some(f.clone()));
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Read)), Some(f.clone()));
     lp.sync_all().unwrap();
     lp.advance(1_000);
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b's")), "the write stays valid");
@@ -3435,7 +3435,7 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let r = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, t, r, Some(grant(Role::Read)), None);
     let mut big = vec![0u8; 1 << 20];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(0), &mut big);
     put(&mut lp, 0, t, &BLOB, &Value::Bytes(big));
@@ -3462,7 +3462,7 @@ fn relink_waits_for_a_commit_pending_on_the_aspect_spec_sync_1() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, w, Some(grant(Role::Write)), None);
     let mut big = vec![0u8; 1 << 20];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(1), &mut big);
     put(&mut lp, 0, t, &BLOB, &Value::Bytes(big.clone()));
@@ -3477,7 +3477,7 @@ fn relink_waits_for_a_commit_pending_on_the_aspect_spec_sync_1() {
     assert_eq!(e.relink(&lost, &[t].into(), &mut |_, _| true).unwrap(), None, "a commit pends on the aspect");
 }
 
-// spec/wire.md §4 position 12, spec/permissions.md §5.1 step 4 (writer rule): an explicit edge
+// spec/wire.md §4 position 12, spec/permissions.md §5.1 step 4 (writer rule): an explicit grant
 // write carries a frontier iff it audits. A lower role with none is refused (it would drop
 // every write of the holder's), as is a frontier on a write whose `until` is alive (it audits
 // nothing); `Engine::needs_frontier` says which.
@@ -3496,7 +3496,7 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
         e.commit(m)
     };
     let e = &mut lp.peers[0].engine;
-    let read = edge(Role::Read);
+    let read = grant(Role::Read);
     assert!(e.needs_frontier(&d, &b, Some(&read)));
     let r = write(e, read.clone(), false);
     assert!(matches!(&r, Err(osis_engine::Error::BadInput(m)) if m.contains("audits with no frontier")), "{r:?}");
@@ -3537,7 +3537,7 @@ fn kick_reads_bodies_down_to_its_winner() {
             let d = lp.peers[0].engine.new_thing(&mut m, alice);
             lp.peers[0].commit(m).unwrap().unwrap();
             lp.hold(d);
-            set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Write)), None);
+            set_grant(&mut lp.peers[0].engine, d, bob, Some(grant(Role::Write)), None);
             lp.sync_all().unwrap();
             let write = |lp: &mut LocalPeer, i: usize, schema: &'static osis_schema::StaticSchema, v: Value| {
                 let mut m = Mutation::new();
@@ -3559,7 +3559,7 @@ fn kick_reads_bodies_down_to_its_winner() {
             let size = format!("{:?}", lp.peers[0].engine.state(&d, &k).unwrap()).matches("STid(").count();
             // a kick with nothing of Bob's listed: his writes fall, Alice's newest wins again
             osis_base::costs::take();
-            set_edge(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default()));
+            set_grant(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default()));
             let costs = osis_base::costs::take();
             assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s(&format!("a{}", n - 1)))));
             (costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2), size)
@@ -3657,7 +3657,7 @@ fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
         sync(&mut lp, i, 1 - i);
     }
     // a kick with nothing of Bob's listed: the rebuild settles at Alice's register write
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
+    set_grant(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
     // Carol, who saw only the text, inserts after its `b`, later
     lp.advance(DAY);
     put_op(&mut lp, 2, d, &text, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 2, items: vec![s("Z")] } });
@@ -3678,8 +3678,8 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
         let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.hold(d);
-        set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+        set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, d, ids[2], Some(grant(Role::Admin)), None);
         lp.sync_all().unwrap();
         lp.advance(1_000);
         put(&mut lp, 1, d, &TEXT, &s("abc"));
@@ -3694,7 +3694,7 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
             lp.peers[0].engine.reload().unwrap();
             assert_eq!(read(&mut lp), Some(s("ac")));
         }
-        set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Read)), Some(osis_schema::core_types::Frontier::default()));
+        set_grant(&mut lp.peers[0].engine, d, ids[2], Some(grant(Role::Read)), Some(osis_schema::core_types::Frontier::default()));
         assert_eq!(read(&mut lp), Some(s("abc")), "reopen {reopen}");
     }
 }
@@ -3720,9 +3720,9 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
                 put(lp, i, t, &REG, &s(v))
             };
             write(&mut lp, a, "v3");
-            lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+            lp.peers[a].engine.grant(&t, &bob, &grant(Role::Write)).unwrap();
             write(&mut lp, a, "v4");
-            lp.peers[a].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
+            lp.peers[a].engine.grant(&t, &carol, &grant(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             lp.advance(DAY);
             let v5 = write(&mut lp, b, "v5");
@@ -3777,8 +3777,8 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
         let t = new_thing(&mut lp, a);
         let (bob, carol) = (lp.peers[b].engine.tid(), lp.peers[c].engine.tid());
         put(&mut lp, a, t, &REG, &s("v4"));
-        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
-        lp.peers[a].engine.grant(&t, &carol, &edge(Role::Write)).unwrap();
+        lp.peers[a].engine.grant(&t, &bob, &grant(Role::Write)).unwrap();
+        lp.peers[a].engine.grant(&t, &carol, &grant(Role::Write)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(DAY);
         let mut unaware = lp.peers[b].copy().unwrap();
@@ -3817,8 +3817,8 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
         lp.sync_all().unwrap();
         let t = new_thing(&mut lp, a);
         let (bob, carol) = (lp.peers[b].engine.tid(), lp.peers[c].engine.tid());
-        lp.peers[a].engine.grant(&t, &bob, &edge(Role::Admin)).unwrap();
-        lp.peers[a].engine.grant(&t, &carol, &edge(Role::Read)).unwrap();
+        lp.peers[a].engine.grant(&t, &bob, &grant(Role::Admin)).unwrap();
+        lp.peers[a].engine.grant(&t, &carol, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(DAY);
         let mut unaware = lp.peers[b].copy().unwrap();
@@ -3826,7 +3826,7 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
         for _ in 0..3 {
             lp.sync_all().unwrap();
         }
-        let fs = unaware.engine.grant(&t, &carol, &edge(Role::Admin)).unwrap().commits;
+        let fs = unaware.engine.grant(&t, &carol, &grant(Role::Admin)).unwrap().commits;
         let f = *fs.last().unwrap();
         let ts = unaware.engine.header(&f).unwrap().ts;
         let at = format!("Alice {a}, Bob {b}, Carol {c}");
@@ -3855,8 +3855,8 @@ fn acting_on_two() -> osis_engine::Result<Option<osis_base::CommitId>> {
     lp.sync_all().unwrap();
     let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, e, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, e, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -3876,10 +3876,10 @@ fn two_paths_world() -> (LocalPeer, Tid, Tid, Tid) {
         lp.sync_all().unwrap();
         let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, d, h, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, p, b, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, p, c, Some(edge(Role::Read)), None);
+        set_grant(&mut lp.peers[0].engine, h, b, Some(grant(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, d, h, Some(grant(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, p, b, Some(grant(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, p, c, Some(grant(Role::Read)), None);
         // Bob is told of D by H, the holder he reads it through
         lp.refer(0, h, d);
         lp.sync_all().unwrap();
@@ -4332,7 +4332,7 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
                 assert_eq!(held(&mut w, 0, &id).keys.get(&id_), None, "{at}: D's key in the applied commit ({reopened})");
             }
             // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: under `k1` the entry
-            // states a path of four made-up things, no edge of which a held write set, so D's
+            // states a path of four made-up things, no grant of which a held write set, so D's
             // write cannot be judged and applies in no order; which key opens the entry is what
             // the orders must agree on
             assert_eq!(reg(&mut w, d), before.0.clone(), "{at}: D ({reopened})");
@@ -4381,7 +4381,7 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         w.peers[0].reexamine().unwrap();
         w.peers[0].engine.check_index();
         // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: the committed key opens
-        // the entry to a path of four made-up things, no edge of which a held write set: D's
+        // the entry to a path of four made-up things, no grant of which a held write set: D's
         // part is held, waiting unjudged, and its write stays out
         assert_eq!(state(&mut w), (true, before), "{name}, then D's section carrying the committed key");
     }
@@ -4665,7 +4665,7 @@ fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
             assert!(r.is_err());
         }
         let carol = lp.peers[2].engine.tid();
-        let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
+        let grant = lp.peers[0].engine.grant(&d, &carol, &grant(Role::Read)).unwrap().commits;
         for g in grant {
             let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
             unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()));
@@ -4695,7 +4695,7 @@ fn a_path_waiting_opens_when_a_pending_commit_gives_its_roles_secret_spec_commit
     assert!(lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opens nowhere at Carol");
     let carol = lp.peers[2].engine.tid();
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
+    let grant = lp.peers[0].engine.grant(&d, &carol, &grant(Role::Read)).unwrap().commits;
     for g in grant {
         let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
         assert!(matches!(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
@@ -4768,7 +4768,7 @@ fn a_write_making_things_beside_writes_reached_another_way_is_one_commit_spec_wi
     assert_eq!(reg(&mut lp, 2, made[2]), Some(s("made")), "Carol reads Z, minted with admin P");
     assert_eq!(reg(&mut lp, 1, made[1]), Some(s("made")), "Bob reads Y");
     let c = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, c, Some(grant(Role::Read)), None);
     lp.hold(made[0]);
     for _ in 0..2 {
         lp.sync_all().unwrap();
@@ -4797,7 +4797,7 @@ fn a_reader_holding_only_later_epochs_opens_the_path_from_its_section_spec_crypt
     lp.hold(x);
     lp.sync_all().unwrap();
     let c = lp.peers[2].engine.tid();
-    lp.peers[0].engine.grant(&x, &c, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &c, &grant(Role::Read)).unwrap();
     for _ in 0..2 {
         lp.sync_all().unwrap();
     }
@@ -4818,7 +4818,7 @@ fn a_destruction_beside_a_write_through_another_actor_reaches_a_dependents_holde
     let o = crate::flows::thing_of(&mut lp, 1, me);
     let q = crate::flows::thing_of(&mut lp, 1, o);
     let c = lp.peers[2].engine.tid();
-    lp.peers[1].engine.grant(&q, &c, &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&q, &c, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.get(&q, &ak("t:reg.0")).unwrap(), Some(s("new")), "Carol reads Q");
     assert!(lp.peers[2].engine.epochs(&o).is_none_or(|e| e.read.held_roles().is_empty()), "Carol holds no roles secret of O");
@@ -4844,9 +4844,9 @@ fn a_destruction_beside_a_write_through_another_actor_reaches_a_dependents_holde
 
 // spec/wire.md §4 field 2; notes/path-form.md The engine's choice: no honest commit states a wrong path. Over a world of
 // grants, holders and creations, every part's path read off what each commit Alice holds states is
-// a real chain: each hop an edge or a record descent held, from the signer to the thing.
+// a real chain: each hop a grant or a record descent held, from the signer to the thing.
 #[test]
-fn every_stated_path_is_a_chain_of_held_edges_spec_wire_4() {
+fn every_stated_path_is_a_chain_of_held_grants_spec_wire_4() {
     let (mut lp, _, d, p) = two_paths_world();
     bob_writes_both(&mut lp, d, p);
     put(&mut lp, 1, d, &REG, &s("d alone"));
@@ -4892,14 +4892,14 @@ fn holders_world(n: usize) -> (LocalPeer, Vec<Tid>, Tid, Tid) {
     let b = lp.peers[1].engine.tid();
     let mut holder = b;
     for x in chain.iter().copied().chain([t]) {
-        set_edge(&mut lp.peers[0].engine, x, holder, Some(edge(Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, x, holder, Some(grant(Role::Write)), None);
         // each holder after Bob refers to what it holds, so Bob finds it through the chain
         if holder != b {
             lp.refer(0, holder, x);
         }
         holder = x;
     }
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, chain, t, d)
@@ -4966,7 +4966,7 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
         let b = lp.peers[1].engine.tid();
         for _ in 0..n {
             let x = new_thing(&mut lp, 0);
-            set_edge(&mut lp.peers[0].engine, x, b, Some(edge(Role::Read)), None);
+            set_grant(&mut lp.peers[0].engine, x, b, Some(grant(Role::Read)), None);
         }
         lp.sync_all().unwrap();
         let count = |lp: &mut LocalPeer, v: &str| {
@@ -4984,14 +4984,14 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
 }
 
 // spec/permissions.md §1 Path; spec/wire.md §4 field 2: the path a write states is the
-// shortest on the edges alive at its `ts`: a direct grant ending with no grant write since, the
+// shortest on the grants alive at its `ts`: a direct grant ending with no grant write since, the
 // path goes through the holder; a shorter one granted, it is taken; removed, the holder again.
 #[test]
-fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
+fn a_writes_path_follows_its_grants_and_their_ends_spec_wire_4() {
     let (mut lp, chain, t, _) = holders_world(1);
     let b = lp.peers[1].engine.tid();
     let until = Time(lp.peers[0].engine.now().0 + 5_000);
-    set_edge(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Grant { until: Some(until), ..edge(Role::Write) }), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(osis_schema::core_types::Grant { until: Some(until), ..grant(Role::Write) }), None);
     lp.sync_all().unwrap();
     let write = |lp: &mut LocalPeer, v: &str| {
         let mut m = Mutation::new();
@@ -5002,7 +5002,7 @@ fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
     assert_eq!(write(&mut lp, "direct"), Vec::<Tid>::new(), "direct while it lasts");
     lp.advance(10_000);
     assert_eq!(write(&mut lp, "ended"), chain, "through the holder once it ends");
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     assert_eq!(write(&mut lp, "granted"), Vec::<Tid>::new(), "a shorter path granted");
     lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
@@ -5011,9 +5011,9 @@ fn a_writes_path_follows_its_edges_and_their_ends_spec_wire_4() {
 }
 
 // spec/permissions.md §1 Path: among paths as short, the writer's choice is a function
-// of the edges it holds, not of the order they came in: Bob reaches T through H1 or H2.
+// of the grants it holds, not of the order they came in: Bob reaches T through H1 or H2.
 #[test]
-fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
+fn a_writes_path_is_a_function_of_the_held_grants_spec_wire_4() {
     let chosen = |first: usize| {
         let mut lp = net(2, 0);
         lp.sync_all().unwrap();
@@ -5021,9 +5021,9 @@ fn a_writes_path_is_a_function_of_the_held_edges_spec_wire_4() {
         let t = new_thing(&mut lp, 0);
         let b = lp.peers[1].engine.tid();
         for i in [first, 1 - first] {
-            set_edge(&mut lp.peers[0].engine, hs[i], b, Some(edge(Role::Write)), None);
+            set_grant(&mut lp.peers[0].engine, hs[i], b, Some(grant(Role::Write)), None);
             lp.sync_all().unwrap();
-            set_edge(&mut lp.peers[0].engine, t, hs[i], Some(edge(Role::Write)), None);
+            set_grant(&mut lp.peers[0].engine, t, hs[i], Some(grant(Role::Write)), None);
             lp.refer(0, hs[i], t);
             lp.sync_all().unwrap();
         }
@@ -5048,9 +5048,9 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
     lp.sync_all().unwrap();
     let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, h, b, Some(grant(Role::Write)), None);
     for t in [d, p] {
-        set_edge(&mut lp.peers[0].engine, t, h, Some(edge(Role::Admin)), None);
+        set_grant(&mut lp.peers[0].engine, t, h, Some(grant(Role::Admin)), None);
         lp.refer(0, h, t);
     }
     lp.sync_all().unwrap();
@@ -5098,7 +5098,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     assert_eq!(path_bytes(&h), 18);
     // with a mint admin Bob holds by a grant
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, t);
@@ -5118,7 +5118,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
 // waits, live as after a reopen.
 fn lost_secrets_paths(lp: &mut LocalPeer, d: Tid, p: Tid, reader: Tid) {
     let c = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, reader, c, Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, reader, c, Some(grant(Role::Read)), None);
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     m.set(d, &REG, &s("on d")).unwrap();
@@ -5138,7 +5138,7 @@ fn lost_secrets_paths(lp: &mut LocalPeer, d: Tid, p: Tid, reader: Tid) {
     };
     assert_eq!(state(lp), (Some(true), Some(true), false), "D's entry opened by her secrets");
     lp.peers[2].engine.check_index();
-    let removal = set_edge(&mut lp.peers[0].engine, reader, c, None, None);
+    let removal = set_grant(&mut lp.peers[0].engine, reader, c, None, None);
     let pk = lp.peers[0].engine.package(&removal).unwrap().unwrap();
     unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs));
     lp.peers[2].reexamine().unwrap();
@@ -5164,7 +5164,7 @@ fn a_path_opened_by_a_mint_admins_read_secrets_waits_once_they_are_lost_spec_wir
     let (mut lp, _, _, p) = two_paths_world();
     let a = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, a, b, Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, a, b, Some(grant(Role::Write)), None);
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, a);
     m.set(d, &REG, &s("new")).unwrap();

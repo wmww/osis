@@ -20,7 +20,7 @@ Also accepted (designed below): the port as message kinds, the daemon over a uni
 ## 0. Who acts
 - A **node** holds keys and a store and holds what its node closure reaches (a browser docs app syncing one document is a full node). A process of the daemon's uid on its unix socket (`Peer::Unix { uid }`) is a session as the node itself (a **main session**): `author()` (the node thing) as actor, every API method but those §1 lists as never through a socket. Default policy, not a rule of the model.
 - A **client session** (spec/sync-opens.md §4: a thin client, or a node's `connect_node`) registers with a node (§3) and holds a bearer secret; a thin client holds no keys or store and signs nothing. At `add_client` the node mints a real thing for the client, its client's thing (the account its mint admin, independent, with `keys.0`, as a sharer mints a link's K) and serves it **as** that actor (`Osis::act_as`), so the actor's rights decide every read and write (§3). Attribution: the client's actor is the actor its commits' paths name, the node their signer, and the actor's creation record names the account.
-- A node acting as several actors is the machinery of a node managing two accounts (issues/grant-rename-multi-actor.md).
+- A node acting as several actors is the machinery of a node managing two accounts (issues/act-as-several.md).
 
 ## 1. Handle: sources
 - A tid resolves to `Source::{Local, Node(connection)}` per call (§8 Sources). Enum, no `dyn`: each API method is `match source`. A `Write` batch touches one source (`Invalid` when its things resolve to two).

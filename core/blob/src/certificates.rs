@@ -7,7 +7,7 @@ use osis_base::{CreationRecord, Value};
 
 /// Certificate copies (`CommitBlobPlaintext` values, spec/wire.md §4) and the raw creation records
 /// they need, ascending by tid, distinct: a Stranded report's holder keys (the holder's current
-/// `keys.0` commits, each projected to that delta, with their evidence), or a Prove's copies (edge
+/// `keys.0` commits, each projected to that delta, with their evidence), or a Prove's copies (grant
 /// writes on its proofs' key hops and claimed paths, with their evidence).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Certificates {

@@ -145,7 +145,7 @@ pub struct CreationRecord {
 }
 
 /// What a thing was minted with (spec/permissions.md §1): its mint admin, holding its record
-/// edge (admin) from the start, or a key, the record's key, holding admin from the start.
+/// grant (admin) from the start, or a key, the record's key, holding admin from the start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MintedWith {
     Admin(Tid),

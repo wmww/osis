@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, Via, edge, independent_thing, openable, opens_by, opens_from, opens_in, self_opened, synced};
+use super::tests::{Key, Rng, Via, grant, independent_thing, openable, opens_by, opens_from, opens_in, self_opened, synced};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -249,7 +249,7 @@ impl Run {
         let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
         let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
         let ids = super::tests::commit_ids(&mut self.lp, i);
-        if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
+        if self.lp.peers[i].engine.grant(&t, &self.tids[j], &grant(r)).is_ok() {
             let commits: BTreeSet<CommitId> = super::tests::commit_ids(&mut self.lp, i).difference(&ids).copied().collect();
             let handed = Handed { step: self.log.len(), author: i, on: t, commits };
             let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
@@ -343,7 +343,7 @@ impl Run {
         }
     }
 
-    /// The point just after commit `c` in the key order, as peer `i` holds it: its own edge
+    /// The point just after commit `c` in the key order, as peer `i` holds it: its own grant
     /// writes applied.
     fn after(&self, i: usize, c: &CommitId) -> Option<osis_perm::Point> {
         let h = &self.lp.peers[i].engine.core.ix.commits.get(c)?.header;
@@ -468,7 +468,7 @@ fn rotation_history(seed: u64) -> Reached {
             for j in (0..k).filter(|j| *j != i) {
                 if j == (i + 1) % k || rng.next(3) == 0 {
                     let (t, o) = actors[i];
-                    let _ = lp.peers[o].engine.grant(&t, &actors[j].0, &edge(ROLES[rng.next(ROLES.len() as u64) as usize]));
+                    let _ = lp.peers[o].engine.grant(&t, &actors[j].0, &grant(ROLES[rng.next(ROLES.len() as u64) as usize]));
                     if !hidden {
                         lp.sync_all().unwrap();
                     }
@@ -484,7 +484,7 @@ fn rotation_history(seed: u64) -> Reached {
         for p in (1..N).filter(|p| *p != o) {
             let granted = if deep == Some(p) { ai == k - 1 } else { ai == 0 || rng.next(3) == 0 };
             if granted {
-                let _ = lp.peers[o].engine.grant(&t, &tids[p], &edge(ROLES[rng.next(ROLES.len() as u64) as usize]));
+                let _ = lp.peers[o].engine.grant(&t, &tids[p], &grant(ROLES[rng.next(ROLES.len() as u64) as usize]));
                 if !hidden {
                     lp.sync_all().unwrap();
                 }
@@ -494,7 +494,7 @@ fn rotation_history(seed: u64) -> Reached {
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, actors, rng);
     reached.cycle = k > 1;
-    // the commits lowering an edge: what the withheld admin may miss
+    // the commits lowering a grant: what the withheld admin may miss
     let mut departing: BTreeSet<CommitId> = BTreeSet::new();
     let rounds = 3 + run.rng.next(4);
     for _ in 0..rounds {
@@ -512,13 +512,13 @@ fn rotation_history(seed: u64) -> Reached {
                 2 => [2, 2, 2, 0, 7][run.rng.next(5) as usize],
                 _ => [0, 1, 2, 4, 7][run.rng.next(5) as usize],
             };
-            // whether the action lowered an edge (a departure, or an `until` that ends one)
+            // whether the action lowered a grant (a departure, or an `until` that ends one)
             let mut lowered = false;
             match kind {
                 // a removal or a demotion to read
                 0 | 1 if ri == Role::Admin && j != o && j != i => {
                     let new = (kind == 1 || run.rng.next(2) == 0).then_some(Role::Read);
-                    lowered = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) > new && run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: new.map(edge), retain: None }).is_ok();
+                    lowered = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) > new && run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: new.map(grant), retain: None }).is_ok();
                 }
                 // a self-removal, a writer forging as it can
                 2 if i != o => {
@@ -544,7 +544,7 @@ fn rotation_history(seed: u64) -> Reached {
                         run.grant(i, j, t, r);
                     }
                 }
-                // an `until` soon on a holder's edge, at its role now
+                // an `until` soon on a holder's grant, at its role now
                 5 if ri == Role::Admin && j != o && j != i => {
                     let until = Time(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
                     if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) {
@@ -650,7 +650,7 @@ fn rotation_history(seed: u64) -> Reached {
         }
     }
     // the re-key after a hostile node's lockout (notes/keys.md, Lockouts): an honest admin
-    // removes each hostile peer still holding an edge on an actor, and each holder actor whose
+    // removes each hostile peer still holding a grant on an actor, and each holder actor whose
     // mint admin is hostile (no keyset of it may ever know a departure from it)
     run.lp.sync_all().unwrap();
     for (t, o) in run.actors.clone() {
@@ -997,7 +997,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
 }
 
 /// Peer `d`'s departure from role `r` of `t` in the settled timeline: the last applied write
-/// taking its edge from `r` or more to below it (for keys, `key_role`), or a later demotion whose
+/// taking its grant from `r` or more to below it (for keys, `key_role`), or a later demotion whose
 /// audit dropped a write giving it `r` or more. A write that never gave `r` (a sync grant, for
 /// read) departs nothing at `r`.
 fn departure(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<CommitId> {
@@ -1023,14 +1023,14 @@ fn path_loss_point(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<osi
 
 /// Where peer `d`'s departure from role `r` of holder actor `m` is ordered for a keyset of `m`
 /// whose secret a sealer lacks, in peer `o`'s settled timeline (spec/crypto.md §4, Encrypting
-/// under: the newest write a covering epoch must name, `Departure::newest_needed` over the edge
+/// under: the newest write a covering epoch must name, `Departure::newest_needed` over the grant
 /// writes as `o` holds them: the earliest tail write taking it below `r`, when one is needed, and
 /// every tail write giving `r` or more that counts); else `departure_point`.
 fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
     let on = core.timelines().on(&m)?;
-    let log = super::departures::edge_logs(core, &on, &m).remove(&run.tids[d]);
-    let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).edge(l).newest_needed(r));
+    let log = super::departures::grant_logs(core, &on, &m).remove(&run.tids[d]);
+    let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).grant(l).newest_needed(r));
     let point = key.and_then(|k| Some(osis_perm::Point { ts: osis_base::Ts::from_u64(k.ts)?, node: k.node, commit: k.commit }));
     point.or_else(|| departure_point(run, o, m, d, r))
 }
@@ -1039,11 +1039,11 @@ fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Optio
 fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
     let tl = run.lp.peers[o].engine.core.timelines().get(&t)?;
     let h = run.tids[d];
-    // the edge value write `w` sets on `d`'s edge into `t`, if it is one
-    let on_edge = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == osis_base::Holder::Thing(h)).map(|op| op.edge.as_ref());
+    // the grant value write `w` sets on `d`'s grant on `t`, if it is one
+    let on_grant = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == osis_base::Holder::Thing(h)).map(|op| op.grant.as_ref());
     let gives = |e: Option<&osis_perm::Grant>| super::key_role(e) >= Some(r);
-    let applied = tl.applied_writes().into_iter().filter(|(w, p)| on_edge(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(*p)).get(&h, &t))).map(|(_, p)| p);
-    let dropped = tl.dropped_writes().into_iter().filter(|(w, _)| on_edge(w).is_some_and(gives)).map(|(_, p)| p);
+    let applied = tl.applied_writes().into_iter().filter(|(w, p)| on_grant(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(*p)).get(&h, &t))).map(|(_, p)| p);
+    let dropped = tl.dropped_writes().into_iter().filter(|(w, _)| on_grant(w).is_some_and(gives)).map(|(_, p)| p);
     applied.chain(dropped).max()
 }
 
@@ -1117,15 +1117,15 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     let (a, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &grant(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&m, &a, &grant(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
     let admin = |run: &Run| run.lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Admin).newest_held().map(|x| x.0)).unwrap();
     step(&mut run, 0, |run| {
         run.lp.peers[0].clock.advance(1_000);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
     });
     let e1 = admin(&run);
     run.lp.sync(0, 2).unwrap();
@@ -1177,9 +1177,9 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 1);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Sync)).unwrap();
-    lp.peers[1].engine.grant(&m, &d, &edge(Role::Sync)).unwrap();
-    lp.peers[1].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &grant(Role::Sync)).unwrap();
+    lp.peers[1].engine.grant(&m, &d, &grant(Role::Sync)).unwrap();
+    lp.peers[1].engine.grant(&m, &a, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0), (m, 1)], Rng(1));
     step(&mut run, 3, |run| {
@@ -1214,11 +1214,11 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
     let h = independent_thing(&mut lp, 0);
     let y = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&y, &h, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&y, &g, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&h, &x, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &h, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&y, &h, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&y, &g, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0), (h, 0), (y, 0)], Rng(1));
     step(&mut run, 2, |run| {
@@ -1242,10 +1242,10 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     let (e, m) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let g = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &e, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &grant(Role::Read)).unwrap();
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Grant { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Grant { until: Some(until), ..grant(Role::Read) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0)], Rng(1));
     removal_rotates_once(&mut run, g, Role::Read, m, 2_000, 3);
@@ -1268,10 +1268,10 @@ fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
         let (w, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let g = independent_thing(&mut lp, 0);
         let m = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&m, &w, &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&g, &d, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &m, &grant(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &w, &grant(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&m, &w, &grant(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &d, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
         step(&mut run, 0, |run| {
@@ -1347,14 +1347,14 @@ fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
     let (a, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &m, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&m, &a, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
     let (demote_at, grant_at) = if first { (2_000, 1_000) } else { (1_000, 2_000) };
     step(&mut run, 0, |run| {
         run.lp.peers[0].clock.advance(demote_at);
-        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: Some(grant(Role::Read)), retain: None }).unwrap();
     });
     step(&mut run, 1, |run| {
         run.lp.peers[1].clock.advance(grant_at);
@@ -1383,7 +1383,7 @@ fn the_demoted_granters_removal_shuts_its_grantee_out_spec_crypto_4() {
             run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
             if readd {
                 run.lp.peers[0].clock.advance(1_000);
-                run.lp.peers[0].engine.grant(&m, &a, &edge(Role::Read)).unwrap();
+                run.lp.peers[0].engine.grant(&m, &a, &grant(Role::Read)).unwrap();
             }
         });
         settle(&mut run, 1, true);

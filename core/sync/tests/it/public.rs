@@ -4,7 +4,7 @@
 //! unit, and opened by anyone holding a locator.
 
 use crate::harness::history::{self, Gives, value_ak};
-use crate::harness::{World, edge, two_nodes};
+use crate::harness::{World, grant, two_nodes};
 use osis_base::{Role, Tid, Value};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
@@ -47,7 +47,7 @@ fn reaching_public() -> (World, Tid, Tid, Tid) {
     let x = make(&mut w, 0, a, "x1");
     let d = make(&mut w, 0, x, "d1");
     for g in [p, x] {
-        w.write(0, |e| e.grant(&g, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+        w.write(0, |e| e.grant(&g, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     }
     w.write(0, |e| {
         let mut m = Mutation::new();
@@ -90,7 +90,7 @@ fn a_public_redeem_goes_on_across_a_restart_spec_sync_inbox_6() {
     let mut w = two_nodes();
     let a = w.node(0).account.unwrap();
     let p = make(&mut w, 0, a, "p1");
-    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     w.run();
     let link = w.locator(0, p).expect("P is public");
     w.partition(0, 1);
@@ -118,7 +118,7 @@ fn a_stranger_opens_a_public_thing_by_a_locator_spec_wire_10() {
     let mut w = two_nodes();
     let a = w.node(0).account.unwrap();
     let p = make(&mut w, 0, a, "p1");
-    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     w.run();
     let link = w.locator(0, p).expect("P is public");
     assert_eq!(reads(&mut w, 1, &p), None, "a stranger to P");
@@ -141,7 +141,7 @@ fn a_stranger_redeems_a_locator_to_a_dependent_and_follows_it_spec_sync_set_2() 
     let a = w.node(0).account.unwrap();
     let x = make(&mut w, 0, a, "x1");
     let d = make(&mut w, 0, x, "d1");
-    w.write(0, |e| e.grant(&x, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&x, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     w.run();
     let link = w.locator(0, d).expect("D is public");
     assert_eq!(w.redeem_any(1, &link), osis_sync::types::Waiting::Pending);
@@ -165,9 +165,9 @@ fn a_stranger_redeems_a_locator_after_a_rotation_spec_crypto_4() {
     let mut w = two_nodes();
     let a = w.node(0).account.unwrap();
     let p = make(&mut w, 0, a, "p1");
-    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     let q = make(&mut w, 0, a, "q");
-    w.write(0, |e| e.grant(&p, &q, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&p, &q, &grant(Role::Read))).unwrap();
     w.write(0, |e| e.demote(&p, &osis_engine::flows::Demotion { holder: q, new: None, retain: None })).unwrap();
     w.run();
     let link = w.locator(0, p).expect("P is public");
@@ -188,7 +188,7 @@ fn a_locator_naming_another_independent_reads_nothing_of_its_target_spec_wire_10
     let x = make(&mut w, 0, a, "x1");
     let d = make(&mut w, 0, x, "d1");
     let y = make(&mut w, 0, a, "y1");
-    w.write(0, |e| e.grant(&y, &Tid::PUBLIC, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&y, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     w.run();
     let Some(osis_blob::Link::Locator(ly)) = w.locator(0, y) else { panic!("Y is public") };
     let crafted = osis_blob::Link::Locator(osis_blob::Locator { target: d, independent: Some(y), ..ly });

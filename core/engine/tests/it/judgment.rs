@@ -273,7 +273,7 @@ pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> 
             aspects.insert((a.tid, a.ak.clone()));
             // a grant write has no content verdict: it applies in the walk or not (§5.1)
             let valid = match a.ak.as_str() {
-                "roles.0" if e.edge_write_applied(&a.tid, c) => "applied",
+                "roles.0" if e.grant_write_applied(&a.tid, c) => "applied",
                 "roles.0" => "unapplied",
                 _ if e.part_valid(c, ai).unwrap() => "valid",
                 _ => "invalid",
@@ -372,14 +372,14 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
 }
 
 /// The judgment files (`judgment/<name>.vec`, never written out): their names, one test each.
-const FILES: [&str; 6] = ["models", "rules", "edges", "bounds", "sync IDs", "blobs"];
+const FILES: [&str; 6] = ["models", "rules", "grants", "bounds", "sync IDs", "blobs"];
 
 /// The judgment file `judgment/<name>.vec`, generated in memory: its path and text.
 fn file(name: &str) -> (String, String) {
     let (spec, scenarios, second) = match name {
         "models" => ("spec/permissions.md §5", models(), false),
         "rules" => ("spec/permissions.md §3, §5, spec/commits.md §5, spec/crdt.md §4", rules(), false),
-        "edges" => ("spec/permissions.md §2, §5, §7", edges().into_iter().chain(may_grants()).collect(), false),
+        "grants" => ("spec/permissions.md §2, §5, §7", grants().into_iter().chain(may_grants()).collect(), false),
         "bounds" => ("spec/permissions.md §5, spec/commits.md §5, spec/crdt.md §4", remerges().into_iter().chain(bounds()).collect(), false),
         "sync IDs" => ("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true),
         "blobs" => ("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false),
@@ -518,19 +518,19 @@ fn rules() -> Vec<Scenario> {
 }
 
 /// One hand-picked scenario per rule of `until` and may-grant (spec/permissions.md §2).
-fn edges() -> Vec<Scenario> {
+fn grants() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     vec![
-        // spec/permissions.md §2, §5.2: an edge counts as removed from `until` on
+        // spec/permissions.md §2, §5.2: a grant counts as removed from `until` on
         Scenario {
-            name: "until passes: the edge ends",
+            name: "until passes: the grant ends",
             spec: "spec/permissions.md §2, §5.2",
-            source: "hand-picked: 0 sets 1's write edge to end 2.5 s on (1 not told), 1 writes 1 s and 3 s on (the first valid, the second invalid: the edge expired)",
+            source: "hand-picked: 0 sets 1's write grant to end 2.5 s on (1 not told), 1 writes 1 s and 3 s on (the first valid, the second invalid: the grant expired)",
             steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), may_grant: false, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],
             orders: None,
         },
-        // spec/permissions.md §2: a may-grant grant adds an edge up to its signer's role (beyond
+        // spec/permissions.md §2: a may-grant grant adds a grant up to its signer's role (beyond
         // it: `may_grants()`)
         Scenario {
             name: "may-grant grant",
@@ -542,7 +542,7 @@ fn edges() -> Vec<Scenario> {
     ]
 }
 
-/// May-grant grants the granter's path does not cover (spec/permissions.md §2, §5.1): bare edge
+/// May-grant grants the granter's path does not cover (spec/permissions.md §2, §5.1): bare grant
 /// writes, which the writer's checks refuse, except where the granter did not know yet. In each,
 /// 0 removed 2 and gave 1 a grant with the may-grant flag first.
 fn may_grants() -> Vec<Scenario> {
@@ -562,28 +562,28 @@ fn may_grants() -> Vec<Scenario> {
         Scenario {
             name: "may-grant grant within the granter's role, control",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 1 (read, may-grant) grants 2 read: applied, with no boxes (the edge is judged on its own); 2's write invalid (read)",
+            source: "hand-built: 1 (read, may-grant) grants 2 read: applied, with no boxes (the grant is judged on its own); 2's write invalid (read)",
             steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), may_grant: false }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
             orders: None,
         },
         Scenario {
-            name: "may-grant grant over a current edge",
+            name: "may-grant grant over a current grant",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2 holds read; 1 (write, may-grant) writes 2's edge to write: may-grant adds edges only, not applied",
+            source: "hand-built: 2 holds read; 1 (write, may-grant) writes 2's grant to write: may-grant adds grants only, not applied",
             steps: then(start(Role::Write), vec![SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
             orders: None,
         },
         Scenario {
-            name: "may-grant grant over an expired edge",
+            name: "may-grant grant over an expired grant",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2's read edge ended by `until`; 1 (write, may-grant) grants 2 write: an expired edge counts as none, applied",
+            source: "hand-built: 2's read grant ended by `until`; 1 (write, may-grant) grants 2 write: an expired grant counts as none, applied",
             steps: then(start(Role::Write), vec![Grant { by: 0, t: 0, holder: 2, role: Role::Read, until: Some(500), may_grant: false, flow: false }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
             orders: None,
         },
         Scenario {
-            name: "a holder by may-grant removes another edge",
+            name: "a holder by may-grant removes another grant",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2 holds read; 1 (write, may-grant) removes 2's edge: holders by may-grant change no other edge, not applied",
+            source: "hand-built: 2 holds read; 1 (write, may-grant) removes 2's grant: holders by may-grant change no other grant, not applied",
             steps: then(start(Role::Write), vec![SetGrant { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, may_grant: false }]),
             orders: None,
         },
@@ -606,7 +606,7 @@ fn may_grants() -> Vec<Scenario> {
         Scenario {
             name: "may-grant grant through the flow after the flag went",
             spec: "spec/permissions.md §2, §5.1, §5.2",
-            source: "hand-picked: 1 holds read with may-grant; 0 rewrites it to read without, unseen by 1, which grants 2 read through the flow: the edge is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
+            source: "hand-picked: 1 holds read with may-grant; 0 rewrites it to read without, unseen by 1, which grants 2 read through the flow: the grant is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
             steps: vec![SetGrant { by: 0, t: 0, holder: 2, role: None }, SetGrant { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: false, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, may_grant: false, flow: true }],
             orders: None,
         },
@@ -641,7 +641,7 @@ fn remerges() -> Vec<Scenario> {
 }
 
 /// One history over two sync IDs (`lay`'s `second`): one commit, a part under each. H's mint admin
-/// is 0, so only H's own edge gives 1 a role on it.
+/// is 0, so only H's own grant gives 1 a role on it.
 fn sync_ids() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
@@ -659,21 +659,21 @@ fn sync_ids() -> Vec<Scenario> {
         let list = |post: &[usize]| setup.iter().copied().chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
         vec![("both sync IDs", list(&two)), ("one sync ID", list(&two[..1]))]
     }
-    /// The two parts in both orders, before or after the rest, and the withheld edge last.
+    /// The two parts in both orders, before or after the rest, and the withheld grant last.
     fn chainless(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-        let (rest, two, edges) = chainless_entries(played, of);
+        let (rest, two, grants) = chainless_entries(played, of);
         let list = |post: &[usize]| rest.iter().chain(post).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
         let (gh, hg) = ([two[0], two[1]], [two[1], two[0]]);
         let early = |parts: &[usize]| parts.iter().chain(&rest).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
-        let (gh_e, hg_e): (Vec<usize>, Vec<usize>) = (gh.iter().chain(&edges).copied().collect(), hg.iter().chain(&edges).copied().collect());
+        let (gh_e, hg_e): (Vec<usize>, Vec<usize>) = (gh.iter().chain(&grants).copied().collect(), hg.iter().chain(&grants).copied().collect());
         vec![
             ("G first", list(&gh)),
             ("H first", list(&hg)),
             // the parts before the rest
             ("parts first, G first", early(&gh)),
             ("parts first, H first", early(&hg)),
-            ("G first, the edge last", list(&gh_e)),
-            ("H first, the edge last", list(&hg_e)),
+            ("G first, the grant last", list(&gh_e)),
+            ("H first, the grant last", list(&hg_e)),
         ]
     }
     vec![
@@ -694,29 +694,29 @@ fn sync_ids() -> Vec<Scenario> {
         Scenario {
             name: "content commit, its path to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
-            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order; the edge arriving ends as in order",
+            source: "hand-built: 1 writes both G and H, the grant giving it a path to H withheld: H's part waits alone in either order; the grant arriving ends as in order",
             steps: vec![NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(chainless),
         },
         Scenario {
             name: "role commit, its path to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
-            source: "hand-built: 2 (admin on G) sets 1's edge on G and H, the edge giving it a path to H withheld: G's roster changes in either order",
+            source: "hand-built: 2 (admin on G) sets 1's grant on G and H, the grant giving it a path to H withheld: G's roster changes in either order",
             steps: vec![NewTop { by: 0 }, tick.clone(), SetGrant { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick.clone(), TwoGrants { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }],
             orders: Some(chainless),
         },
     ]
 }
 
-/// A history whose commit after the setup is the edge giving the last commit's author its path to
+/// A history whose commit after the setup is the grant giving the last commit's author its path to
 /// H, and whose last commit has a part under each sync ID: (the entries of every other commit,
-/// the last commit's two, the edge's).
+/// the last commit's two, the grant's).
 fn chainless_entries(played: &Played, of: &[usize]) -> (Vec<usize>, [usize; 2], Vec<usize>) {
-    let (edge, last) = (played.base + 1, played.packs.len() - 1);
-    let rest = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
+    let (grant, last) = (played.base + 1, played.packs.len() - 1);
+    let rest = (0..of.len()).filter(|e| of[*e] != grant && of[*e] != last).collect();
     let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
-    let edges = (0..of.len()).filter(|e| of[*e] == edge).collect();
-    (rest, two.try_into().expect("a part under each sync ID"), edges)
+    let grants = (0..of.len()).filter(|e| of[*e] == grant).collect();
+    (rest, two.try_into().expect("a part under each sync ID"), grants)
 }
 
 /// Referenced blobs: as made, and the setup first with the rest reversed (blobs after what names
@@ -900,11 +900,11 @@ fn judgment_vectors_rules_spec_permissions_5_2() {
     vectors("rules");
 }
 
-// spec/permissions.md §2, §5.1, §5.2, §7: the judgment vectors of edges.vec, an edge's `until`
+// spec/permissions.md §2, §5.1, §5.2, §7: the judgment vectors of grants.vec, a grant's `until`
 // and may-grant (`vectors`).
 #[test]
-fn judgment_vectors_edges_spec_permissions_5_1() {
-    vectors("edges");
+fn judgment_vectors_grants_spec_permissions_5_1() {
+    vectors("grants");
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5, spec/crdt.md §4.6, §4.7, §4.8: the judgment
@@ -929,9 +929,9 @@ fn judgment_vectors_blobs_spec_commits_4() {
 }
 
 // spec/requirements.md Decentralization, spec/commits.md §4: one held set, its parts in two
-// orders, the edge giving the author its path to H withheld: 1 (write on G and H) writes both,
-// the H part waiting alone either way and G's write standing; 2 (admin on G, a write edge on H)
-// sets 1's edge on G and H, either order changing G's roster. The node shows the same in both.
+// orders, the grant giving the author its path to H withheld: 1 (write on G and H) writes both,
+// the H part waiting alone either way and G's write standing; 2 (admin on G, a write grant on H)
+// sets 1's grant on G and H, either order changing G's roster. The node shows the same in both.
 #[test]
 fn chainless_part_order_spec_commits_4() {
     use Step::*;

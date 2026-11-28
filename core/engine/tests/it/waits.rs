@@ -67,14 +67,14 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
     let w = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
     sync(&mut lp, 2, 1);
     // peer 1 knows of peer 2's removal, peer 2 does not: it writes a part it withholds under at
     // most 0 with a part on `REG`, then a later write on `GONE`, both invalid at peer 1
     lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, w, None, None);
+    set_grant(&mut lp.peers[0].engine, t, w, None, None);
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();
@@ -144,7 +144,7 @@ fn hello_synced() -> (LocalPeer, Tid) {
 /// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
 fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     let w = lp.peers[to].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
     sync(lp, 0, to);
 }
 
@@ -175,7 +175,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
         let map = ak("t:gonemap.0");
         let (mut lp, t, c) = carrierless(vec![put("a", true, true), put("b", false, false)]);
         let w = lp.peers[1].engine.tid();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+        set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
         // the grant with its secrets, not the writes (what t's sync ID carries)
         for pg in lp.packages_of(0, &t).unwrap().into_iter().filter(|p| c.iter().all(|x| x.id != p.id)) {
             lp.deliver(1, &pg).unwrap();
@@ -430,7 +430,7 @@ fn purged_list_element_takes_edit_in_any_order_spec_crdt_4_7() {
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
     let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
@@ -487,7 +487,7 @@ fn expired_list_element_stays_gone_through_unmerge_spec_crdt_4_6() {
     lp.advance(10);
     // a writer about to go, not told it has: its write is un-merged past T
     let x = lp.peers[2].engine.tid();
-    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let d = set_grant(&mut lp.peers[0].engine, t, x, None, None);
     lp.advance(10);
     let mut m = Mutation::new();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("late")] } }).unwrap();
@@ -1351,9 +1351,9 @@ fn a_failed_write_in_a_waking_arrival_leaves_the_wait_due_spec_commits_4() {
             let mut lp = net(3, 0);
             let t = new_thing(&mut lp, 0);
             let (w, r) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-            set_edge(&mut lp.peers[0].engine, t, r, Some(edge(osis_base::Role::Read)), None);
+            set_grant(&mut lp.peers[0].engine, t, r, Some(grant(osis_base::Role::Read)), None);
             sync(&mut lp, 0, 2);
-            let g = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+            let g = set_grant(&mut lp.peers[0].engine, t, w, Some(grant(osis_base::Role::Write)), None);
             sync(&mut lp, 0, 1);
             let mut m = Mutation::new();
             m.set(t, &REG, &s("written")).unwrap();

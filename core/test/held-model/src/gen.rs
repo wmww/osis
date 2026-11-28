@@ -86,7 +86,7 @@ pub const NODES: u64 = 4;
 /// An account (spec/permissions.md §8): minted with node 2's node thing as mint admin, the mint
 /// admin of thing 12; pairing is a grant to a node thing on it, removal the ordinary removal.
 pub const ACCOUNT: ThingId = 20;
-/// A link: K (minted with node 0 as mint admin, with an edge on thing 10) and L (its link key,
+/// A link: K (minted with node 0 as mint admin, with a grant on thing 10) and L (its link key,
 /// minted with a key).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
@@ -204,8 +204,8 @@ fn newest_entry(commits: &[Commit], thing: ThingId, aspect: Aspect, ts: u64) -> 
         .and_then(|(_, x)| x.entry_of(aspect))
 }
 
-fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
-    Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None, keys: Default::default() }
+fn role_part(thing: ThingId, e: GrantWrite) -> Part {
+    Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Grant(e)), stripped: Default::default(), replaces: None, keys: Default::default() }
 }
 
 fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Part {
@@ -263,12 +263,12 @@ pub fn history(seed: u64, n: usize) -> Held {
         own_cover: false,
         boxes: vec![],
     };
-    // half the histories set a link up: K's edge on thing 10, L's (may-grant) edge on K
+    // half the histories set a link up: K's grant on thing 10, L's (may-grant) grant on K
     if r.chance(50) {
         let ts = w * MS;
         let until = r.chance(50).then(|| w + (2 + r.below(8)) * HOUR);
-        let k = EdgeWrite::role(LINK_K, Some(Role::Write));
-        let l = EdgeWrite { holder: LINK_L, role: Some(Role::Write), may_grant: true, until };
+        let k = GrantWrite::role(LINK_K, Some(Role::Write));
+        let l = GrantWrite { holder: LINK_L, role: Some(Role::Write), may_grant: true, until };
         let (a, b) = (new_id(&mut r), new_id(&mut r));
         commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(10, k)], ..base(a, 0, ts) });
         commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(LINK_K, l)], ..base(b, 0, ts + 1) });
@@ -292,7 +292,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             .filter(|c| c.is_role())
             .flat_map(|c| c.parts.iter())
             .filter_map(|p| match &p.body {
-                Body::Held(Delta::Edge(e)) if p.thing == thing && e.holder < NODES as NodeId => Some(e.holder),
+                Body::Held(Delta::Grant(e)) if p.thing == thing && e.holder < NODES as NodeId => Some(e.holder),
                 _ => None,
             })
             .collect();
@@ -316,35 +316,35 @@ pub fn history(seed: u64, n: usize) -> Held {
                 let until = (role.is_some() && r.chance(25)).then(|| w + r.below(4) * HOUR);
                 let frontier = (role != Some(Role::Admin))
                     .then(|| commits.iter().filter(|c| c.signer == holder && r.chance(60)).map(|c| c.id).collect());
-                let e = EdgeWrite { holder, role, may_grant, until };
+                let e = GrantWrite { holder, role, may_grant, until };
                 Commit { kind: CommitKind::Role, frontier, parts: vec![role_part(thing, e)], ..base(id, author, ts) }
             } else if sub < 70 {
-                // self-removal (or lowering) of the author's own edge
+                // self-removal (or lowering) of the author's own grant
                 let role = r.pick(&[None, Some(Role::Read)]);
-                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(author, role))], ..base(id, author, ts) }
+                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, GrantWrite::role(author, role))], ..base(id, author, ts) }
             } else if sub < 80 {
-                // finalize: another's edge (a timed one when held), no frontier
+                // finalize: another's grant (a timed one when held), no frontier
                 let timed: Vec<NodeId> = commits
                     .iter()
                     .flat_map(|c| c.parts.iter())
                     .filter_map(|p| match &p.body {
-                        Body::Held(Delta::Edge(e)) if p.thing == thing && e.until.is_some() => Some(e.holder),
+                        Body::Held(Delta::Grant(e)) if p.thing == thing && e.until.is_some() => Some(e.holder),
                         _ => None,
                     })
                     .collect();
                 let holder = if timed.is_empty() { r.pick(&HOLDERS) } else { r.pick(&timed) };
-                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(holder, None))], ..base(id, author, ts) }
+                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, GrantWrite::role(holder, None))], ..base(id, author, ts) }
             } else if sub < 87 {
-                // a link redemption: L adds a node on K by may-grant, single use removing L's edge
+                // a link redemption: L adds a node on K by may-grant, single use removing L's grant
                 let holder = r.below(NODES) as NodeId;
-                let mut parts = vec![role_part(LINK_K, EdgeWrite::role(holder, Some(r.pick(&[Role::Read, Role::Write]))))];
+                let mut parts = vec![role_part(LINK_K, GrantWrite::role(holder, Some(r.pick(&[Role::Read, Role::Write]))))];
                 if r.chance(50) {
-                    parts.push(role_part(LINK_K, EdgeWrite::role(LINK_L, None)));
+                    parts.push(role_part(LINK_K, GrantWrite::role(LINK_L, None)));
                 }
                 Commit { kind: CommitKind::Role, parts, ..base(id, LINK_L, ts) }
             } else {
                 // a grant by the record chain's node
-                let e = EdgeWrite::role(r.pick(&HOLDERS), Some(r.pick(&[Role::Read, Role::Write, Role::Admin])));
+                let e = GrantWrite::role(r.pick(&HOLDERS), Some(r.pick(&[Role::Read, Role::Write, Role::Admin])));
                 Commit { kind: CommitKind::Role, parts: vec![role_part(thing, e)], ..base(id, chief, ts) }
             }
         } else if roll < 23 && !commits.is_empty() {
@@ -369,14 +369,14 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.signer },
             };
             let ws = set(ts, id, r.below(5) as i64);
-            // the chief, else often a node an edge names on the thing: a grant or demotion between
+            // the chief, else often a node a grant names on the thing: a grant or demotion between
             // the delta and the request decides its right (judged at the request, spec/permissions.md §6)
             let granted: Vec<NodeId> = commits
                 .iter()
                 .filter(|c| c.kind == CommitKind::Role && c.ts > target.ts)
                 .flat_map(|c| c.parts.iter())
                 .filter_map(|p| match &p.body {
-                    Body::Held(Delta::Edge(e)) if p.thing == tp.thing && e.holder < NODES as NodeId => Some(e.holder),
+                    Body::Held(Delta::Grant(e)) if p.thing == tp.thing && e.holder < NODES as NodeId => Some(e.holder),
                     _ => None,
                 })
                 .collect();
@@ -477,7 +477,7 @@ fn stated(r: &mut Rng, c: Commit, commits: &[Commit]) -> Commit {
         .filter(|k| k.is_role())
         .flat_map(|k| k.parts.iter())
         .filter_map(|p| match &p.body {
-            Body::Held(Delta::Edge(e)) if e.role.is_some() => Some((e.holder, p.thing)),
+            Body::Held(Delta::Grant(e)) if e.role.is_some() => Some((e.holder, p.thing)),
             _ => None,
         })
         .chain(CREATIONS.iter().filter_map(|&(t, link, _)| Some((link.mint_admin()?, t))))

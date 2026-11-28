@@ -85,7 +85,7 @@ fn unnamed_fires_go_nowhere(rule: ExternalFires, seeds: u64, seen: &mut Seen) ->
                 if writer && unset.get(&c.id) != Some(&valid) {
                     return Err(format!("seed {seed}: a writer's fire {} judged by the setting", c.id));
                 }
-                let removal = h.commits.iter().any(|x| x.is_role() && matches!(x.parts[0].body, Body::Held(Delta::Edge(EdgeWrite { holder: WRITER, role: None, .. }))));
+                let removal = h.commits.iter().any(|x| x.is_role() && matches!(x.parts[0].body, Body::Held(Delta::Grant(GrantWrite { holder: WRITER, role: None, .. }))));
                 let stranger = !writer && c.signer == STRANGER;
                 let enabling = o.settings.get(&THING).is_some_and(|v| v.iter().any(|(_, s)| enables(s)));
                 seen.add("enabled then fired", stranger && valid && cur.is_some_and(|(k, _)| *k < c.key()));

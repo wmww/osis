@@ -3,7 +3,7 @@
 //! trust store across a restart. Over `LocalPeer`: commits delivered by hand, so who holds what
 //! first is the test's.
 
-use crate::flows::{edge_of, people, reopen, send_carried, spread, thing_of};
+use crate::flows::{grant_of, people, reopen, send_carried, spread, thing_of};
 use osis_base::{CommitId, Role, Tid};
 use osis_engine::flows::Demotion;
 use osis_engine::local_peer::LocalPeer;
@@ -50,11 +50,11 @@ fn fight_built(n: usize) -> Fight {
     let (mut lp, ps) = people(n);
     let (a, b, c) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 2, c);
-    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
-    lp.peers[2].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &a, &grant_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &b, &grant_of(Role::Admin)).unwrap();
     // the other peers read t: content of a thing outside a node closure waits (spec/commits.md §4)
     for p in &ps[3..] {
-        lp.peers[2].engine.grant(&t, p, &edge_of(Role::Read)).unwrap();
+        lp.peers[2].engine.grant(&t, p, &grant_of(Role::Read)).unwrap();
     }
     spread(&mut lp);
     lp.advance(1000);
@@ -142,7 +142,7 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let (w, r) = (f.w.clone(), f.r.clone());
     let c = f.lp.peers[2].engine.tid();
     let other = thing_of(&mut f.lp, 2, c);
-    f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
+    f.lp.peers[2].engine.grant(&other, &f.a, &grant_of(Role::Write)).unwrap();
     send_carried(&mut f.lp, 1, 2, &w);
     send_carried(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true));
@@ -208,12 +208,12 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     let (mut lp, ps) = people(3);
     let (a, b, c) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 2, c);
-    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
-    lp.peers[2].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &a, &grant_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &b, &grant_of(Role::Admin)).unwrap();
     spread(&mut lp);
     lp.advance(1000);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.grant(&t, &b, &ct::Grant { may_grant: true, ..edge_of(Role::Admin) }).unwrap();
+    lp.peers[0].engine.grant(&t, &b, &ct::Grant { may_grant: true, ..grant_of(Role::Admin) }).unwrap();
     let e = new_ids(&lp, 0, &before);
     lp.peers[0].clock.advance(5000);
     let before = ids(&lp, 0);
@@ -243,15 +243,15 @@ fn a_removed_partys_grant_the_removal_does_not_list_falls_where_it_was_held_spec
     let (h, x, w, k, l) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
     let t = thing_of(&mut lp, 0, h);
     for p in [x, w] {
-        lp.peers[0].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&t, &p, &grant_of(Role::Admin)).unwrap();
     }
     spread(&mut lp);
     lp.advance(1000);
-    lp.peers[1].engine.grant(&t, &k, &edge_of(Role::Write)).unwrap();
+    lp.peers[1].engine.grant(&t, &k, &grant_of(Role::Write)).unwrap();
     lp.sync(1, 0).unwrap();
     lp.sync(1, 2).unwrap();
     lp.advance(1000);
-    lp.peers[1].engine.grant(&t, &l, &edge_of(Role::Write)).unwrap();
+    lp.peers[1].engine.grant(&t, &l, &grant_of(Role::Write)).unwrap();
     lp.sync(1, 2).unwrap();
     lp.advance(1000);
     let roles = |lp: &LocalPeer, i: usize| [x, k, l].map(|p| lp.peers[i].engine.core.role_now(&p, &t));
@@ -336,7 +336,7 @@ fn content_dropped_as_not_carried_comes_back_with_a_minting_valid_again_spec_syn
     let z = m.create(rec);
     strong(&mut m, z);
     e2.commit(m).unwrap().unwrap();
-    e2.grant(&z, &a, &edge_of(Role::Write)).unwrap();
+    e2.grant(&z, &a, &grant_of(Role::Write)).unwrap();
     let zs = new_ids(&f.lp, 2, &before);
     send_carried(&mut f.lp, 2, 0, &zs);
     let e0 = &mut f.lp.peers[0].engine;

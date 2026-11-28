@@ -1,6 +1,6 @@
 //! The evidence generators' gaps (notes/evidence-model-findings.md, Generators): per-node trust
 //! sets (P1 for readers trusting otherwise than the world), paths of up to four holder things with
-//! churn and junk on every edge and second routes (`wide`), content in the split form across units
+//! churn and junk on every grant and second routes (`wide`), content in the split form across units
 //! (`Wide::split`), path entries opening late (`Wide::late`, `World::opens`). Each under every
 //! delivery rule (`spec_reach::deliveries`), judged against its reference with the gap counted.
 //! `gaps_explore` (by hand) tallies them; the sampled searches run the spec's rule.
@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 /// chance in two), from `seed`.
 pub fn trust_sets(w: &World, seed: u64) -> Vec<Set> {
     let mut rng = roles_model::Rng::thread(seed, 2);
-    let edges: Vec<usize> = (0..w.w.commits.len()).filter(|&i| w.w.sets(i).is_some()).collect();
-    (0..2).map(|_| edges.iter().copied().filter(|_| rng.below(2) == 0).collect()).collect()
+    let grants: Vec<usize> = (0..w.w.commits.len()).filter(|&i| w.w.sets(i).is_some()).collect();
+    (0..2).map(|_| grants.iter().copied().filter(|_| rng.below(2) == 0).collect()).collect()
 }
 
 /// A world name's trust-set seed.
@@ -47,10 +47,10 @@ fn gaps_a_reader_trusting_otherwise_holds_what_its_walk_reads() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[A], D));
-    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let r = w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     for (name, rule) in deliveries() {
         assert_eq!(gap_fails(&w, &rule, &[Set::new(), Set::from([r])]), vec![], "{name}");
     }
@@ -64,11 +64,11 @@ fn gaps_a_split_commit_is_judged_per_part_by_each_unit() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (Y, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, wn, y, k) = (w.node(true, &[A, D]), w.node(true, &[O]), w.node(true, &[D, R]), w.node(true, &[A, O]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 2, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], O, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, O, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 2, &[], A, K, Role::None, &[]));
     let ids = w.write_parts(k, |p| p.split(K, 3, K, &[(&[A], D), (&[O], R)]));
     for (name, rule) in deliveries() {
         assert_eq!(gap_fails(&w, &rule, &[]), vec![], "{name}");
@@ -92,11 +92,11 @@ fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D)]);
     let mut w = World::new(pw, &[A, O, D]);
     let (x, wn, y, z) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D]), w.node(true, &[A, D]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Z, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Z, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, O, Role::Write, &[]));
     let ids = w.write_parts(z, |p| p.split(Z, 2, Z, &[(&[A, O], D), (&[], A)]));
-    w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[ids[0]]));
+    w.write(x, |p| p.grant(X, 3, &[], A, Z, Role::None, &[ids[0]]));
     for (name, rule) in deliveries() {
         let f = gap_fails(&w, &rule, &[]);
         assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-promote") && !f.iter().any(|f| f.prop == "P1" && f.id == ids[1]), "{name}: {f:?}");
@@ -117,8 +117,8 @@ fn gaps_a_path_entry_opening_late_brings_its_evidence_then() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[A]));
-    let g = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let g = w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
     let c = w.write(k, |p| p.content(K, 2, &[A], D));
     let o = w.write(y, |p| p.content(Y, 3, &[], D));
     w.opens.insert(c, o);
@@ -268,12 +268,12 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
         let pw = paths::World::new(&[(X, A), (W, O)]);
         let mut w = World::new(pw, &[A, O]);
         let (x, wn, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(false, &[]));
-        w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-        w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
-        let r = w.write(x, |p| p.edge(X, 4, &[], A, K, Role::None, &[]));
+        w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+        w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Read, &[]));
+        let r = w.write(x, |p| p.grant(X, 4, &[], A, K, Role::None, &[]));
         let c = w.write(k, |p| p.content(K, 8, &[A], O));
         if raise {
-            w.write(wn, |p| p.edge(W, 2, &[], O, A, Role::Write, &[]));
+            w.write(wn, |p| p.grant(W, 2, &[], O, A, Role::Write, &[]));
         }
         (w, r, c)
     };
@@ -305,11 +305,11 @@ fn gaps_the_thief_logs_nothing_only_a_grant_it_withholds_brings() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(false, &[A, D]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[A], D));
-    w.write(q, |p| p.edge(Q, 3, &[], A, Z, Role::Read, &[]));
+    w.write(q, |p| p.grant(Q, 3, &[], A, Z, Role::Read, &[]));
     w.write_parts(x, |p| p.commit(X, 4, &[], A, vec![paths::Kind::set(K, Role::Admin), paths::Kind::set(Z, Role::Admin)]));
     for (name, rule) in deliveries() {
         assert_eq!(gap_fails(&w, &rule, &[]), vec![], "{name}");
@@ -320,17 +320,17 @@ fn gaps_the_thief_logs_nothing_only_a_grant_it_withholds_brings() {
 /// (its node honest, syncing A and D) then writes D through [A], A holding only read on D; the
 /// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. The removal reaches
 /// R by riding Q's write: D's evidence takes every grant write on (Q, A), the removal's commit
-/// among them, and with it every write on the edges that commit sets, so Y holds it and R's reader
+/// among them, and with it every write on the grants that commit sets, so Y holds it and R's reader
 /// requires it: no gap.
 #[test]
 fn gaps_a_removal_rides_a_write_through_a_read_hop() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D, R]), w.node(true, &[A, D]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Read, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Admin, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Read, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
     w.write_parts(x, |p| p.commit(X, 3, &[], A, vec![paths::Kind::set(K, Role::None), paths::Kind::set(Q, Role::None)]));
     w.write(q, |p| p.content(Q, 4, &[A], D));
     w.write(k, |p| p.content(K, 5, &[A], R));
@@ -352,9 +352,9 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_no_source_brings_the_read_g
     let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
     let mut w = World::new(pw, &[A, O, R]);
     let (x, wn, y, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[R]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Read, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, O, Role::Write, &[]));
     let c = w.write(k, |p| p.content(K, 5, &[A, O], R));
     for (name, rule) in deliveries() {
         assert_eq!(fails_under(&w, &rule, None), vec![], "{name}");

@@ -15,7 +15,7 @@
 //! name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): every content aspect (`core_types::is_content`), of every
-//! encoding, and every known thing's roster; the others count through the validity and edges they
+//! encoding, and every known thing's roster; the others count through the validity and grants they
 //! decide (`keys.0`, `secrets.0`, `sync.0`: outside the model; `created.0`: its input;
 //! `addenda.0`: fed as entries, issues/held-model-setting-reads.md). A content aspect is not compared
 //! (`Coverage::skipped`, by reason) when a commit on it is outside the model (paged, ephemeral,
@@ -25,7 +25,7 @@
 //! others'. A role commit's parts off `roles.0` change no role and are placeholders.
 //!
 //! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
-//! too, not the node's own from outside the history), each content part's validity, which edge
+//! too, not the node's own from outside the history), each content part's validity, which grant
 //! writes apply, every known thing's roster (`roles.0` as read), reads, no forbidden value held
 //! (expired or purged), and no held body under purge on replace a right holder's held snapshot
 //! covers (the option's promise: the content is gone). History is the thing's `retention^.0`
@@ -38,10 +38,10 @@
 //! one dropped as covered as `Body::Dropped(cover)`. At quiet (`compare`), the model is told the
 //! node closure and holds no content outside it (`hm::at_quiet`).
 //!
-//! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
+//! Normalizations: a waiting commit's held parts carry no writes or grants (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
 //! §4), is missing; a leftover's carriers of gone writes are taken as stripped by the node, also
-//! for a copy that arrived without them; an edge's `floor` is dropped (it gives keys, never
+//! for a copy that arrived without them; a grant's `floor` is dropped (it gives keys, never
 //! a role).
 
 use held_model as hm;
@@ -65,7 +65,7 @@ pub(crate) struct Coverage {
     pub(crate) compared: u64,
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
-    /// gone deltas. Of nodes with a compared aspect: the commits and edges fed of each
+    /// gone deltas. Of nodes with a compared aspect: the commits and grants fed of each
     /// feature (undo, listed things, addenda, may-grant, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
     /// Every difference found, by kind (`compare` reports the first).
@@ -338,8 +338,8 @@ impl Conv<'_> {
         out
     }
     /// A role grant write (`floor` dropped: it gives keys, never a role).
-    fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Grant>) -> hm::EdgeWrite {
-        hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), may_grant: e.is_some_and(|e| e.may_grant), until: e.and_then(|e| e.until).map(|u| u.0) }
+    fn grant(&mut self, holder: &Tid, e: Option<&osis_perm::Grant>) -> hm::GrantWrite {
+        hm::GrantWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), may_grant: e.is_some_and(|e| e.may_grant), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
     /// An `addenda.0` body as its entries: per removal (a 32-byte commit ID key), the commits its
     /// `frontier` lists.
@@ -502,7 +502,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
         // its grant writes whatever the keys it lists: a miskeyed commit's apply nowhere here, which
         // the model judges from the steps it is given
-        let edges = if *applied && h.kind == Kind::Role { Some(e.edge_writes(id).unwrap()) } else { None };
+        let grants = if *applied && h.kind == Kind::Role { Some(e.grant_writes(id).unwrap()) } else { None };
         let mut parts = Vec::new();
         for (ai, a) in h.aspects.iter().enumerate() {
             let thing = cv.id(&a.tid);
@@ -529,7 +529,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 None if waiting.as_ref().is_some_and(|p| p.contains(&ai)) => {
                     // a waiting part: held, its content unread
                     Some(hm::Body::Held(match h.kind {
-                        Kind::Role => hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)),
+                        Kind::Role => hm::Delta::Grant(hm::GrantWrite::role(NOBODY, None)),
                         _ => hm::Delta::Writes(hm::Frag::empty(0)),
                     }))
                 }
@@ -553,13 +553,13 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                     parts.push(p);
                 }
                 Kind::Role => {
-                    let ops: Vec<_> = edges.iter().flatten().filter(|o| o.target == a.tid).collect();
+                    let ops: Vec<_> = grants.iter().flatten().filter(|o| o.target == a.tid).collect();
                     if ops.is_empty() {
                         // a delta naming no holder (a reset of an entry whose creation is not held)
-                        parts.push(part(hm::Body::Held(hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)))));
+                        parts.push(part(hm::Body::Held(hm::Delta::Grant(hm::GrantWrite::role(NOBODY, None)))));
                     }
                     for (o, holder) in ops.into_iter().filter_map(|o| Some((o, o.holder.thing()?))) {
-                        parts.push(part(hm::Body::Held(hm::Delta::Edge(cv.edge(&holder, o.edge.as_ref())))));
+                        parts.push(part(hm::Body::Held(hm::Delta::Grant(cv.grant(&holder, o.grant.as_ref())))));
                     }
                 }
                 // a setting, as the model reads it; one that is none reads as an empty write
@@ -828,8 +828,8 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     reach("under purge on replace", parts().filter(|(k, _)| o.under_purge.contains(k)).count());
     if !inside.is_empty() {
         let cs = &input.held.commits;
-        let edges = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
-            hm::Body::Held(hm::Delta::Edge(e)) => Some((c, e)),
+        let grants = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
+            hm::Body::Held(hm::Delta::Grant(e)) => Some((c, e)),
             _ => None,
         });
         reach("undo commits", cs.iter().filter(|c| c.undoes.is_some()).count());
@@ -840,10 +840,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         if addenda > 0 {
             reach("counting addenda", tl.vouching());
         }
-        reach("may-grant grants", edges().filter(|(_, e)| e.may_grant).count());
-        reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
-        reach("own grant writes", edges().filter(|(c, e)| e.holder == c.signer).count());
-        reach("removals with no frontier", edges().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
+        reach("may-grant grants", grants().filter(|(_, e)| e.may_grant).count());
+        reach("untils", grants().filter(|(_, e)| e.until.is_some()).count());
+        reach("own grant writes", grants().filter(|(c, e)| e.holder == c.signer).count());
+        reach("removals with no frontier", grants().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
     }
     // the model's input on the things `what` is about: now, things, their commits
     let differ = |what: String, things: &[hm::ThingId]| {
@@ -895,24 +895,24 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             let id = input.commits[&c.id].0;
             let mut on: BTreeMap<hm::ThingId, bool> = BTreeMap::new();
             for (i, p) in c.parts.iter().enumerate() {
-                if matches!(&p.body, hm::Body::Held(hm::Delta::Edge(w)) if w.holder != NOBODY) {
+                if matches!(&p.body, hm::Body::Held(hm::Delta::Grant(w)) if w.holder != NOBODY) {
                     *on.entry(p.thing).or_default() |= o.valid.get(&(c.id, i)) == Some(&true);
                 }
             }
             for (th, model) in on {
                 let t = input.ids[&th];
-                let node = e.edge_write_applied(&t, &id);
+                let node = e.grant_write_applied(&t, &id);
                 if node != model {
                     diffs.push(("role commit applies differs".into(), differ(format!("role commit {id:?} (#{}) on {t:?} applies: model {model}, node {node}; node's roster {:?}", c.id, e.roster(&t)), &[th])));
                 }
             }
         }
     }
-    // `roles.0` reads: each known thing's roster (its edges alive now, record grants included) as
+    // `roles.0` reads: each known thing's roster (its grants alive now, record grants included) as
     // the model's walk ends
     if !by_part.is_empty() {
         for th in input.held.records.iter().map(|t| t.id) {
-            let alive = |e: &hm::EdgeWrite| e.until.is_none_or(|u| input.held.now < u);
+            let alive = |e: &hm::GrantWrite| e.until.is_none_or(|u| input.held.now < u);
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = tl.roster(th).into_iter().filter(|(_, e)| alive(e)).filter_map(|(h, e)| Some((h, (e.role?, e.role.filter(|_| e.may_grant), e.until)))).collect();
             let t = input.ids[&th];
             let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.may_grant.then_some(x.role).map(role_of), x.until.map(|u| u.0)))).collect();

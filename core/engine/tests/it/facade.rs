@@ -3,7 +3,7 @@
 //! the spec rule it serves, over `LocalPeer` (commits and sealed fires carried by hand).
 
 use crate::common::{REG, s};
-use crate::flows::{edge_of, people, spread, thing_of};
+use crate::flows::{grant_of, people, spread, thing_of};
 use osis_base::{Ak, Role, Tid};
 use osis_crypto::SeededRng;
 use osis_engine::flows::Demotion;
@@ -71,7 +71,7 @@ fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
 fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let (mut lp, ps) = people(3);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().clone();
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing newer");
@@ -100,7 +100,7 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
         let (mut lp, acc) = LocalPeer::one_account(2, 0, crate::common::T0).unwrap();
         let (_, b) = lp.add_account(2).unwrap();
         let t = crate::flows::thing_of(&mut lp, 2, b.thing);
-        lp.peers[2].engine.grant(&t, &acc.thing, &edge_of(Role::Write)).unwrap();
+        lp.peers[2].engine.grant(&t, &acc.thing, &grant_of(Role::Write)).unwrap();
         lp.sync_all().unwrap();
         (lp, (acc.thing, t))
     });
@@ -135,7 +135,7 @@ fn a_self_removal_done_drops_its_own_loss_alone_spec_perm_3() {
     let (mut lp, ps) = people(2);
     let (t1, t2) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
     for t in [t1, t2] {
-        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
     }
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
@@ -157,9 +157,9 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     let (mut lp, ps) = people(2);
     let (g, t) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
     let e = &mut lp.peers[0].engine;
-    e.grant(&g, &ps[1], &edge_of(Role::Read)).unwrap();
-    e.grant(&t, &g, &edge_of(Role::Read)).unwrap();
-    e.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+    e.grant(&g, &ps[1], &grant_of(Role::Read)).unwrap();
+    e.grant(&t, &g, &grant_of(Role::Read)).unwrap();
+    e.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
     let c = e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
@@ -196,8 +196,8 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let b = lp.peers[2].engine.tid();
     let g = thing_of(&mut lp, 2, b);
-    lp.peers[2].engine.grant(&g, &a, &edge_of(Role::Read)).unwrap();
-    lp.peers[2].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap();
+    lp.peers[2].engine.grant(&g, &a, &grant_of(Role::Read)).unwrap();
+    lp.peers[2].engine.grant(&t, &g, &grant_of(Role::Read)).unwrap();
     spread(&mut lp);
     let other = lp.peers[2].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
@@ -206,7 +206,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
         lp.peers[i].engine.removal_done(&other).unwrap();
         assert!(reads(&lp, i, &t), "node {i}: a done not waited on drops nothing");
     }
-    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&t, &a, &grant_of(Role::Write)).unwrap();
     spread(&mut lp);
     let own = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
@@ -244,7 +244,7 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     spread(&mut lp);
     assert!(lp.peers[1].engine.waiting_removals().contains(&c));
     lp.advance(10);
-    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&t, &a, &grant_of(Role::Write)).unwrap();
     spread(&mut lp);
     for i in [0, 1] {
         all_done(&mut lp, i);
@@ -379,8 +379,8 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
     let t = thing_of(&mut lp, 0, ps[0]);
     let e = &mut lp.peers[0].engine;
     e.make_independent(&t).unwrap();
-    e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-    e.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
+    e.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
+    e.grant(&t, &ps[2], &grant_of(Role::Read)).unwrap();
     let first = *e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
     let second = *e.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
     let with = e.logged_with(&second).unwrap();
@@ -578,7 +578,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
         let cb = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
         // 0's t names u holder, so u is needed here (spec/commits.md §5 What a held thing needs)
-        crate::common::edge_write(&mut lp.peers[0].engine, t, u, Some(edge_of(Role::Read)), None);
+        crate::common::grant_write(&mut lp.peers[0].engine, t, u, Some(grant_of(Role::Read)), None);
         // the commit first, awaiting `later`'s record (the loose one is not yet known here)
         lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
         let first = lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c).map(|x| x.1);
@@ -605,7 +605,7 @@ fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
         let t = thing_of(&mut lp, 0, admin);
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.sync_id_of(&t).unwrap(), None, "a dependent thing has none");
-        let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.make_independent(&t).unwrap() };
+        let done = if by_grant { e.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap() } else { e.make_independent(&t).unwrap() };
         assert!(e.sync_id_of(&t).unwrap().is_some(), "a sync ID (by grant: {by_grant})");
         let secrets = Ak::new("secrets.0").unwrap();
         let sync = ct::SYNC.name();
@@ -623,7 +623,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     let until = osis_base::Time(lp.peers[0].engine.now().0 + 100);
-    lp.peers[0].engine.grant(&t, &ps[1], &ct::Grant { until: Some(until), ..edge_of(Role::Read) }).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &ct::Grant { until: Some(until), ..grant_of(Role::Read) }).unwrap();
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let now = e.now();
@@ -650,7 +650,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
 fn a_deposit_only_step_waits_for_a_seed_held_pending_spec_permissions_3() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let s = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
     let first = *lp.peers[0].engine.refresh_deposit_seed(&t).unwrap().commits.last().unwrap();
@@ -714,7 +714,7 @@ fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() 
     let step: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     let [step] = step[..] else { panic!("one commit records the step: {step:?}") };
     let d = thing_of(&mut lp, 0, g);
-    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &ps[1], &grant_of(Role::Write)).unwrap();
     let e = &mut lp.peers[0].engine;
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     assert_ne!(ds, gs, "D has a sync ID of its own");
@@ -755,7 +755,7 @@ fn a_follower_of_a_commits_bodies_moves_after_follow_alone_spec_permissions_4() 
     lp.peers[0].engine.follow().unwrap();
     assert!(fx.due().is_empty(), "nothing moved");
     let d = thing_of(&mut lp, 0, g);
-    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &ps[1], &grant_of(Role::Write)).unwrap();
     let e = &mut lp.peers[0].engine;
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     e.follow().unwrap();

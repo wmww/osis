@@ -8,7 +8,7 @@
 //! reading gives:
 //! - the proof's signature: the peer, by a key; the key hop is judged here (the record's key, or a
 //!   key grant this node's reading applies), never on the peer's word;
-//! - the claimed path: the peer; each hop is an edge this node's reading (with the copies, below)
+//! - the claimed path: the peer; each hop is a grant this node's reading (with the copies, below)
 //!   applies, and a path proves at most the least of its hops;
 //! - the copies: the peer chooses them (a removed node with old keys picks the commits that undo
 //!   its removal; each side of a permanent fork picks its own side). They are taken in only as a
@@ -63,7 +63,7 @@ pub struct ProvenThing {
     pub role: Option<Role>,
 }
 
-/// A lowering this node's own reading applies: its write, its edge and the role it set.
+/// A lowering this node's own reading applies: its write, its grant and the role it set.
 type Lowering = (WriteId, Tid, Tid, Option<Role>);
 
 impl Core {
@@ -90,11 +90,11 @@ impl Core {
         let mut out = vec![ProvenThing { thing: c.thing, role: hop }];
         let (mut role, mut prev) = (hop, c.thing);
         for x in &c.path {
-            let edge = tl.on(x).and_then(|o| o.roster(At::now(ts)).get(&prev).map(&mut alive));
-            if edge.is_none() && !tl.get(&prev).is_some_and(|t| t.roles_ever(&prev).contains_key(x)) {
+            let grant = tl.on(x).and_then(|o| o.roster(At::now(ts)).get(&prev).map(&mut alive));
+            if grant.is_none() && !tl.get(&prev).is_some_and(|t| t.roles_ever(&prev).contains_key(x)) {
                 break;
             }
-            role = role.min(edge);
+            role = role.min(grant);
             out.push(ProvenThing { thing: *x, role });
             prev = *x;
         }
@@ -110,7 +110,7 @@ impl Core {
             let Some(rc) = tl.role_commit(&w.0) else { continue };
             let Some(op) = rc.ops.get(w.1 as usize) else { continue };
             let Holder::Thing(h) = op.holder else { continue };
-            let set = op.edge.filter(|e| e.alive_at(Some(rc.ts))).map(|e| e.role);
+            let set = op.grant.filter(|e| e.alive_at(Some(rc.ts))).map(|e| e.role);
             if set < Some(Role::Admin) {
                 out.push((w, h, op.target, set));
             }
@@ -118,12 +118,12 @@ impl Core {
         out
     }
 
-    /// Whether this node's reading undoes one of `own`: it does not apply it, and its edge gives
+    /// Whether this node's reading undoes one of `own`: it does not apply it, and its grant gives
     /// more than it set.
     fn undoes(&self, own: &[Lowering]) -> bool {
         let tl = self.timelines();
-        let edges = tl.edges_at(None);
-        own.iter().any(|(w, h, t, set)| !tl.is_applied(w) && edges.get(h, t).map(|e| e.role) > *set)
+        let grants = tl.edges_at(None);
+        own.iter().any(|(w, h, t, set)| !tl.is_applied(w) && grants.get(h, t).map(|e| e.role) > *set)
     }
 
     /// The role proven thing `p` is trusted at on `a` (spec/sync-opens.md §2 proven role): the
@@ -152,7 +152,7 @@ impl Engine {
     /// What this node proves on a connection, in proof order (spec/wire.md §11.2 Prove): its node
     /// thing claiming each thing it holds a grant on (its accounts), or nothing past itself where
     /// it holds none, then its held link keys by ascending tid; and as copies the grant writes on
-    /// those claimed edges, with their evidence and records.
+    /// those claimed grants, with their evidence and records.
     pub fn proving(&mut self) -> Result<Proving> {
         let me = self.core.tid();
         let targets: BTreeSet<Tid> = self.core.timelines().edges_at(None).targets(&me).copied().collect();

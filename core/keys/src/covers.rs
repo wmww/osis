@@ -13,17 +13,17 @@ use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 /// A departure from an actor A (spec/crypto.md §4): `holder` left roles `from` up to `upto` of A.
-/// `edge`: its edge into A as this node holds it, when that edge shows the departure; `None` for
-/// a box holder or rotator the edge does not show departed, which no epoch covers.
+/// `grant`: its grant on A as this node holds it, when that grant shows the departure; `None` for
+/// a box holder or rotator the grant does not show departed, which no epoch covers.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub holder: Tid,
     pub from: Role,
     pub upto: Role,
-    pub edge: Option<GrantLog>,
+    pub grant: Option<GrantLog>,
 }
 
-/// A holder's edge into an actor as a node holds it (spec/crypto.md §4, Grant writes): its grant
+/// A holder's grant on an actor as a node holds it (spec/crypto.md §4, Grant writes): its grant
 /// for keys before the first held write (`start`: the record grant, else none) and the held
 /// writes on it, their commits resolved, in key order.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,12 +32,12 @@ pub struct GrantLog {
     pub writes: Vec<GrantWrite>,
 }
 
-/// One held write on a holder's edge: its commit's key, the role it gives for keys (none for a
+/// One held write on a holder's grant: its commit's key, the role it gives for keys (none for a
 /// removal or a retain value), whether it applies here; `takes`: it applies here, or would over
-/// the edge the newest write before it that applies here and gives more set (the start when
+/// the grant the newest write before it that applies here and gives more set (the start when
 /// none does: a second finalize of a grant another write removed first); `stands`: it
-/// applies here, or would over the start or the edge some applied write before it set (only
-/// the edge it meets differs: a finalize of a grant renewed since; how a named write is met,
+/// applies here, or would over the start or the grant some applied write before it set (only
+/// the grant it meets differs: a finalize of a grant renewed since; how a named write is met,
 /// `Held::met`); `counts`: it applies nothing here and its author held write on the actor just
 /// before its point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,13 +56,13 @@ impl GrantLog {
         self.writes.iter().rev().find(|w| w.applied).map_or(self.start, |w| w.role)
     }
 
-    /// The most the edge gave its holder: `start`, and each write that applies or counts.
+    /// The most the grant gave its holder: `start`, and each write that applies or counts.
     pub fn most(&self) -> Option<Role> {
         self.writes.iter().filter(|w| w.applied || w.counts).map(|w| w.role).fold(self.start, Option::max)
     }
 
-    /// The names a rotation writes of this edge (spec/crypto.md §4, Names): each applied write
-    /// lowering the holder (giving less than the edge gave just before it), and each write that
+    /// The names a rotation writes of this grant (spec/crypto.md §4, Names): each applied write
+    /// lowering the holder (giving less than the grant gave just before it), and each write that
     /// applies nothing, counts and gives a role, void.
     pub fn names(&self, holder: Tid) -> impl Iterator<Item = Name> + '_ {
         let mut had = self.start;
@@ -89,14 +89,14 @@ impl GrantLog {
 }
 
 impl Departure {
-    /// Holder `holder` of A removed or demoted below `from`, up to admin; no edge shows it.
+    /// Holder `holder` of A removed or demoted below `from`, up to admin; no grant shows it.
     pub fn holder(holder: Tid, from: Role) -> Departure {
-        Departure { holder, from, upto: Role::Admin, edge: None }
+        Departure { holder, from, upto: Role::Admin, grant: None }
     }
 
-    /// The same departure, shown by `edge`.
-    pub fn edge(self, edge: GrantLog) -> Departure {
-        Departure { edge: Some(edge), ..self }
+    /// The same departure, shown by `grant`.
+    pub fn grant(self, grant: GrantLog) -> Departure {
+        Departure { grant: Some(grant), ..self }
     }
 
     /// The same departure concerning roles up to `upto` only.
@@ -109,8 +109,8 @@ impl Departure {
         self.from <= r && r <= self.upto
     }
 
-    /// The departure an edge change makes: `old` and `new` are the holder's roles before and
-    /// after (none = no edge).
+    /// The departure a grant change makes: `old` and `new` are the holder's roles before and
+    /// after (none = no grant).
     pub fn of_change(holder: Tid, old: Option<Role>, new: Option<Role>) -> Option<Departure> {
         let from = match new {
             None => Role::Sync,
@@ -124,7 +124,7 @@ impl Departure {
 
     /// The newest write an epoch of `r` covering it names (spec/crypto.md §4, Covers): the latest
     /// of the earliest tail write that may take the holder below `r` and every tail write giving
-    /// `r` or more that counts; `None` when no edge shows it or none is needed. An epoch whose
+    /// `r` or more that counts; `None` when no grant shows it or none is needed. An epoch whose
     /// rotator held nothing ordered after it covers nothing.
     pub fn newest_needed(&self, r: Role) -> Option<Key> {
         self.needed(r).into_iter().max()
@@ -132,18 +132,18 @@ impl Departure {
 
     /// Every write an epoch of `r` covering it names (spec/crypto.md §4, Covers): the earliest
     /// tail write that may take the holder below `r`, when one is needed, and every tail write
-    /// giving `r` or more that counts; empty when no edge shows it.
+    /// giving `r` or more that counts; empty when no grant shows it.
     pub fn needed(&self, r: Role) -> Vec<Key> {
-        let Some(edge) = &self.edge else { return Vec::new() };
-        let (tail, held) = edge.tail(r);
+        let Some(grant) = &self.grant else { return Vec::new() };
+        let (tail, held) = grant.tail(r);
         let below = tail.iter().find(|w| w.role < Some(r) && w.takes).filter(|_| held).map(|w| w.key);
         tail.iter().filter(|w| w.role >= Some(r) && w.counts).map(|w| w.key).chain(below).collect()
     }
 }
 
 /// Whether names `n` of an epoch pin `d`'s holder below `r` (spec/crypto.md §4, Covers): over
-/// the tail of its edge for `r`, every write giving `r` or more that counts is named void, and,
-/// unless the edge held the holder below `r` before the tail, a tail write taking it below `r`
+/// the tail of its grant for `r`, every write giving `r` or more that counts is named void, and,
+/// unless the grant held the holder below `r` before the tail, a tail write taking it below `r`
 /// (`GrantWrite::takes`) is named applied, or is the rotation commit's own (its departs mark, by
 /// the commit's `ts`, author and `blind`), that author holding `r` under `held`.
 ///
@@ -155,8 +155,8 @@ impl Departure {
 /// not count (its author held less than write at its point) is not pinned: a reader's writes
 /// force no rotation (the stated limit).
 pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    let Some(edge) = &d.edge else { return false };
-    let (tail, held_r) = edge.tail(r);
+    let Some(grant) = &d.grant else { return false };
+    let (tail, held_r) = grant.tail(r);
     let named = |w: &GrantWrite| n.list.contains(&Name::applied(w.key, d.holder)) || (n.departs.is_some_and(|o| held.marks(&o, &w.key)) && held.holds(&w.key.node, r));
     let below = !held_r || tail.iter().any(|w| w.role < Some(r) && w.takes && named(w));
     below && tail.iter().filter(|w| w.role >= Some(r) && w.counts).all(|w| n.list.contains(&Name::void(w.key, d.holder)))

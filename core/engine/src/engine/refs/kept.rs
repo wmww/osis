@@ -2,7 +2,7 @@
 //! holds): on a thing whose newest held valid setting has `history_holds_targets`, each reference
 //! in a held valid body of a counted aspect of it (`counted`), a held fire included, counts as a
 //! current value's does until the body goes (covered, expired, purged, invalid, forgotten,
-//! released): a strong an edge of the node closure and a need, a weak its target's stub. Local and
+//! released): a strong a grant of the node closure and a need, a weak its target's stub. Local and
 //! rebuildable, in three store index tables:
 //! - `PARTS`: source ‖ AK ‖ 0 ‖ commit ‖ part (u32): the references that held body holds, by
 //!   target and kind with counts, and the large values it holds, by content hash with counts

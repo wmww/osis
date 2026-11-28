@@ -8,7 +8,7 @@
 //!
 //! The input is plain structs, independent of the header's types; the output is per part
 //! (`Status`, `Content`), per delta and copy (purged), per request (its right,
-//! what it could hold), per edge (history, point queries, final values), the trusted writes left
+//! what it could hold), per grant (history, point queries, final values), the trusted writes left
 //! void, the dispute set and, per update, `Changed`.
 
 mod content;
@@ -23,14 +23,14 @@ use std::sync::Arc;
 pub use content::{Fact, FactClass, Holding, MemStore, NameKey, Pair, Store};
 pub use walk::{Applied, Counts, History, Key, Way};
 
-/// The edges a part signed by `key` as `signer` on `on` along `path` (hops `direct` marked) rests
+/// The grants a part signed by `key` as `signer` on `on` along `path` (hops `direct` marked) rests
 /// on, its key hop first, as the walk reads them (spec/permissions.md §1 Hops); `holder` for an
-/// grant write, `edge_class` for a grant-class part. None where its path is not well formed, and
+/// grant write, `grant_class` for a grant-class part. None where its path is not well formed, and
 /// none for a key lowering its own grant. `mint` holds each known record's holder: its mint
 /// admin, or the key it holds.
 #[allow(clippy::too_many_arguments)]
-pub fn hops(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, path: &[Tid], direct: osis_base::format::PathMarks, on: Tid, holder: Option<Holder>, edge_class: bool) -> Vec<(Holder, Tid)> {
-    path::shape(mint, key, signer, path, direct, on, holder, edge_class).hops
+pub fn hops(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, path: &[Tid], direct: osis_base::format::PathMarks, on: Tid, holder: Option<Holder>, grant_class: bool) -> Vec<(Holder, Tid)> {
+    path::shape(mint, key, signer, path, direct, on, holder, grant_class).hops
 }
 
 /// A held commit's parts.
@@ -256,7 +256,7 @@ pub enum By {
 }
 
 /// What an update changed. A delta's verdict can change only where: it is in `parts` (new), an
-/// edge of its path is in `edges` at a key before its position, in `cuts` at a key at or after
+/// grant of its path is in `grants` at a key before its position, in `cuts` at a key at or after
 /// it, or in `regrant`, its commit is in `named`, or an addendum in `parts` names it; and
 /// between `Content::Copied` and `Content::Invalid` alone where its commit is in `carried`.
 /// Whether a delta or copy is purged changes only where it is new, a `purges` scope covers it,
@@ -265,9 +265,9 @@ pub enum By {
 pub struct Changed {
     /// Grant-class parts whose status changed, every new part, addenda whose validity changed.
     pub parts: BTreeSet<WriteId>,
-    /// Per edge (holder, target), the earliest key from which its history changed.
-    pub edges: BTreeMap<(Holder, Tid), Key>,
-    /// Per edge, the latest key of a cut added or removed.
+    /// Per grant (holder, target), the earliest key from which its history changed.
+    pub grants: BTreeMap<(Holder, Tid), Key>,
+    /// Per grant, the latest key of a cut added or removed.
     pub cuts: BTreeMap<(Holder, Tid), Key>,
     /// Edges whose final role or first point (spec/permissions.md §5.2 Re-grant) changed.
     pub regrant: BTreeSet<(Holder, Tid)>,
@@ -472,7 +472,7 @@ impl<S: Store> Paths<S> {
         self.timeline.status(id)
     }
 
-    /// Applied part `id`: its edge and what it found there.
+    /// Applied part `id`: its grant and what it found there.
     pub fn applied(&self, id: &WriteId) -> Option<((Holder, Tid), Applied)> {
         self.timeline.applied_write(id)
     }
@@ -482,7 +482,7 @@ impl<S: Store> Paths<S> {
         self.timeline.last_before(holder, target, key)
     }
 
-    /// Whether held grant-class part `id` would apply at its key were its edge's value `old`
+    /// Whether held grant-class part `id` would apply at its key were its grant's value `old`
     /// there, the rest as the settled walk has it.
     pub fn would_apply(&self, id: &WriteId, old: Option<Grant>) -> bool {
         self.timeline.would_apply(id, old)
@@ -515,7 +515,7 @@ impl<S: Store> Paths<S> {
         self.timeline.last(holder, target)
     }
 
-    /// The held deltas whose verdict `ch` may have moved (`Changed`): those through an edge it
+    /// The held deltas whose verdict `ch` may have moved (`Changed`): those through a grant it
     /// names within the keys it names, and those it names.
     pub fn reached(&self, ch: &Changed) -> BTreeSet<WriteId> {
         self.facts.reached(ch)
@@ -611,27 +611,27 @@ impl<S: Store> Paths<S> {
     }
 
     /// Whether held request `id` could hold role `r` (spec/commits.md §4 Could hold the
-    /// right): every edge of its path a record grant or set at `r` or above by some held edge
+    /// right): every grant of its path a record grant or set at `r` or above by some held grant
     /// write, whatever that write's validity. What a node that cannot judge acts on.
     pub fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
         self.facts.could_give(id, r)
     }
 
     /// Whether held request `id` could hold the right over a delta of `purge_by` whose purge
-    /// author is `author` (spec/commits.md §4 Could hold the right): admin on every edge,
+    /// author is `author` (spec/commits.md §4 Could hold the right): admin on every grant,
     /// or write where the class allows a writer (`writer`; `author_or_admin` where its path holds
     /// the author). A destruction: admin.
     pub fn could_hold(&self, id: &WriteId, purge_by: PurgeBy, author: Option<&Tid>) -> Option<bool> {
         self.facts.could_hold(id, purge_by, author)
     }
 
-    /// Per edge with one, its first points for write and for admin (spec/permissions.md §5.2
+    /// Per grant with one, its first points for write and for admin (spec/permissions.md §5.2
     /// Re-grant): the key of its first held write giving the role made by right.
     pub fn first_points(&self) -> BTreeMap<(Holder, Tid), [Option<Key>; 2]> {
         self.timeline.first_points()
     }
 
-    /// A held delta's path edges and position (the start of its `ts`): where the engine indexes
+    /// A held delta's path grants and position (the start of its `ts`): where the engine indexes
     /// it to turn `Changed` into the deltas to judge again.
     pub fn rests(&self, id: &WriteId) -> Option<(Vec<(Holder, Tid)>, Key)> {
         self.facts.rests(id)
@@ -658,7 +658,7 @@ impl<S: Store> Paths<S> {
         self.timeline.writes(holder, target)
     }
 
-    /// Every edge with an applied write, and every record grant, with its history (empty for a
+    /// Every grant with an applied write, and every record grant, with its history (empty for a
     /// record grant nothing wrote).
     pub fn histories(&self) -> BTreeMap<(Holder, Tid), History> {
         self.timeline.histories()
@@ -670,7 +670,7 @@ impl<S: Store> Paths<S> {
         self.timeline.value_before(holder, target, key)
     }
 
-    /// The final role of each edge the settled walk set (and each record grant), every `until`
+    /// The final role of each grant the settled walk set (and each record grant), every `until`
     /// counted removed, and what it lets grant.
     pub fn finals(&self) -> BTreeMap<(Holder, Tid), (Option<Role>, Option<Role>)> {
         self.timeline.finals()
@@ -745,7 +745,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// What a dispute compares, read only where `ch` reaches: whether each part it reports
-    /// applies, the final role of each edge it reports, whether each delta `reached` is valid.
+    /// applies, the final role of each grant it reports, whether each delta `reached` is valid.
     fn probe(&self, ch: &Changed, reached: &BTreeSet<WriteId>, counts: &mut Counts) -> (Vec<bool>, Vec<Option<Role>>, Vec<bool>) {
         let applied = ch.parts.iter().map(|id| matches!(self.status(id), Some(Status::Applied | Status::MayGrant))).collect();
         let finals = ch.regrant.iter().map(|(h, e)| self.timeline.final_of(h, e)).collect();
@@ -753,7 +753,7 @@ impl<S: Store> Paths<S> {
         (applied, finals, valid)
     }
 
-    /// Entries the walk keeps in memory (parts, edges, events, histories,
+    /// Entries the walk keeps in memory (parts, grants, events, histories,
     /// readers): grant-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
         self.timeline.footprint() + self.facts.footprint()

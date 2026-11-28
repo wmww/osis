@@ -691,7 +691,7 @@ indexes! {
     /// Per thing with a `sync.0` state, the steps it places (`sync_ids::steps`, `Tx::derive`):
     /// what delete keys are listed from and checked against (spec/crypto.md §7).
     pub steps: JMap<Tid, Arc<crate::sync_ids::steps::Recorded>>,
-    /// Keyed edge entries seen: (target, edge aspect, entry dot) -> holder.
+    /// Keyed grant entries seen: (target, grant aspect, entry dot) -> holder.
     pub holder_keys: JMap<(Tid, crate::apply::validity::Grants, Dot), osis_base::Holder>,
     /// Role commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
@@ -731,8 +731,8 @@ indexes! {
     /// only when what it reads may have changed (`addenda_due`), read by its decide
     /// (`Core::addenda_owed`). Memory only.
     pub addenda_gathered: JMap<CommitId, Arc<crate::flows::addenda::Gathered>>,
-    /// The removals judged by `flows::addenda`, by the edges their writes are on: (target,
-    /// holder, the removal's `ts`, removal). A walk change naming such an edge at or before the
+    /// The removals judged by `flows::addenda`, by the grants their writes are on: (target,
+    /// holder, the removal's `ts`, removal). A walk change naming such a grant at or before the
     /// removal, or a delta stated through it, makes it due again (`flows::addenda::wake`).
     pub addenda_wake: JSet<(Tid, osis_base::Holder, osis_base::Ts, CommitId)>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
@@ -1135,7 +1135,7 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
-    /// Tests: boxes this node's next grant writes beside its grantee's (`flows::edges`): a
+    /// Tests: boxes this node's next grant writes beside its grantee's (`flows::grants`): a
     /// hostile granter's junk.
     #[cfg(test)]
     pub(crate) junk_boxes: Option<osis_keys::SecretsWrite>,
@@ -1402,7 +1402,7 @@ impl Core {
     }
 
     /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
-    /// only for those upstream of a changed edge's holder or a new record, and only down from
+    /// only for those upstream of a changed grant's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
         // the removals whose gathering it may move are due again for addenda; a grant write that
@@ -1422,8 +1422,8 @@ impl Core {
             }
         }
         self.stale_things.extend(below);
-        let holders: BTreeSet<Tid> = c.edges().map(|p| p.0).chain(c.created.iter().copied()).collect();
-        let targets: BTreeSet<Tid> = c.edges().map(|p| p.1).chain(c.created.iter().copied()).collect();
+        let holders: BTreeSet<Tid> = c.grants().map(|p| p.0).chain(c.created.iter().copied()).collect();
+        let targets: BTreeSet<Tid> = c.grants().map(|p| p.1).chain(c.created.iter().copied()).collect();
         let moved = self.ix.held.upstream(&holders);
         let under = self.ix.held.reach(&targets);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
@@ -1505,19 +1505,19 @@ impl Core {
     /// Whether this node holds the demotions keyset `v` carries: the grant writes of each commit
     /// it carries (`HeldKeyset::demotions`).
     fn carried_held(&self, v: &HeldKeyset) -> bool {
-        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some())
+        v.demotions.iter().all(|c| self.ix.held.grant_commit(c).is_some())
     }
 
     /// Whether this node holds left-out cause `c` (spec/crypto.md §4, Left out; Carried): its
     /// grant writes (a departure's or a grant's), or a `keys.0` part of it (a rotation commit's).
     pub(crate) fn cause_held(&self, c: &CommitId) -> bool {
-        self.ix.held.edge_commit(c).is_some() || self.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == "keys.0" && (m.holds(ai) || m.is_dropped(ai))))
+        self.ix.held.grant_commit(c).is_some() || self.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == "keys.0" && (m.holds(ai) || m.is_dropped(ai))))
     }
 
     /// Bounds the clock (`Clock::bound`) at the first time after now that a grant's `until` or a
     /// role commit's `ts` falls due on what reaches `actors`: until then the clock alone moves
     /// no role on them, so the roles at now a judgement reads while the guard lives
-    /// (`Core::now`) hold to it. Read by the edges into each actor and what holds a role on it
+    /// (`Core::now`) hold to it. Read by the grants on each actor and what holds a role on it
     /// (`Timelines::roles_on`, `on`), so a change elsewhere in their components moves nothing
     /// here.
     pub fn bound_to_horizon(&self, actors: impl Iterator<Item = Tid>) -> osis_base::memo::Bound {
@@ -3629,7 +3629,7 @@ impl Engine {
                 if !rebuild {
                     crate::flows::reopen_all(&mut tx)?;
                 }
-                // the persisted edges rows are what the role commits' records read, one each
+                // the persisted grants rows are what the role commits' records read, one each
                 #[cfg(debug_assertions)]
                 if rebuild {
                     let mut rows = index::load_perm(&mut tx)?;
@@ -3888,7 +3888,7 @@ mod tests {
         }
     }
 
-    use crate::rotation::tests::edge;
+    use crate::rotation::tests::grant;
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Str(v.into())).unwrap();
@@ -3930,8 +3930,8 @@ mod tests {
         };
         let g = failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, a));
         lp.hold(g);
-        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &edge(Role::Write)));
-        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &edge(Role::Admin)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &grant(Role::Write)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &grant(Role::Admin)));
         lp.sync(0, 1).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[1], &mut failed, |e| {
@@ -3986,8 +3986,8 @@ mod tests {
         });
         lp.hold(g);
         let c = lp.peers[2].engine.tid();
-        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &edge(Role::Write)));
-        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &edge(Role::Read)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &grant(Role::Write)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &grant(Role::Read)));
         lp.sync(0, 1).unwrap();
         lp.sync(0, 2).unwrap();
         lp.advance(10);

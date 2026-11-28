@@ -30,7 +30,7 @@ fn full(p: &mut Paths, disputes: bool) -> [String; 3] {
 
 /// What an update reported: of the readings `full` hashes first, and of purges.
 fn changed(c: &Changed) -> [String; 3] {
-    [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.edges, c.cuts, c.regrant, c.named.union(&c.carried).collect::<Vec<_>>()), String::new(), format!("{:?}", c.purges)]
+    [format!("{:?}{:?}{:?}{:?}{:?}", c.parts, c.grants, c.cuts, c.regrant, c.named.union(&c.carried).collect::<Vec<_>>()), String::new(), format!("{:?}", c.purges)]
 }
 
 fn trace(records: &BTreeMap<Tid, Holder>, trust: &BTreeSet<WriteId>, commits: &[Commit], seed: u64, disputes: bool) -> [String; 3] {

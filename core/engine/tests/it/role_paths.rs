@@ -5,7 +5,7 @@
 //! stated paths does (`walk_afresh`).
 
 use crate::common;
-use crate::flows::{edge_of, follow, people, spread, thing_of};
+use crate::flows::{grant_of, follow, people, spread, thing_of};
 use common::*;
 use osis_base::{Role, Tid};
 use osis_engine::flows::{Demotion, LinkSpec};
@@ -34,7 +34,7 @@ fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) {
 }
 
 fn may_grant(role: Role) -> ct::Grant {
-    ct::Grant { may_grant: true, ..edge_of(role) }
+    ct::Grant { may_grant: true, ..grant_of(role) }
 }
 
 /// Four accounts A (0), B (1), C (2), D (3). B grants through one holder (H1 on T1) and through
@@ -54,30 +54,30 @@ pub(crate) fn world() -> World {
     things.push(t8);
     spread(&mut lp);
     // through one holder
-    grant(&mut lp, 0, t1, h1, edge_of(Role::Admin));
-    grant(&mut lp, 0, h1, pb, edge_of(Role::Admin));
-    grant(&mut lp, 1, t1, pc, edge_of(Role::Write));
+    grant(&mut lp, 0, t1, h1, grant_of(Role::Admin));
+    grant(&mut lp, 0, h1, pb, grant_of(Role::Admin));
+    grant(&mut lp, 1, t1, pc, grant_of(Role::Write));
     // through three, and a removal with its rotation
-    grant(&mut lp, 0, t3, k3, edge_of(Role::Admin));
-    grant(&mut lp, 0, k3, k2, edge_of(Role::Admin));
-    grant(&mut lp, 0, k2, k1, edge_of(Role::Admin));
-    grant(&mut lp, 0, k1, pb, edge_of(Role::Admin));
-    grant(&mut lp, 1, t3, pd, edge_of(Role::Read));
+    grant(&mut lp, 0, t3, k3, grant_of(Role::Admin));
+    grant(&mut lp, 0, k3, k2, grant_of(Role::Admin));
+    grant(&mut lp, 0, k2, k1, grant_of(Role::Admin));
+    grant(&mut lp, 0, k1, pb, grant_of(Role::Admin));
+    grant(&mut lp, 1, t3, pd, grant_of(Role::Read));
     remove(&mut lp, 1, t3, pd);
     // a leave through a holder, and one by the holder itself
-    grant(&mut lp, 0, t5, h5, edge_of(Role::Write));
-    grant(&mut lp, 0, h5, pb, edge_of(Role::Admin));
+    grant(&mut lp, 0, t5, h5, grant_of(Role::Write));
+    grant(&mut lp, 0, h5, pb, grant_of(Role::Admin));
     remove(&mut lp, 1, t5, h5);
     remove(&mut lp, 2, t1, pc);
     // may-grant grants: by a holder's flag and by one's own
     grant(&mut lp, 0, t4, h4, may_grant(Role::Write));
-    grant(&mut lp, 0, h4, pb, edge_of(Role::Write));
-    grant(&mut lp, 1, t4, pd, edge_of(Role::Read));
+    grant(&mut lp, 0, h4, pb, grant_of(Role::Write));
+    grant(&mut lp, 1, t4, pd, grant_of(Role::Read));
     grant(&mut lp, 0, t4, pc, may_grant(Role::Write));
-    grant(&mut lp, 2, t4, pb, edge_of(Role::Read));
+    grant(&mut lp, 2, t4, pb, grant_of(Role::Read));
     // a finalize of an ended grant
     let until = osis_base::Time(lp.peers[0].engine.now().0 + 500);
-    grant(&mut lp, 0, t1, pd, ct::Grant { until: Some(until), ..edge_of(Role::Read) });
+    grant(&mut lp, 0, t1, pd, ct::Grant { until: Some(until), ..grant_of(Role::Read) });
     lp.advance(2000);
     lp.peers[1].engine.ensure_rotated(&t1).unwrap();
     spread(&mut lp);
@@ -89,9 +89,9 @@ pub(crate) fn world() -> World {
     lp.advance(1000);
     spread(&mut lp);
     // an addendum for what A's removal of B left out, then C's own leave
-    grant(&mut lp, 0, t6, pb, edge_of(Role::Admin));
-    grant(&mut lp, 0, t6, pc, edge_of(Role::Admin));
-    lp.peers[1].engine.grant(&t6, &pd, &edge_of(Role::Write)).unwrap();
+    grant(&mut lp, 0, t6, pb, grant_of(Role::Admin));
+    grant(&mut lp, 0, t6, pc, grant_of(Role::Admin));
+    lp.peers[1].engine.grant(&t6, &pd, &grant_of(Role::Write)).unwrap();
     let mut m = Mutation::new();
     m.set(t6, &REG, &s("by b")).unwrap();
     lp.peers[1].engine.commit(m).unwrap();
@@ -101,7 +101,7 @@ pub(crate) fn world() -> World {
     spread(&mut lp);
     remove(&mut lp, 2, t6, pc);
     // a removal by a descent of two steps
-    grant(&mut lp, 0, t8, pc, edge_of(Role::Admin));
+    grant(&mut lp, 0, t8, pc, grant_of(Role::Admin));
     remove(&mut lp, 0, t8, pc);
     World { lp }
 }
@@ -112,7 +112,7 @@ fn above(e: &osis_engine::Engine, p: Tid, q: Tid) -> bool {
 }
 
 /// The role and the may-grant role hop `p` to `q` gives just before `point`: admin for a descent, else `p`'s
-/// direct grant on `q` (`None`: no edge held).
+/// direct grant on `q` (`None`: no grant held).
 fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> Option<(Role, Option<Role>)> {
     // a hop marked direct reads the direct grant, and only off a descent of two steps or more
     if marked {
@@ -121,20 +121,20 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
         return Some((Role::Admin, Some(Role::Admin)));
     }
     let tl = e.core.timelines().get(&q)?;
-    let edges = tl.edges_at(Some(point));
-    let x = edges.get(&p, &q).filter(|x| x.alive_at(Some(point.ts)))?;
+    let grants = tl.edges_at(Some(point));
+    let x = grants.get(&p, &q).filter(|x| x.alive_at(Some(point.ts)))?;
     Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.may_grant.then_some(x.role) }))
 }
 
 // spec/permissions.md §1 Path, §2 Self-removal and May-grant grant, spec/wire.md §4 field 2:
 // every role commit states a real path. Over the representative world, each role commit A holds
 // states one path, purge index 0, whose hops from its signer to each thing it writes (to the
-// holder, for a self-removal) are held edges or descents just before its key, giving what the
+// holder, for a self-removal) are held grants or descents just before its key, giving what the
 // commit needs there: the signer's role on the thing (admin for an admin's grant write, its role
 // for a rotation), admin up to the holder for a self-removal, the granted role as
-// may-grant on the last edge for a may-grant grant. Every kind the table names is met.
+// may-grant on the last grant for a may-grant grant. Every kind the table names is met.
 #[test]
-fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
+fn every_stated_role_path_is_a_chain_of_held_grants_spec_wire_4() {
     let w = world();
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
@@ -156,7 +156,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             let listed = p.to(&t).to_vec();
             let end = listed.last().copied().unwrap_or(h.signer);
             let tl = e.core.timelines().get(&t);
-            let ops: Vec<(osis_base::Holder, Option<osis_perm::Grant>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
+            let ops: Vec<(osis_base::Holder, Option<osis_perm::Grant>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.grant)).collect()).unwrap_or_default();
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == osis_base::Holder::Thing(end));
             // a thing signed as writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
@@ -238,7 +238,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
                         let things = |x: &osis_base::CommitId| e.header(x).map(|lh| lh.aspects.iter().map(|a| a.tid).collect::<Vec<Tid>>()).unwrap_or_default();
                         std::sync::Arc::new(osis_perm::paths::List::new(f.commits().iter().flat_map(|x| things(x).into_iter().map(move |t| (t, *x))).collect::<Vec<_>>()))
                     });
-                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Grant(GrantWrite { holder: op.holder, value: op.edge, frontier }) });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Grant(GrantWrite { holder: op.holder, value: op.grant, frontier }) });
                 }
             }
         }
@@ -261,7 +261,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
 }
 
 /// Where engine `e`'s timeline differs from `walk_afresh`: each grant write whose applied/not
-/// differs, and each edge whose final role differs (every `until` counted removed).
+/// differs, and each grant whose final role differs (every `until` counted removed).
 pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
     let (paths, ids) = walk_afresh(e);
     let mut out = Vec::new();
@@ -270,7 +270,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
         let old = tl.is_applied(w);
         let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::MayGrant));
         if old != new {
-            let (signer, holder, _) = tl.edge_op(w).unwrap();
+            let (signer, holder, _) = tl.grant_op(w).unwrap();
             out.push(format!("grant write {:?} by {signer:?} on ({holder:?}, {t:?}): engine {old}, afresh {:?}", w.0, paths.status(nid)));
         }
     }
@@ -279,8 +279,8 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
     targets.extend(ids.values().map(|x| x.1));
     for t in targets {
         let Some(tl) = e.core.timelines().get(&t) else { continue };
-        let edges = tl.edges_at(None);
-        let old: BTreeMap<Tid, Role> = edges.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
+        let grants = tl.edges_at(None);
+        let old: BTreeMap<Tid, Role> = grants.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
         let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).filter_map(|(k, v)| Some((k.0.thing()?, v.0.unwrap()))).collect();
         if old != new {
             out.push(format!("roles on {t:?}: engine {old:?}, afresh {new:?}"));
@@ -290,7 +290,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
 }
 
 // spec/permissions.md §5.1 step 5 (the walk is a function of the held commits): the engine's
-// timeline, updated as commits came, gives every grant write the verdict and every edge the final
+// timeline, updated as commits came, gives every grant write the verdict and every grant the final
 // role a walk afresh over the stated role paths gives, at every node of the representative world.
 #[test]
 fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
@@ -300,7 +300,7 @@ fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
     }
 }
 
-/// The newest role commit at peer `i` writing `holder`'s edge on `t`: its header, and a walk
+/// The newest role commit at peer `i` writing `holder`'s grant on `t`: its header, and a walk
 /// afresh's status of that grant write.
 fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
     let e = &lp.peers[i].engine;
@@ -320,7 +320,7 @@ fn one_path(h: &osis_commit::Header) -> Vec<Tid> {
 // B's only admin on T is through H: a self-removal (its path, [H], ends at the holder), carrying
 // no frontier (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2]).
 // With a direct admin grant of its own on T, the same removal is explicit: the empty path, a
-// frontier, and B's own edge the last edge.
+// frontier, and B's own grant the last grant.
 #[test]
 fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
     for direct in [false, true] {
@@ -329,10 +329,10 @@ fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
         let t = thing_of(&mut lp, 0, pa);
         let h = thing_of(&mut lp, 0, pa);
         spread(&mut lp);
-        grant(&mut lp, 0, t, h, edge_of(Role::Admin));
-        grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+        grant(&mut lp, 0, t, h, grant_of(Role::Admin));
+        grant(&mut lp, 0, h, pb, grant_of(Role::Admin));
         if direct {
-            grant(&mut lp, 0, t, pb, edge_of(Role::Admin));
+            grant(&mut lp, 0, t, pb, grant_of(Role::Admin));
         }
         remove(&mut lp, 1, t, h);
         for i in 0..2 {
@@ -363,12 +363,12 @@ fn a_hostile_role_commit_on_things_reached_apart_is_written_spec_commits_2() {
     let t2 = thing_of(&mut lp, 0, pa);
     let h = thing_of(&mut lp, 0, pa);
     spread(&mut lp);
-    grant(&mut lp, 0, t1, pb, edge_of(Role::Admin));
-    grant(&mut lp, 0, t2, h, edge_of(Role::Admin));
-    grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+    grant(&mut lp, 0, t1, pb, grant_of(Role::Admin));
+    grant(&mut lp, 0, t2, h, grant_of(Role::Admin));
+    grant(&mut lp, 0, h, pb, grant_of(Role::Admin));
     let mut m = Mutation::new();
     for t in [t1, t2] {
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(pc))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(pc))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&grant_of(Role::Write))) }).unwrap();
     }
     lp.peers[1].engine.commit_hostile(m).unwrap().expect("the commit writes");
     lp.advance(1000);
@@ -387,10 +387,10 @@ fn an_admin_holding_the_may_grant_flag_grants_by_its_admin_path_spec_permissions
     let t = thing_of(&mut lp, 0, pa);
     let h = thing_of(&mut lp, 0, pa);
     spread(&mut lp);
-    grant(&mut lp, 0, t, h, edge_of(Role::Admin));
-    grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+    grant(&mut lp, 0, t, h, grant_of(Role::Admin));
+    grant(&mut lp, 0, h, pb, grant_of(Role::Admin));
     grant(&mut lp, 0, t, pb, may_grant(Role::Write));
-    grant(&mut lp, 1, t, pc, edge_of(Role::Read));
+    grant(&mut lp, 1, t, pc, grant_of(Role::Read));
     for i in 0..3 {
         let (hd, st) = newest_write(&lp, i, t, pc);
         assert_eq!(one_path(&hd), [h], "peer {i}");
@@ -400,7 +400,7 @@ fn an_admin_holding_the_may_grant_flag_grants_by_its_admin_path_spec_permissions
 }
 
 // notes/principles.md Check scaling, spec/permissions.md §2 Path's may-grant: finding a
-// may-grant grant's path (`Need::MayGrant`: the role on every edge, the last giving admin or
+// may-grant grant's path (`Need::MayGrant`: the role on every grant, the last giving admin or
 // carrying the flag) walks the things reaching its target, as many at 10n unrelated role commits held as at n.
 #[test]
 fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
@@ -411,14 +411,14 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
         let h = thing_of(&mut lp, 0, pa);
         spread(&mut lp);
         grant(&mut lp, 0, t, h, may_grant(Role::Write));
-        grant(&mut lp, 0, h, pb, edge_of(Role::Write));
+        grant(&mut lp, 0, h, pb, grant_of(Role::Write));
         for _ in 0..n {
             let x = thing_of(&mut lp, 0, pa);
-            lp.peers[0].engine.grant(&x, &pb, &edge_of(Role::Read)).unwrap();
+            lp.peers[0].engine.grant(&x, &pb, &grant_of(Role::Read)).unwrap();
         }
         spread(&mut lp);
         osis_base::costs::take();
-        lp.peers[1].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+        lp.peers[1].engine.grant(&t, &pc, &grant_of(Role::Read)).unwrap();
         let c = osis_base::costs::take().iter().find(|x| x.0 == "perm: ways walked").map_or(0, |x| x.2);
         let h_path = one_path(&lp.peers[1].engine.header(&lp.peers[1].engine.commit_ids().into_iter().max_by_key(|id| lp.peers[1].engine.header(id).map(|h| h.ts)).unwrap()).unwrap());
         (c, h_path == [h])
@@ -434,7 +434,7 @@ fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
 // role), and are applied by the engine and by a walk afresh alike: B, granted write, reads A's
 // value; no grant write's verdict or final role differs. Before its own grant, A's writes state the
-// descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
+// descent, unmarked; once it holds the grant, the marked hop (the fewest grants), before the detach
 // too.
 #[test]
 fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
@@ -445,7 +445,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("before")).unwrap();
     let before = lp.peers[0].commit(m).unwrap().unwrap();
-    grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+    grant(&mut lp, 0, t, ps[0], grant_of(Role::Admin));
     // A references T from its own node root: detached from G, T is held by that reference
     lp.peers[0].engine.hold(osis_base::Strong(t)).unwrap();
     let mut m = Mutation::new();
@@ -455,7 +455,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("detached")).unwrap();
     let content = lp.peers[0].commit(m).unwrap().unwrap();
-    let role = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap().commits;
+    let role = lp.peers[0].engine.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap().commits;
     lp.advance(1000);
     spread(&mut lp);
     let e = &lp.peers[0].engine;
@@ -466,7 +466,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     assert_eq!(path(before), osis_commit::Path::default(), "the descent, unmarked");
     let marked = osis_commit::Path { purge: 0, things: vec![], direct: 1 };
     assert_eq!(path(content), marked);
-    assert_eq!(path(both), marked, "the direct grant, fewer edges than the descent");
+    assert_eq!(path(both), marked, "the direct grant, fewer grants than the descent");
     assert!(!role.is_empty() && role.iter().all(|id| path(*id) == marked), "{role:?}");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
     assert_eq!(lp.peers[1].engine.core.timelines().role(&ps[1], &t, At::END), Some(Role::Write));
@@ -489,12 +489,12 @@ fn finding_a_marked_path_does_not_grow_with_history_spec_wire_4() {
         let g = thing_of(&mut lp, 0, ps[0]);
         let t = thing_of(&mut lp, 0, g);
         spread(&mut lp);
-        grant(&mut lp, 0, t, ps[0], edge_of(Role::Admin));
+        grant(&mut lp, 0, t, ps[0], grant_of(Role::Admin));
         lp.peers[0].engine.hold(osis_base::Strong(t)).unwrap();
         remove(&mut lp, 0, t, g);
         for _ in 0..n {
             let x = thing_of(&mut lp, 0, g);
-            lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+            lp.peers[0].engine.grant(&x, &ps[1], &grant_of(Role::Read)).unwrap();
         }
         spread(&mut lp);
         osis_base::costs::take();

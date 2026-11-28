@@ -6,7 +6,7 @@
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
 //! node nor a held link key may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
-//! `secrets.0` (edges, public keysets, sync IDs). Everything else goes, shredded:
+//! `secrets.0` (grants, public keysets, sync IDs). Everything else goes, shredded:
 //! aspect units (state, tables), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,

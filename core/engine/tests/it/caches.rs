@@ -5,7 +5,7 @@
 //! (`Engine::check_index`); these are the rules it cannot reach: damage, crashes, restores.
 
 use crate::common;
-use crate::flows::{edge_of, people, spread, thing_of};
+use crate::flows::{grant_of, people, spread, thing_of};
 use common::*;
 use osis_base::{Clock, ManualClock, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -18,17 +18,17 @@ use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use std::sync::Arc;
 
-/// `holder`'s edge on `thing` by the engine (`None` removes it); refusals are fine.
-fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
+/// `holder`'s grant on `thing` by the engine (`None` removes it); refusals are fine.
+fn try_grant(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).unwrap();
     if let Some(r) = role {
-        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(grant(r).to_value()) }).unwrap();
     }
     // an explicit removal (with no frontier, a finalize) or a write that audits carries one
     // (spec/permissions.md §2, §5.1)
-    if e.needs_frontier(&thing, &holder, role.map(edge).as_ref()) {
+    if e.needs_frontier(&thing, &holder, role.map(grant).as_ref()) {
         m.frontier(osis_perm::Frontier::default());
     }
     let _ = e.commit(m);
@@ -52,8 +52,8 @@ fn damaged_caches_are_rebuilt() {
     let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &pb, &grant_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &pc, &grant_of(Role::Read)).unwrap();
     spread(&mut lp);
     let write = |lp: &mut LocalPeer, i: usize, v: &str| {
         let mut m = Mutation::new();
@@ -102,7 +102,7 @@ fn a_reload_moves_every_read_of_the_indexes() {
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
     for i in 0..10u8 {
-        try_edge(e, t, Tid::from_bytes([60 + i; 15]), Some(Role::Read));
+        try_grant(e, t, Tid::from_bytes([60 + i; 15]), Some(Role::Read));
     }
     let memo = osis_engine::engine::Kept::new("test: commit ids");
     let runs = std::cell::Cell::new(0);
@@ -128,7 +128,7 @@ fn a_reload_moves_every_read_of_the_indexes() {
 }
 
 // spec/permissions.md §5.1 step 5 (the walk is a function of the held commits): new things
-// between opens (leaves by their `created.0`, then edges on them) read alike reopened and from
+// between opens (leaves by their `created.0`, then grants on them) read alike reopened and from
 // scratch
 #[test]
 fn new_things_between_opens_read_alike() {
@@ -139,7 +139,7 @@ fn new_things_between_opens_read_alike() {
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
     for i in 0..80u8 {
-        try_edge(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
+        try_grant(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
     }
     reopen_same(e, "reopened");
     let mut smaller = false;
@@ -149,7 +149,7 @@ fn new_things_between_opens_read_alike() {
         e.commit(m).unwrap();
         smaller |= d < t;
         if k % 3 == 0 {
-            try_edge(e, d, Tid::from_bytes([60; 15]), Some(Role::Read));
+            try_grant(e, d, Tid::from_bytes([60; 15]), Some(Role::Read));
         }
         reopen_same(e, &format!("new thing {k}"));
     }
@@ -182,7 +182,7 @@ fn crash_at_every_write_keeps_caches_exact() {
         m.set(t, &REG, &s("one")).unwrap();
         e.commit(m).unwrap();
         for i in 0..6u8 {
-            try_edge(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Read));
+            try_grant(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Read));
         }
         faults.at(n, Fault::Crash);
         clock.advance(1);
@@ -192,7 +192,7 @@ fn crash_at_every_write_keeps_caches_exact() {
         let _ = e.commit(m);
         for i in 0..6u8 {
             clock.advance(1);
-            try_edge(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Write));
+            try_grant(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Write));
         }
         let crashed = faults.crashed();
         drop(e);

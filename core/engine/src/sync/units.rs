@@ -17,12 +17,12 @@
 //! is the things of context `Read(T)`, and the node closure is every thing of a context other
 //! than a stub.
 //!
-//! Work follows change (spec/sync-set.md §2 Cost): each held vertex's edge to each target of its
+//! Work follows change (spec/sync-set.md §2 Cost): each held vertex's grant to each target of its
 //! strongs is followed by an `Effects` key, due when what its judgement read moved (whether the target
 //! is independent, the roles and secrets it is judged by); a strong appearing or going is told by the
 //! reference index (`note_row`). A settle at each transaction's end diffs the due
-//! edges into the tree. An edge added costs what it brings in. An edge removed that is no tree
-//! edge costs O(1); a tree edge removed runs two searches in step, stopping at the first answer
+//! grants on the tree. A grant added costs what it brings in. A grant removed that is no tree
+//! grant costs O(1); a tree grant removed runs two searches in step, stopping at the first answer
 //! (notes/closure-model.md, P5 counts): the removed target's other referrers walked up their
 //! tree paths (one outside the target's subtree re-attaches it), and the target's subtree, which
 //! once whole re-attaches each member a held referrer outside it still reaches, and what that
@@ -50,9 +50,9 @@ pub enum Ctx {
 /// A vertex of the walk: a thing reached in a context.
 pub type Vx = (Ctx, Tid);
 
-/// A spanning tree over held vertices rooted at (local, node root), its edges the closure's
-/// out-lists (`Edges`). Two follow the same out-lists: the node closure's, and the sync set's,
-/// where an edge into a thing sourced at another node leads nowhere (spec/sync-set.md §5).
+/// A spanning tree over held vertices rooted at (local, node root), its grants the closure's
+/// out-lists (`Grants`). Two follow the same out-lists: the node closure's, and the sync set's,
+/// where a grant on a thing sourced at another node leads nowhere (spec/sync-set.md §5).
 #[derive(Clone, Debug, Default)]
 struct Tree {
     /// The held vertices.
@@ -90,18 +90,18 @@ impl Journaled for Tree {
     }
 }
 
-/// The edges a tree follows: the held vertices' out-lists, an edge into a vertex of a thing of
+/// The grants a tree follows: the held vertices' out-lists, a grant on a vertex of a thing of
 /// `cut` leading nowhere.
 #[derive(Clone, Copy)]
-struct Edges<'a> {
+struct Grants<'a> {
     out: &'a JSetMap<Vx, Vx>,
     inn: &'a JSetMap<Vx, Vx>,
     cut: Option<&'a JSet<Tid>>,
     root: Vx,
 }
 
-impl Edges<'_> {
-    /// Whether an edge into `v` leads to it.
+impl Grants<'_> {
+    /// Whether a grant on `v` leads to it.
     fn admits(&self, v: &Vx) -> bool {
         *v == self.root || self.cut.is_none_or(|c| !c.contains(&v.1))
     }
@@ -120,7 +120,7 @@ pub struct Closure {
     out: JSetMap<Vx, Vx>,
     /// Per vertex, the held vertices whose out-list holds it.
     inn: JSetMap<Vx, Vx>,
-    /// Out-list edges added or removed since the sync set's tree followed them.
+    /// Out-list grants added or removed since the sync set's tree followed them.
     moved: JSet<(Vx, Vx)>,
     /// Strongs that appeared or went since the last settle, per target its sources (`note_row`):
     /// by target, as `targeted` reads one target's.
@@ -141,14 +141,14 @@ pub struct Closure {
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5).
     cut: JSet<Tid>,
-    /// Per out-list edge (vertex, given vertex), the targets of the vertex's references giving it
+    /// Per out-list grant (vertex, given vertex), the targets of the vertex's references giving it
     /// (`given_by`): several references may give one vertex (a Dependent entry by several
     /// dependents, a chain holder's stub by several things it opens the way to), which goes with
     /// the last of them.
     by: JSetMap<(Vx, Vx), Tid>,
-    /// Per (vertex, target), what its edge gives as last settled (`by` read back).
+    /// Per (vertex, target), what its grant gives as last settled (`by` read back).
     gave: JMap<(Vx, Tid), BTreeSet<Vx>>,
-    /// The things an edge from the local part to a vertex of theirs was linked to or unlinked
+    /// The things a grant from the local part to a vertex of theirs was linked to or unlinked
     /// from since the last settle's end: judged then for the local part's log (`local_log`).
     local_moved: JSet<Tid>,
 }
@@ -174,11 +174,11 @@ impl Default for Closure {
     }
 }
 
-/// An edge followed: a held vertex and a target of its thing's strongs.
+/// A grant followed: a held vertex and a target of its thing's strongs.
 type Grant = (Vx, Tid);
 
-/// The follower of each held vertex's edges (`Closure`), outside the journal: a rollback
-/// moves the stamps of what it restores, and `reset` follows every held vertex's edges afresh.
+/// The follower of each held vertex's grants (`Closure`), outside the journal: a rollback
+/// moves the stamps of what it restores, and `reset` follows every held vertex's grants afresh.
 #[derive(Clone)]
 pub(crate) struct Follow {
     fx: Effects<Grant, BTreeSet<Vx>>,
@@ -187,16 +187,16 @@ pub(crate) struct Follow {
     acted: bool,
     /// Per thing a vertex of which the running settle dropped, those vertices' contexts.
     gone: std::collections::BTreeMap<Tid, BTreeSet<Ctx>>,
-    /// The edges followed before this settle's refollow (`reset` after a rollback), so an edge
+    /// The grants followed before this settle's refollow (`reset` after a rollback), so a grant
     /// is new only when neither follows it (`refetch`). `known` false: an open's first settle,
-    /// whose edges are all old (a refetch was durable before the transaction adding its strong).
+    /// whose grants are all old (a refetch was durable before the transaction adding its strong).
     before: Option<Effects<Grant, BTreeSet<Vx>>>,
     known: bool,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false }
+        Follow { fx: Effects::new("closure: grants"), reset: true, acted: false, gone: Default::default(), before: None, known: false }
     }
 }
 
@@ -301,10 +301,10 @@ impl Tree {
         self.held.remove(&x.1, &x.0);
     }
 
-    /// `w`'s tree edge went (module doc): the two searches in step; then `w` hangs from another
+    /// `w`'s tree grant went (module doc): the two searches in step; then `w` hangs from another
     /// held referrer, or its subtree is re-attached where held referrers outside it reach. The
     /// rest is returned for the caller to drop.
-    fn detach(&mut self, g: Edges<'_>, w: Vx) -> BTreeSet<Vx> {
+    fn detach(&mut self, g: Grants<'_>, w: Vx) -> BTreeSet<Vx> {
         if let Some(p) = self.parent.remove(&w) {
             self.children.remove(&p, &w);
         }
@@ -430,9 +430,9 @@ impl Grow for GrowSynced<'_> {
     }
     fn out(&mut self, x: Vx) -> Result<Vec<Vx>> {
         let cl = &*self.0;
-        let g = Edges { out: &cl.out, inn: &cl.inn, cut: Some(&cl.cut), root: self.1 };
+        let g = Grants { out: &cl.out, inn: &cl.inn, cut: Some(&cl.cut), root: self.1 };
         let out: Vec<Vx> = cl.out.get(&x).into_iter().flatten().filter(|y| g.admits(y)).copied().collect();
-        osis_base::costs::count("closure: synced edges", out.len() as u64);
+        osis_base::costs::count("closure: synced grants", out.len() as u64);
         Ok(out)
     }
 }
@@ -552,7 +552,7 @@ impl Closure {
     }
 
     /// Whether unit `c` carries independent `h` whole (spec/sync-set.md §2 Stubs: then no stub of
-    /// it): `h` is in it, or a vertex of it enters `h` read. Read by `given_by`: an edge judged
+    /// it): `h` is in it, or a vertex of it enters `h` read. Read by `given_by`: a grant judged
     /// before `h` came in is judged again as it does.
     pub(crate) fn carries_whole(&self, c: Ctx, h: &Tid) -> bool {
         self.members.contains(&c, h) || self.inn.get(&(Ctx::Read(*h), *h)).is_some_and(|vs| vs.iter().any(|v| v.0 == c))
@@ -567,7 +567,7 @@ impl Closure {
         xs
     }
 
-    /// Whether an edge of a held vertex of the local part gives a vertex of `x`: the local part
+    /// Whether a grant of a held vertex of the local part gives a vertex of `x`: the local part
     /// carries `x` (whole, kept unread or as a stub).
     pub(crate) fn local_carries(&self, x: &Tid) -> bool {
         self.contexts(x).into_iter().any(|c| self.inn.get(&(c, *x)).is_some_and(|vs| vs.iter().any(|v| v.0 == Ctx::Local && self.is_held(v))))
@@ -658,9 +658,9 @@ impl Closure {
         self.tree.is_held(v)
     }
 
-    /// Notes an edge from `v` to `w` linked or unlinked: from the local part, one for the local
+    /// Notes a grant from `v` to `w` linked or unlinked: from the local part, one for the local
     /// part's log (`local_moved`).
-    fn moved_edge(&mut self, v: Vx, w: Vx) {
+    fn moved_grant(&mut self, v: Vx, w: Vx) {
         self.moved.insert((v, w));
         if v.0 == Ctx::Local {
             self.local_moved.insert(w.1);
@@ -668,25 +668,25 @@ impl Closure {
     }
 
     fn link(&mut self, v: Vx, w: Vx) {
-        osis_base::costs::count("closure: edges examined", 1);
+        osis_base::costs::count("closure: grants examined", 1);
         self.out.insert(v, w);
         self.inn.insert(w, v);
-        self.moved_edge(v, w);
+        self.moved_grant(v, w);
     }
 
     fn unlink(&mut self, v: Vx, w: Vx) {
-        osis_base::costs::count("closure: edges examined", 1);
+        osis_base::costs::count("closure: grants examined", 1);
         self.out.remove(&v, &w);
         self.inn.remove(&w, &v);
-        self.moved_edge(v, w);
+        self.moved_grant(v, w);
         for y in self.by.get(&(v, w)).cloned().unwrap_or_default() {
             self.by.remove(&(v, w), &y);
             self.gave.remove(&(v, y));
         }
     }
 
-    /// Sets what `v`'s edge to `y` gives to `now`: each vertex given linked while some edge of
-    /// `v` gives it (`by`). The vertices newly linked and those no edge of `v` gives any more.
+    /// Sets what `v`'s grant to `y` gives to `now`: each vertex given linked while some grant of
+    /// `v` gives it (`by`). The vertices newly linked and those no grant of `v` gives any more.
     fn set_given(&mut self, v: Vx, y: Tid, now: BTreeSet<Vx>) -> (Vec<Vx>, Vec<Vx>) {
         let old = self.gave.get(&(v, y)).cloned().unwrap_or_default();
         let (mut linked, mut gone) = (Vec::new(), Vec::new());
@@ -702,8 +702,8 @@ impl Closure {
             if !self.by.get(&(v, *w)).is_some_and(|s| !s.is_empty()) {
                 self.out.remove(&v, w);
                 self.inn.remove(w, &v);
-                self.moved_edge(v, *w);
-                osis_base::costs::count("closure: edges examined", 1);
+                self.moved_grant(v, *w);
+                osis_base::costs::count("closure: grants examined", 1);
                 gone.push(*w);
             }
         }
@@ -729,9 +729,9 @@ impl Closure {
         self.members.remove(&x.0, &x.1);
     }
 
-    /// The node closure's tree edge into `w` went (`Tree::detach`); the vertices dropped.
+    /// The node closure's tree grant on `w` went (`Tree::detach`); the vertices dropped.
     fn detach(&mut self, rv: Vx, w: Vx) -> BTreeSet<Vx> {
-        let g = Edges { out: &self.out, inn: &self.inn, cut: None, root: rv };
+        let g = Grants { out: &self.out, inn: &self.inn, cut: None, root: rv };
         let rest = self.tree.detach(g, w);
         for x in &rest {
             self.dropped(*x);
@@ -739,8 +739,8 @@ impl Closure {
         rest
     }
 
-    /// Brings the sync set's tree up to the out-lists' edges that moved (`moved`), as the node
-    /// closure's tree follows them: a removed tree edge detached, an edge added from a held
+    /// Brings the sync set's tree up to the out-lists' grants that moved (`moved`), as the node
+    /// closure's tree follows them: a removed tree grant detached, a grant added from a held
     /// vertex spread. Work in proportion to what moved and what it brings in or drops.
     fn settle_synced(&mut self, rv: Vx) -> Result<()> {
         let moved: Vec<(Vx, Vx)> = self.moved.iter().copied().collect();
@@ -749,14 +749,14 @@ impl Closure {
         }
         for (v, w) in &moved {
             if self.synced.parent.get(w) == Some(v) && !self.out.get(v).is_some_and(|o| o.contains(w)) {
-                let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+                let g = Grants { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
                 self.synced.detach(g, *w);
             }
         }
         if self.tree.is_held(&rv) && !self.synced.is_held(&rv) {
             self.synced.hold(rv, None);
         }
-        let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+        let g = Grants { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
         let fresh: Vec<(Vx, Vx)> = moved.into_iter().filter(|(v, w)| self.synced.is_held(v) && !self.synced.is_held(w) && g.admits(w) && self.out.get(v).is_some_and(|o| o.contains(w))).map(|(v, w)| (w, v)).collect();
         spread(&mut GrowSynced(self, rv), fresh)
     }
@@ -777,7 +777,7 @@ impl Closure {
             for c in self.synced.held.get(t).cloned().unwrap_or_default() {
                 let w = (c, *t);
                 if w != rv && self.synced.is_held(&w) {
-                    let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+                    let g = Grants { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
                     self.synced.detach(g, w);
                 }
             }
@@ -820,7 +820,7 @@ impl Core {
     /// by chains of grants with key access (`reads_now`), or the public does by its own grant on
     /// that actor (`public_reads`). `t`'s own role: a thing reads as itself.
     /// Invariant: a thing above an independent `a` on its record chain opens `a` only by its role
-    /// there (a record grant is a grant), never by being its mint admin: once that edge is lowered
+    /// there (a record grant is a grant), never by being its mint admin: once that grant is lowered
     /// or removed `a` leaves `t`'s sync unit, so whatever entry of `a`'s parts later arrives under
     /// `t`'s sync ID (sealed under `t`'s epochs from before `a` was keyed) waits outside the node
     /// closure (`retention::needed::applies_on`), as one that arrived before the loss went.
@@ -921,7 +921,7 @@ fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
 /// `on` brings: a read sync unit's thing; of the local part's (the node's own things: its node
 /// thing, each held link key), the node thing and the own things holding something on one of
 /// `on` (`Core::own_on`). An own thing holding nothing there opens, carries and cuts none of
-/// them, so leaving it out changes no answer, and a link key taken up moves only the edges onto
+/// them, so leaving it out changes no answer, and a link key taken up moves only the grants onto
 /// what it holds something on.
 fn owners(core: &Core, c: Ctx, on: &[Tid]) -> Vec<Tid> {
     match c {
@@ -934,7 +934,7 @@ fn owners(core: &Core, c: Ctx, on: &[Tid]) -> Vec<Tid> {
 /// What the walk takes from vertex `v` by a reference of its thing to `y`, a strong where
 /// `strong` (module doc; spec/sync-set.md §2).
 /// - A strong: within the unit what its keys open (a dependent in the local part the node
-///   opens), with a Dependent entry; an independent thing the unit carries (`edge_carries`) or
+///   opens), with a Dependent entry; an independent thing the unit carries (`grant_carries`) or
 ///   an own thing, entered by the node's secrets of it (`Core::enter`).
 /// - The stubs the unit carries by the reference (`stubs_by`).
 fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
@@ -964,7 +964,7 @@ fn given_by(core: &Core, v: Vx, y: Tid, strong: bool) -> BTreeSet<Vx> {
                 out.insert((Ctx::Read(a), a));
             }
         }
-        if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) && (core.is_own(&y) || edge_carries(core, v, &y)) {
+        if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) && (core.is_own(&y) || grant_carries(core, v, &y)) {
             out.insert((e, y));
         }
     }
@@ -1030,7 +1030,7 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
 
 /// The mint admin of independent `a` where `a`'s record names unit `c`'s owner `o` or a thing `c`
 /// holds whole (spec/sync-set.md §2 Stubs): its record grant is `a`'s grant that `c`'s readers
-/// hold by `a`'s record, so `c` carries `a`'s stub with that edge's writes, whatever `c`'s role on
+/// hold by `a`'s record, so `c` carries `a`'s stub with that grant's writes, whatever `c`'s role on
 /// `a` is now. Who writes it: `a`'s minting (the record), fixed in `a`'s tid.
 pub(crate) fn record_admin(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Tid> {
     let m = core.mint_admin(a)?;
@@ -1077,7 +1077,7 @@ fn counted(core: &Core, c: Ctx, o: &Tid, a: &Tid, r: Role, y: &Tid, h: &Tid) -> 
 }
 
 /// `x`'s keyed role on independent `a` (`Core::keyed_role_now`) over the grants `counts` admits,
-/// by (target, holder): the walk back from `a` skips every other edge into a thing it reaches.
+/// by (target, holder): the walk back from `a` skips every other grant on a thing it reaches.
 fn role_counted(core: &Core, x: &Tid, a: &Tid, counts: &dyn Fn(&Tid, &Tid) -> bool) -> Option<Role> {
     let (role, skip) = core.time.at(|now| {
         let ts = crate::flows::ts_at(now);
@@ -1145,17 +1145,17 @@ fn public_syncs(core: &Core, c: Ctx, y: &Tid) -> bool {
 pub(crate) fn reached_carried(core: &Core, y: &Tid) -> bool {
     let cl = &core.ix.closure;
     let avoid = [*y];
-    cl.contexts(y).iter().any(|c| matches!(c, Ctx::Stub(_))) || cl.targeted(y) && (core.is_own(y) || cl.targeting(y).any(|v| edge_carries(core, *v, y) && founded(core, *v, &avoid)))
+    cl.contexts(y).iter().any(|c| matches!(c, Ctx::Stub(_))) || cl.targeted(y) && (core.is_own(y) || cl.targeting(y).any(|v| grant_carries(core, *v, y) && founded(core, *v, &avoid)))
 }
 
-/// Whether an edge of a unit other than the local part gives a vertex of independent `a`, from a
+/// Whether a grant of a unit other than the local part gives a vertex of independent `a`, from a
 /// held vertex on a path avoiding `a` (`founded`): a unit the node syncs carries `a` whole or
 /// as a stub, so the node holds `a`'s role entries by that unit (`local_log::counts`).
 pub(crate) fn given_elsewhere(core: &Core, a: &Tid) -> bool {
     given_elsewhere_than(core, a, Ctx::Local)
 }
 
-/// Whether an edge of a unit other than `c` gives a vertex of independent `a`, from a held vertex
+/// Whether a grant of a unit other than `c` gives a vertex of independent `a`, from a held vertex
 /// on a path avoiding `a` (`given_elsewhere`).
 fn given_elsewhere_than(core: &Core, a: &Tid, c: Ctx) -> bool {
     let cl = &core.ix.closure;
@@ -1168,10 +1168,10 @@ fn given_elsewhere_than(core: &Core, a: &Tid, c: Ctx) -> bool {
 /// with `u` an own thing, whose keys open `y` (whole) or whose effective role on `y` is sync or
 /// above, the public's sync (by its grant, `public_syncs`) counting as every
 /// party's (its stub), as the role entries the node holds show it, or a sync-only cut of `y` taken
-/// under `u` says (spec/permissions.md §4 Stub). Local to the edge, so the tree
+/// under `u` says (spec/permissions.md §4 Stub). Local to the grant, so the tree
 /// founds it: an entry by `u`'s unit goes when `u`'s does, whatever `u` reaches back.
 /// Invariant: `y`'s own unit never carries it (`u != y`).
-fn edge_carries(core: &Core, v: Vx, y: &Tid) -> bool {
+fn grant_carries(core: &Core, v: Vx, y: &Tid) -> bool {
     let c = v.0;
     owners(core, c, &[*y]).iter().any(|u| u != y && (keys_open(core, c, u, y) || role_on(core, c, u, y) >= Some(Role::Sync) || public_syncs(core, c, y) || cut_under(core, c, u, y)))
 }
@@ -1229,7 +1229,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
         let r = settle_with(tx, &mut f, rv);
         tx.core.closure_follow = f;
         r?;
-        // the local part's log follows its edges, and its judgements read it
+        // the local part's log follows its grants, and its judgements read it
         let logged = crate::sync::local_log::settle(tx)?;
         // the grants of what the node newly syncs count (`rotation::grants_count`: a thing a
         // strong reaches where it is carried), so a box its roles had kept out opens, and
@@ -1244,17 +1244,17 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
     f.acted = true;
     f.gone.clear();
     if std::mem::take(&mut f.reset) {
-        let was = std::mem::replace(&mut f.fx, Effects::new("closure: edges"));
+        let was = std::mem::replace(&mut f.fx, Effects::new("closure: grants"));
         f.before = f.known.then_some(was);
         let all = tx.core.ix.closure.vertices();
         osis_base::costs::count("closure: refollowed", all.len() as u64);
         for v in all {
-            want_edges(tx, f, v)?;
+            want_grants(tx, f, v)?;
         }
     }
     if !tx.core.ix.closure.is_held(&rv) {
         tx.core.ix.closure.hold(rv, None);
-        want_edges(tx, f, rv)?;
+        want_grants(tx, f, rv)?;
     }
     loop {
         // the strongs that appeared, followed from each vertex of their source held as they are
@@ -1299,8 +1299,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
     }
 }
 
-/// Follows every edge of held vertex `v`: O(its thing's strongs).
-fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
+/// Follows every grant of held vertex `v`: O(its thing's strongs).
+fn want_grants(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
     if matches!(v.0, Ctx::Unread(_) | Ctx::Stub(_)) {
         return Ok(());
     }
@@ -1310,8 +1310,8 @@ fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
     Ok(())
 }
 
-/// What `v`'s edge to `y` gives: nothing without a reference (the edge followed no more), else
-/// what `given_by` says, recorded as what the edge follows.
+/// What `v`'s grant to `y` gives: nothing without a reference (the grant followed no more), else
+/// what `given_by` says, recorded as what the grant follows.
 fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>> {
     let r = if matches!(v.0, Ctx::Unread(_) | Ctx::Stub(_)) { None } else { ref_to(tx, &v.1, &y)? };
     let Some(strong) = r else {
@@ -1343,14 +1343,14 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     Ok(got)
 }
 
-/// A new edge of read unit `v` to `y`, which the node held as
+/// A new grant of read unit `v` to `y`, which the node held as
 /// certificates alone or not at all when the transaction began (`retention::needed::Holding`:
 /// not in the node closure, nor leaving it, nor dropped from it in this transaction, `was_held`),
 /// unless the pass in flight brought a minting of `y` while the node held none and nothing of
 /// `y` was forgotten since (`Core::brought`): the unit's sync IDs are pulled anew from
 /// every source, so what was forgotten of `y` (its content outside the node closure, a body
 /// judged outside the required set before the strong arrived) is fetched again
-/// (spec/sync-judgement.md §3 Dropped bodies). Once per new edge, durable before the
+/// (spec/sync-judgement.md §3 Dropped bodies). Once per new grant, durable before the
 /// transaction adding it commits.
 fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, was_held: bool) -> Result<()> {
     let Ctx::Read(t) = v.0 else { return Ok(()) };
@@ -1374,7 +1374,7 @@ fn set_targeted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
     }
 }
 
-/// Sets what held vertex `v`'s edge to `y` gives to `now`, moving the tree.
+/// Sets what held vertex `v`'s grant to `y` gives to `now`, moving the tree.
 fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<Vx>) -> Result<()> {
     let cl = &mut tx.core.ix.closure;
     let (linked, gone) = cl.set_given(v, y, now);
@@ -1383,7 +1383,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
         if tx.core.ix.closure.tree.parent.get(&w) == Some(&v) {
             for x in tx.core.ix.closure.detach(rv, w) {
                 f.gone.entry(x.1).or_default().insert(x.0);
-                // its edges are followed no more
+                // its grants are followed no more
                 if !matches!(x.0, Ctx::Unread(_) | Ctx::Stub(_)) {
                     for y in refs_from(tx, &x.1)?.into_keys() {
                         f.fx.unwant(&(x, y));
@@ -1396,7 +1396,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
     spread(&mut GrowClosure(tx, f), fresh)
 }
 
-/// The node closure's tree grown by judging each held vertex's edges.
+/// The node closure's tree grown by judging each held vertex's grants.
 struct GrowClosure<'t, 'a>(&'t mut Tx<'a>, &'t mut Follow);
 
 impl Grow for GrowClosure<'_, '_> {
@@ -1430,7 +1430,7 @@ pub fn strongs_in(v: &osis_base::Value, out: &mut BTreeSet<Tid>) {
 }
 
 /// Debug: the node closure as followed equals one walked afresh from the node root by
-/// `given_by` over every strong, and so does the sync set's tree, walked so with every edge into
+/// `given_by` over every strong, and so does the sync set's tree, walked so with every grant on
 /// a thing of the cut leading nowhere; each tree hangs every held vertex from a held referrer
 /// (`Engine::check_index`, `Engine::check_closure`).
 pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {

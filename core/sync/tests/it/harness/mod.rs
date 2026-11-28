@@ -510,7 +510,7 @@ impl Net {
     }
 
     /// `next_due`, else the earliest held-back input past `until`: quiet is no input in flight,
-    /// so one a node sent near the horizon still arrives (a timer's write at the horizon edge).
+    /// so one a node sent near the horizon still arrives (a timer's write at the horizon grant).
     /// Firing it ticks no wake past `until` (`World::fire`): what follows is the reaction to
     /// messages alone, so a timer chain cannot carry the run past the horizon.
     fn next_quiet(&self, until: Time) -> Option<Time> {
@@ -1681,15 +1681,15 @@ pub fn fixture_with<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -
     (w, x)
 }
 
-/// A plain edge of `role`: no `until`, may-grant flag, retain or floor.
-pub fn edge(role: osis_base::Role) -> osis_schema::core_types::Grant {
+/// A plain grant of `role`: no `until`, may-grant flag, retain or floor.
+pub fn grant(role: osis_base::Role) -> osis_schema::core_types::Grant {
     osis_schema::core_types::Grant { role, until: None, may_grant: false, retain: false, floor: None }
 }
 
-/// A grant of `edge` on `t` to `holder`, told (`Engine::signal_grant`, as `Osis::grant` does by
+/// A grant of `grant` on `t` to `holder`, told (`Engine::signal_grant`, as `Osis::grant` does by
 /// default): the holder's nodes learn of it.
-pub fn told(e: &mut Engine, t: &Tid, holder: &Tid, edge: &osis_schema::core_types::Grant) -> osis_engine::Result<osis_engine::flows::Done> {
-    let done = e.grant(t, holder, edge)?;
+pub fn told(e: &mut Engine, t: &Tid, holder: &Tid, grant: &osis_schema::core_types::Grant) -> osis_engine::Result<osis_engine::flows::Done> {
+    let done = e.grant(t, holder, grant)?;
     e.signal_grant(t, holder, &[])?;
     Ok(done)
 }

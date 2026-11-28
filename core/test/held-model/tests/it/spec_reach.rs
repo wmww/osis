@@ -71,12 +71,12 @@ fn reach_a_removed_writers_other_route_is_the_gap_at_r() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, K, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[], D));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A], R));
     for (name, p) in by_delivery(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
@@ -103,15 +103,15 @@ fn finding_19(record: bool, wider: bool) -> (World, paths::Id) {
     if wider {
         w.member(H, A);
     }
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
     if !record {
-        w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
+        w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Write, &[]));
     }
-    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
-    w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], H, D, Role::Read, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(v, |p| p.grant(V, 1, &[], R, D, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], H, D, Role::Read, &[]));
     w.write(k, |p| p.content(K, 2, &[A, O, D], R));
-    w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
+    w.write(y, |p| p.grant(Y, 6, &[], D, O, Role::None, &[]));
     let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
     (w, late)
 }
@@ -139,7 +139,7 @@ fn reach_a_chain_stub_carries_a_removal_to_the_units_reading_through_it() {
 /// The rule with record grants left out of the chains (the control): A's keys open O through its
 /// record grant alone, so no chain is found and the gap stays.
 #[test]
-fn records_chains_climb_a_mint_admins_record_edge() {
+fn records_chains_climb_a_mint_admins_record_grant() {
     let (w, late) = finding_19(true, true);
     let rule = Rule { records: false, ..Rule::fixed() };
     assert!(gaps_under(&w, &rule).iter().any(|f| f.sid == R && f.id == late));
@@ -150,15 +150,15 @@ fn records_chains_climb_a_mint_admins_record_edge() {
 /// from A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R. No node holding
 /// the removal holds R: every rule has the gap at R.
 #[test]
-fn records_a_removed_writers_other_route_through_a_record_edge() {
+fn records_a_removed_writers_other_route_through_a_record_grant() {
     let pw = paths::World::new(&[(X, A), (A, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], D, K, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], R, A, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], D, K, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[], D));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 6, &[], A, K, Role::None, &[]));
     w.write(k, |p| p.content(K, 8, &[A], R));
     for (name, p) in by_delivery(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");

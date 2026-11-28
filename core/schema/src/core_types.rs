@@ -151,7 +151,7 @@ codec_enum! {
     pub enum Source { 0 Commit(c: CommitId), 1 Session(s: [u8; 31]) }
 }
 codec_struct! {
-    /// A role edge; `retain`: with `until`, its passing says retain (spec/permissions.md §3,
+    /// A role grant; `retain`: with `until`, its passing says retain (spec/permissions.md §3,
     /// Retain); `floor`: the read n its holder reads from, granted without history
     /// (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]

@@ -36,11 +36,11 @@ pub(crate) fn publishes(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<bool> {
     Ok(cheap || crate::flows::cards::stands(tx, t)? || carries(tx, t, r)?)
 }
 
-/// Whether `t` holds `r` or above on some thing for keys, with key access (an edge or a record
-/// edge, `Core::edge_holders`: every `until` disregarded, as keys read no clock).
+/// Whether `t` holds `r` or above on some thing for keys, with key access (a grant or a record
+/// grant, `Core::grant_holders`: every `until` disregarded, as keys read no clock).
 fn holds_for_keys(core: &Core, t: &Tid, r: Role) -> bool {
     let on: Vec<Tid> = core.ix.held.named_on(t).copied().collect();
-    on.iter().any(|y| core.edge_holders(y).into_iter().any(|(h, role)| h == *t && role >= r && members::keyed(core, y, t)))
+    on.iter().any(|y| core.grant_holders(y).into_iter().any(|(h, role)| h == *t && role >= r && members::keyed(core, y, t)))
 }
 
 /// The greatest role whose keysets setting `s` of a thing makes carry KEM keys: read where it

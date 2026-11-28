@@ -508,6 +508,14 @@ DEAD_WORDS = {w: re.compile(p) for w, p in {
     "public link": r"(?i)\bpublic[ _-]?links?\b|\bPUBLIC_LINKS?\b",
     # any case and inside identifiers (`MakerFl`, `X_hostile_nomaker`): no sense of it is ours
     "maker": r"(?i)maker",
+    # a role grant is a grant (notes/terms.md, Grant); "edge" alone keeps its graph sense
+    "edge write": r"(?i)\bedge[ _-]?writes?\b",
+    "record edge": r"(?i)\brecord[ _-]?edges?\b",
+    "edge-class": r"(?i)\bedge[ _-]class\b",
+    "edge departure": r"(?i)\bedge[ _-]departures?\b",
+    "admin edge": r"(?i)\badmin[ _-]edges?\b",
+    "direct edge": r"(?i)\bdirect[ _-]edges?\b",
+    "EdgeWrite": r"\bEdge(Write|Op|Log)\b",
 }.items()}
 
 # Words of key parts (notes/stub-rewrite.md), refused in every tracked file.

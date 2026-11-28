@@ -456,7 +456,7 @@ pub(crate) enum SecretsRead<'a> {
 pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
-    /// Each holder's edge into the actor as this node holds it, read once (`departures::edge_logs`).
+    /// Each holder's grant on the actor as this node holds it, read once (`departures::grant_logs`).
     logs: std::cell::OnceCell<std::collections::BTreeMap<Tid, osis_keys::GrantLog>>,
 }
 
@@ -468,7 +468,7 @@ impl NamesHeld<'_> {
     }
 
     /// Commit `c` is applied here with what its grant writes end: no reset of it names an entry
-    /// whose creation is not held (spec/permissions.md §2; such a commit applies none of its edge
+    /// whose creation is not held (spec/permissions.md §2; such a commit applies none of its grant
     /// writes, `apply::validity`). Invariant: a met name is a departure this node holds whole,
     /// so it never boxes a holder an epoch's rotator saw depart into that epoch: a finalize held
     /// without the write it ends removes nobody here, yet its rotation would count.
@@ -476,7 +476,7 @@ impl NamesHeld<'_> {
         !self.core.ix.unresolved.contains(c)
     }
 
-    /// Some grant write of commit `c` on `holder`'s edge into the actor applies here.
+    /// Some grant write of commit `c` on `holder`'s grant on the actor applies here.
     fn applies(&self, c: &CommitId, holder: &Tid) -> bool {
         let Some(tl) = self.core.timelines().get(&self.actor) else { return false };
         tl.role_commit(c).is_some_and(|mc| {
@@ -484,11 +484,11 @@ impl NamesHeld<'_> {
         })
     }
 
-    /// The held grant writes on the actor of the commit at `key` (on `holder`'s edge, or on any)
-    /// all stand here (`GrantWrite::stands`: apply, or would over some edge before them; only
+    /// The held grant writes on the actor of the commit at `key` (on `holder`'s grant, or on any)
+    /// all stand here (`GrantWrite::stands`: apply, or would over some grant before them; only
     /// their author's authority is judged), and there is one.
     fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
-        let logs = self.logs.get_or_init(|| self.core.timelines().on(&self.actor).map(|on| crate::rotation::departures::edge_logs(self.core, &on, &self.actor)).unwrap_or_default());
+        let logs = self.logs.get_or_init(|| self.core.timelines().on(&self.actor).map(|on| crate::rotation::departures::grant_logs(self.core, &on, &self.actor)).unwrap_or_default());
         let mut ws = logs.iter().filter(|(m, _)| holder.is_none_or(|h| h == *m)).flat_map(|(_, l)| l.writes.iter()).filter(|w| w.key == *key).peekable();
         ws.peek().is_some() && ws.all(|w| w.stands)
     }
@@ -498,7 +498,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the actor, if it has one (a copy of
     /// some of it, a certificate copy or another sync ID's parts, may lack the write), and
     /// `resolved`; then judged as its rotator judged it: an applied name only while its write
-    /// on its holder's edge stands here (`GrantWrite::stands`: applies, or would over some edge
+    /// on its holder's grant stands here (`GrantWrite::stands`: applies, or would over some grant
     /// before it: a finalize of a grant renewed since is met), a void name only while that
     /// write applies nothing here.
     ///

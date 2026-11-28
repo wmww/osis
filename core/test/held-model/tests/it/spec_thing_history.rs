@@ -421,11 +421,11 @@ fn ev_the_newest_setting_alone_decides() {
                 }
             }
             // two admins at hour 2: node 1's key is the later
-            let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None);
+            let granted = grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None);
             let s = |id, by, opt| setting_by(id, by, 2, Setting { rules: vec![(REG.name, SettingEntry { history: opt, expires: None, purge_before: 0 })], default: None, written: None });
             let (lo, hi) = (s(100, MINT_ADMIN, older), s(101, 1, newer));
             for now in 6..12 {
-                let at_once = |cs: Vec<Commit>| view(&held(now, [vec![grant.clone()], cs, bodies()].concat()));
+                let at_once = |cs: Vec<Commit>| view(&held(now, [vec![granted.clone()], cs, bodies()].concat()));
                 let a = at_once(vec![lo.clone(), hi.clone()]);
                 assert_eq!(at_once(vec![hi.clone(), lo.clone()]), a, "{older:?}, {newer:?} now {now}: held order");
                 assert_eq!(a, at_once(vec![hi.clone()]), "{older:?}, {newer:?} now {now}: the later key decides");
@@ -512,11 +512,11 @@ fn ev_only_valid_settings_are_in_force_and_none_judges_validity() {
     let bodies = || vec![body(10, 1, false), body(11, 3, false)];
     // just after the grant: a write at its `ts` is concurrent with it (spec/permissions.md §5.2, Position)
     let by_writer = Commit { ts: ts(0) + 1, ..setting_by(19, 1, 0, Setting { rules: vec![(REG.name, SettingEntry { history: KEPT, expires: Some(HOUR), purge_before: 0 })], default: None, written: None }) };
-    let grant = |role| edge(5, MINT_ADMIN, 0, 1, Some(role), None);
-    let h = held(4, [vec![grant(Role::Write), by_writer.clone()], bodies()].concat());
+    let granted = |role| grant(5, MINT_ADMIN, 0, 1, Some(role), None);
+    let h = held(4, [vec![granted(Role::Write), by_writer.clone()], bodies()].concat());
     assert!(listed(&h, REG).is_empty(), "a writer's setting is none");
     assert!(evaluate(&h).settings.is_empty());
-    let h = held(4, [vec![grant(Role::Admin), by_writer.clone()], bodies()].concat());
+    let h = held(4, [vec![granted(Role::Admin), by_writer.clone()], bodies()].concat());
     assert_eq!(listed(&h, REG), [10].into(), "an admin's is in force");
     let mut exp = setting(19, 0, REG, KEPT);
     exp.expires = Some(at(9));

@@ -123,7 +123,7 @@ fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
     out
 }
 
-/// The widest paths into `t` over the timelines' current edges (each thing's roster now, its
+/// The widest paths into `t` over the timelines' current grants (each thing's roster now, its
 /// record grant included; with no timeline, its mint admin), as `View::roles_to` walks them for
 /// `role_now`: per holder reached, its role and the next step toward `t`.
 fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
@@ -147,8 +147,8 @@ fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
     best
 }
 
-/// One edge of a path: holder `h` on `x`, by the role commit in force or its record grant.
-fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
+/// One grant of a path: holder `h` on `x`, by the role commit in force or its record grant.
+fn grant(core: &Core, h: &Tid, x: &Tid) -> String {
     let on = core.timelines().on(x);
     let r = match &on {
         Some(o) => o.roster(osis_perm::At::now(crate::flows::now_ts(core))).get(h).map(|e| format!("{:?}{}", e.role, e.until.map_or(String::new(), |u| format!(" until {}", u.0)))),
@@ -186,7 +186,7 @@ fn role_lines(tx: &mut crate::engine::Tx<'_>, t: &Tid, out: &mut String) -> Resu
         let mut x = id;
         let mut n = 0;
         while let Some((_, Some(next))) = paths.get(&x) {
-            steps.push(edge(core, &x, next));
+            steps.push(grant(core, &x, next));
             steps.push(label(core, next));
             x = *next;
             n += 1;
@@ -298,7 +298,7 @@ impl Engine {
     /// (notes/test-harnesses.md, Why kept and row dumps): the role `rotation::role_here` gives and
     /// the role commits' (`rotation::role_here`); per identity of the node (account, itself, key
     /// actors) its role and the widest current path to `t` (direct, chain, account),
-    /// each edge by the role commit in force or the record grant; the secrets held of the actor `t`'s derive from, with that actor's role
+    /// each grant by the role commit in force or the record grant; the secrets held of the actor `t`'s derive from, with that actor's role
     /// when it is another, and `lost_due`'s clauses (without its side effects).
     #[doc(hidden)]
     pub fn why_role(&mut self, t: &Tid) -> String {

@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A step ID or a delete key: 32 bytes.
 pub type Key32 = [u8; 32];
-/// The derivation over the engine's held set: its holders things or keys (a key hop's edge
-/// writes, `signers.0`'s, are evidence as any edge's).
+/// The derivation over the engine's held set: its holders things or keys (a key hop's grant
+/// writes, `signers.0`'s, are evidence as any grant's).
 pub type Ev = Evidence<CommitId, Tid, Key32, Holder>;
 /// The held copies with their parts as the derivation takes them.
 pub type Copies = super::HeldCopies<CommitId, Tid, Key32, Holder>;
@@ -67,7 +67,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
     let mut steps_at: Vec<(Tid, usize, usize)> = Vec::new();
     {
         let core: &Core = tx.core;
-        let rc = core.ix.held.edge_commit(&id).cloned();
+        let rc = core.ix.held.grant_commit(&id).cloned();
         // the mint admins a path's shape reads: up the chains of the signer, the path's members
         // and the thing written
         let minted = |ts: &mut dyn Iterator<Item = Tid>| -> BTreeMap<Tid, Holder> {
@@ -85,10 +85,10 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
             out
         };
         let key = crate::apply::validity::signing_key(core, &m.view);
-        let hops = |t: &Tid, edge_class: bool| -> Option<Vec<(Holder, Tid)>> {
+        let hops = |t: &Tid, grant_class: bool| -> Option<Vec<(Holder, Tid)>> {
             let (along, direct, _) = crate::apply::validity::stated(&h, &m.view, t)?;
             let mint = minted(&mut along.iter().copied().chain([h.signer, *t]));
-            Some(osis_perm::paths::hops(&mint, key, h.signer, &along, direct, *t, None, edge_class))
+            Some(osis_perm::paths::hops(&mint, key, h.signer, &along, direct, *t, None, grant_class))
         };
         for (ai, a) in h.aspects.iter().enumerate() {
             let t = a.tid;
@@ -101,7 +101,7 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
                 .flat_map(|(level, key)| bases.iter().map(move |base| Del { base: *base, level, key }))
                 .collect();
             let on = parts.entry(t).or_default();
-            // an edge aspect's parts: one per grant write there, things' on `roles.0`, keys' on
+            // a grant aspect's parts: one per grant write there, things' on `roles.0`, keys' on
             // `signers.0`
             let writes: Vec<(usize, &osis_perm::GrantOp)> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
                 (Some(rc), Some(g)) => rc.ops.iter().enumerate().filter(|(_, o)| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),

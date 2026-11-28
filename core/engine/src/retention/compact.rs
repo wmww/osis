@@ -1249,8 +1249,8 @@ mod tests {
             let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
             lp.hold(t);
-            let edge = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
-            lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
+            let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
+            lp.peers[0].engine.grant(&t, &b, &grant(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             let (m_ak, n_ak) = (Ak::new("x:m.0").unwrap(), Ak::new("x:n.0").unwrap());
             let set = |lp: &mut LocalPeer, ak: &Ak, k: &str| {
@@ -1267,7 +1267,7 @@ mod tests {
             }
             lp.sync_all().unwrap();
             lp.advance(10);
-            lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: b, new: Some(edge(Role::Read)), retain: None }).unwrap();
+            lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: b, new: Some(grant(Role::Read)), retain: None }).unwrap();
             lp.sync_all().unwrap();
             let l = lp.peers[1].engine.compaction_load().unwrap().into_iter().find(|l| l.ak == m_ak).unwrap();
             assert!(l.bodies >= 8 && l.held > FACTOR * l.snapshot + l.largest, "over the trigger: {l:?}");
@@ -1279,7 +1279,7 @@ mod tests {
                 assert!(lp.peers[1].engine.compactions().unwrap().is_empty(), "still a reader");
             }
             lp.advance(10);
-            lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
+            lp.peers[0].engine.grant(&t, &b, &grant(Role::Write)).unwrap();
             lp.sync_all().unwrap();
             let e = &mut lp.peers[1].engine;
             osis_base::costs::take();

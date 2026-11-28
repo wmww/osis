@@ -605,7 +605,7 @@ fn the_reference_takes_writes_at_the_worlds_time_spec_permissions_6() {
 // through thing 0, its account's read there, as the model says (failed while the model counted a
 // record grant only where the thing's roster is read: it had node 2 keep thing 1 unread).
 #[test]
-fn a_record_edge_is_read_through_where_its_thing_is_held_spec_sync_set_2() {
+fn a_record_grant_is_read_through_where_its_thing_is_held_spec_sync_set_2() {
     use crate::harness::history::reads;
     use crate::harness::script::*;
     let mut w = holds_on(0, 3, 3, &[New(1), NewIn(1, 0), Give(1, 1, Holder::Node(2), Syncs), Strong(2, None, 1), Give(1, 0, Holder::Node(2), Reads)], String::new(), false);

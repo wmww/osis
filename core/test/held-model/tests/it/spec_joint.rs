@@ -77,7 +77,7 @@ fn joint_holds_on_a_slice() {
 }
 
 /// K (a member of A) reaches D through [A], [A, O] and [A, H, O]; W removes A on O. D's entries
-/// lack the removal (no body of D rests on it); O stays on a path, so O's stub, cut to the edges
+/// lack the removal (no body of D rests on it); O stays on a path, so O's stub, cut to the grants
 /// into it from the path's holders, has the removal with the grant: K, syncing D alone with its
 /// paths' stubs, does not act along the removed hop. Holding stubs without their removals, it
 /// does.
@@ -88,13 +88,13 @@ fn joint_a_removed_hop_reaches_the_actor_through_the_stub() {
     let pw = roles_model::paths::World::new(&[(X, A), (W, O), (Y, D), (W, H)]);
     let mut w = World::new(pw, &[A, O, D, H]);
     let (x, wn, y) = (w.node(true, &[A]), w.node(true, &[O, H]), w.node(true, &[D]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], H, A, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 1, &[], O, H, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, O, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(wn, |p| p.edge(W, 2, &[], O, A, Role::None, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], O, A, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], H, A, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 1, &[], O, H, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, O, Role::Write, &[]));
+    w.write(y, |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(wn, |p| p.grant(W, 2, &[], O, A, Role::None, &[]));
     let acts = |j: Joint| joint(w.clone(), j).into_iter().filter(|f| f.prop == "J-act").count();
     assert_eq!(acts(Joint::Paths), 0);
     assert!(acts(Joint::Grants) > 0);
@@ -113,12 +113,12 @@ fn joint_a_stub_carries_a_lowering_with_the_hop_it_undoes() {
     let mut w = World::new(pw, &[A, O, H]);
     let (x, h) = (w.node(true, &[A, O]), w.node(true, &[H]));
     w.node(true, &[O]);
-    w.write(h, |p| p.edge(W, 1, &[], H, Z, Role::Admin, &[]));
-    w.write(h, |p| p.edge(W, 1, &[], H, O, Role::Write, &[]));
+    w.write(h, |p| p.grant(W, 1, &[], H, Z, Role::Admin, &[]));
+    w.write(h, |p| p.grant(W, 1, &[], H, O, Role::Write, &[]));
     w.write(h, |p| p.content(Z, 1, &[], H));
-    w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Admin, &[]));
-    w.write(x, |p| p.edge(Q, 1, &[], A, H, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 2, &[], A, Q, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Admin, &[]));
+    w.write(x, |p| p.grant(Q, 1, &[], A, H, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 2, &[], A, Q, Role::Write, &[]));
     let acts = |j: Joint| joint(w.clone(), j).into_iter().filter(|f| f.prop == "J-act").count();
     assert_eq!(acts(Joint::Paths), 0);
     assert_eq!(acts(Joint::WorldPaths), 0);

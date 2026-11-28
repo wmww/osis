@@ -8,7 +8,7 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, three as three_of, value_ak, world_of};
-use crate::harness::{World, edge, fixture_with, play};
+use crate::harness::{World, grant, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
@@ -517,7 +517,7 @@ fn covers_cover(purge_on_replace: bool) {
     });
     set_value(&mut w, 1, t, "v1");
     w.run();
-    w.write(2, |e| e.grant(&t, &a0, &edge(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
+    w.write(2, |e| e.grant(&t, &a0, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &a0, &[]))).unwrap();
     set_value(&mut w, 2, t, "v2");
     set_value(&mut w, 1, t, "v3");
     let d = w.node(0).account.unwrap();
@@ -559,7 +559,7 @@ fn every_held_blob_is_made_again_from_its_seal() {
     for (i, ts) in [(1, vec![a, c]), (2, vec![c])] {
         let to = w.node(i).account.unwrap();
         for t in ts {
-            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
+            w.write(0, |e| e.grant(&t, &to, &grant(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
             let d = w.node(i).account.unwrap();
             w.write(i, |e| {
                 let mut m = Mutation::new();
@@ -651,7 +651,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {
         let to = w.node(i).account.unwrap();
         for t in ts {
-            w.write(0, |e| e.grant(&t, &to, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
+            w.write(0, |e| e.grant(&t, &to, &grant(Role::Write)).and_then(|_| e.signal_grant(&t, &to, &[]))).unwrap();
             let d = w.node(i).account.unwrap();
             w.write(i, |e| {
                 let mut m = Mutation::new();

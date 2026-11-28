@@ -2,7 +2,7 @@
 //! check (spec/permissions.md §2 Granting to a thing); KEM key due (KemKeys.tla `KK_written`).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, rotate_as, synced};
+use super::tests::{grant, rotate_as, synced};
 use crate::error::Error;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -61,7 +61,7 @@ fn a_grant_rotates_the_holders_roles_first_spec_permissions_2() {
     let mut lp = synced(1);
     let (h, g) = (plain(&mut lp, 0, &[0]), plain(&mut lp, 0, &[0]));
     let before = read_epoch(&mut lp, 0, h);
-    lp.peers[0].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &h, &grant(Role::Read)).unwrap();
     assert_ne!(read_epoch(&mut lp, 0, h), before, "rotated");
     assert_eq!(kem_roles(&mut lp, 0, h), BTreeSet::from([Role::Sync, Role::Read]));
 }
@@ -74,12 +74,12 @@ fn a_granter_that_may_not_rotate_the_holder_is_refused_spec_permissions_2() {
     let mut lp = synced(2);
     let p1 = lp.peers[1].engine.tid();
     let h = plain(&mut lp, 0, &[0, 1]);
-    lp.peers[0].engine.grant(&h, &p1, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&h, &p1, &grant(Role::Write)).unwrap();
     let g = plain(&mut lp, 1, &[0, 1]);
     lp.sync_all().unwrap();
-    let e = lp.peers[1].engine.grant(&g, &h, &edge(Role::Admin)).unwrap_err();
+    let e = lp.peers[1].engine.grant(&g, &h, &grant(Role::Admin)).unwrap_err();
     assert!(matches!(e, Error::Misuse(s) if s.contains("KEM")), "{e:?}");
-    lp.peers[1].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&g, &h, &grant(Role::Read)).unwrap();
     assert_eq!(kem_roles(&mut lp, 1, h), BTreeSet::from([Role::Sync, Role::Read]));
 }
 
@@ -90,7 +90,7 @@ fn a_granter_without_card_or_write_is_refused_spec_permissions_2() {
     let h = plain(&mut lp, 0, &[0]);
     let g = plain(&mut lp, 1, &[1]);
     lp.sync_all().unwrap();
-    let e = lp.peers[1].engine.grant(&g, &h, &edge(Role::Read)).unwrap_err();
+    let e = lp.peers[1].engine.grant(&g, &h, &grant(Role::Read)).unwrap_err();
     assert!(matches!(e, Error::Permission { tid, needs: Role::Write } if tid == h), "{e:?}");
 }
 
@@ -105,11 +105,11 @@ fn a_keyset_carries_a_kem_key_where_the_one_it_supersedes_did_spec_crypto_3() {
     let p1 = lp.peers[1].engine.tid();
     let m = plain(&mut lp, 0, &[0, 1]);
     let x = plain(&mut lp, 0, &[0]);
-    lp.peers[0].engine.grant(&x, &m, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&m, &p1, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &m, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&m, &p1, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let a = plain(&mut lp, 1, &[0, 1]);
-    lp.peers[1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
     lp.peers[0].engine.demote(&x, &Demotion { holder: m, new: None, retain: None }).unwrap();
     rotate_as(&mut lp, 0, m, &BTreeSet::from([Role::Sync, Role::Read]), &[]).unwrap();
     assert!(kem_roles(&mut lp, 0, m).contains(&Role::Read), "k2 carries a KEM key");
@@ -131,13 +131,13 @@ fn a_reader_holding_the_holders_current_keys_grants_spec_permissions_2() {
     let p1 = lp.peers[1].engine.tid();
     let h = plain(&mut lp, 0, &[0, 1]);
     let x = plain(&mut lp, 0, &[0]);
-    lp.peers[0].engine.grant(&x, &h, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&h, &p1, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &h, &grant(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&h, &p1, &grant(Role::Read)).unwrap();
     let g = plain(&mut lp, 1, &[0, 1]);
     lp.sync_all().unwrap();
     let epoch = read_epoch(&mut lp, 1, h);
     assert_eq!(read_epoch(&mut lp, 0, h), epoch, "peer 1 holds H's current read keyset");
     assert!(lp.peers[1].engine.core.role_now(&p1, &h) < Some(Role::Write));
-    lp.peers[1].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&g, &h, &grant(Role::Read)).unwrap();
     assert_eq!(read_epoch(&mut lp, 1, h), epoch, "nothing of H rotated");
 }

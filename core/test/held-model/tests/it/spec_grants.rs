@@ -1,6 +1,6 @@
 //! Which grant writes are evidence (spec/permissions.md §4 Evidence of a commit; E1,
-//! notes/a2-spec/README.md Open 2): every held grant write on a commit's key hop, on each edge of
-//! its stated path and on each edge its own grant writes set, whatever its validity; the entry a
+//! notes/a2-spec/README.md Open 2): every held grant write on a commit's key hop, on each grant of
+//! its stated path and on each grant its own grant writes set, whatever its validity; the entry a
 //! reset names (spec/permissions.md §2); pending on missing evidence (spec/commits.md §4
 //! Unjudgeable). Hand worlds and the cost a party can force.
 use crate::spec_evidence::fails;
@@ -15,22 +15,22 @@ fn base() -> (World, [usize; 4]) {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let n = [w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A])];
-    w.write(n[0], |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(n[1], |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    w.write(n[0], |p| p.grant(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(n[1], |p| p.grant(Y, 1, &[], D, A, Role::Write, &[]));
     (w, n)
 }
 
-/// Cost (finding 15): every grant write on an edge D's bodies use is a copy under D, whoever made
+/// Cost (finding 15): every grant write on a grant D's bodies use is a copy under D, whoever made
 /// it and whether or not it applies: an admin's grants, a writer's finalizes (ending nothing: Q's
 /// grant has no `until`), a may-grant holder's grants onto a holder that has one (applying
 /// nowhere). 27 more of each are 27 more copies; every property holds. A non-admin's junk alike
 /// (`spec_evidence::f11_*`).
 #[test]
-fn every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4() {
+fn every_grant_write_on_a_used_grant_is_a_copy_spec_permissions_4() {
     let copies = |n: u32, write: &dyn Fn(&mut World, [usize; 4], u32)| {
         let (mut w, nodes) = base();
         w.write(nodes[0], |p| p.push(X, 1, &[], A, paths::Kind::set(K, Role::Write).may_grant()));
-        w.write(nodes[0], |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
+        w.write(nodes[0], |p| p.grant(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
             write(&mut w, nodes, i);
         }
@@ -40,7 +40,7 @@ fn every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4() {
         w.copies(&st, D).len()
     };
     let admin = |w: &mut World, n: [usize; 4], i: u32| {
-        w.write(n[0], |p| p.edge(X, 2 + i, &[], A, Q, Role::Write, &[]));
+        w.write(n[0], |p| p.grant(X, 2 + i, &[], A, Q, Role::Write, &[]));
     };
     let finalize = |w: &mut World, n: [usize; 4], i: u32| {
         w.write(n[2], |p| p.push(K, 2 + i, &[], A, paths::Kind::finalize(Q)));
@@ -53,12 +53,12 @@ fn every_edge_write_on_a_used_edge_is_a_copy_spec_permissions_4() {
     }
 }
 
-/// Cost, counted: copies under D are the grant writes on the outside edges its bodies' paths use,
-/// one more per re-grant on a used outside edge (role churn; churn inside the unit is bodies), and
+/// Cost, counted: copies under D are the grant writes on the outside grants its bodies' paths use,
+/// one more per re-grant on a used outside grant (role churn; churn inside the unit is bodies), and
 /// repeated under every sync ID whose unit carries D (each counts the path things outside its own
 /// unit). Flat in writes: `spec_evidence::p6_*`.
 #[test]
-fn cost_copies_follow_role_churn_on_used_edges_never_writes() {
+fn cost_copies_follow_role_churn_on_used_grants_never_writes() {
     for churn in [1, 10] {
         assert_eq!(cost_with(3, 2, 2, churn, 1).copies, 2 + churn);
         assert_eq!(cost_with(3, 2, 0, churn, 1).copies, 0);
@@ -69,39 +69,39 @@ fn cost_copies_follow_role_churn_on_used_edges_never_writes() {
 }
 
 /// Finding 9: X removes K and Q (a reader of A) from A in one commit C; K writes D through [A]
-/// after it. C's part on Q's edge resets the entry X's grant to Q created, so C applies none of its
+/// after it. C's part on Q's grant resets the entry X's grant to Q created, so C applies none of its
 /// grant writes until that grant is held (spec/permissions.md §2). Evidence brings every grant write
-/// on each edge C sets (`Rule::commit_edges`): D's reader holds the grant, applies C and judges K's
+/// on each grant C sets (`Rule::commit_grants`): D's reader holds the grant, applies C and judges K's
 /// write invalid, as the node holding everything. The control (C's own parts alone) leaves D's
 /// reader with C waiting, and K's write valid there (P1).
 #[test]
 fn f9_a_removal_of_two_holders_waits_for_each_creation_spec_permissions_2() {
     let (mut w, [x, _, _, _]) = base();
     let kn = w.node(true, &[A]);
-    let g = w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Read, &[]));
+    let g = w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Read, &[]));
     let ids = w.write_parts(x, |p| p.commit(X, 5, &[], A, vec![paths::Kind::set(K, Role::None), paths::Kind::set(Q, Role::None)]));
     let c = w.write(kn, |p| p.content(K, 6, &[A], D));
     assert_eq!(w.creation(ids[1]), Some(g));
     assert_eq!(fails(&w, &Rule::fixed()), vec![]);
-    let f = fails(&w, &Rule { commit_edges: false, ..Rule::fixed() });
+    let f = fails(&w, &Rule { commit_grants: false, ..Rule::fixed() });
     assert!(f.iter().any(|f| f.prop == "P1" && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
 /// The entry a reset names (spec/permissions.md §2 Grant writes): the one the write in force on its
-/// edge put in its writer's walk. X grants Q read (g1) and changes it to write (g2); K, a writer of
+/// grant put in its writer's walk. X grants Q read (g1) and changes it to write (g2); K, a writer of
 /// A without admin, grants Q admin (junk, applied nowhere); X's removal of Q names g2's entry. A
 /// second removal finds no grant in force: it resets an entry of its own (none named), as does a
 /// removal of a holder never granted and of a record grant.
 #[test]
 fn a_reset_names_the_entry_its_writers_walk_has_in_force_spec_permissions_2() {
     let (mut w, [x, _, k, _]) = base();
-    let g1 = w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Read, &[]));
-    let g2 = w.write(x, |p| p.edge(X, 2, &[], A, Q, Role::Write, &[]));
-    w.write(k, |p| p.edge(K, 3, &[], A, Q, Role::Admin, &[]));
-    let r1 = w.write(x, |p| p.edge(X, 4, &[], A, Q, Role::None, &[]));
-    let r2 = w.write(x, |p| p.edge(X, 5, &[], A, Q, Role::None, &[]));
-    let never = w.write(x, |p| p.edge(X, 5, &[], A, Z, Role::None, &[]));
-    let record = w.write(x, |p| p.edge(X, 6, &[], A, X, Role::None, &[]));
+    let g1 = w.write(x, |p| p.grant(X, 1, &[], A, Q, Role::Read, &[]));
+    let g2 = w.write(x, |p| p.grant(X, 2, &[], A, Q, Role::Write, &[]));
+    w.write(k, |p| p.grant(K, 3, &[], A, Q, Role::Admin, &[]));
+    let r1 = w.write(x, |p| p.grant(X, 4, &[], A, Q, Role::None, &[]));
+    let r2 = w.write(x, |p| p.grant(X, 5, &[], A, Q, Role::None, &[]));
+    let never = w.write(x, |p| p.grant(X, 5, &[], A, Z, Role::None, &[]));
+    let record = w.write(x, |p| p.grant(X, 6, &[], A, X, Role::None, &[]));
     assert_eq!((w.creation(g1), w.creation(g2), w.creation(r1)), (None, Some(g1), Some(g2)));
     assert_eq!((w.creation(r2), w.creation(never), w.creation(record)), (None, None, None));
 }
@@ -111,10 +111,10 @@ fn a_reset_names_the_entry_its_writers_walk_has_in_force_spec_permissions_2() {
 /// key hop, so D's reader holds the key's grant as a copy beside it and judges Q's write as the
 /// node holding everything does (finding 42).
 #[test]
-fn f42_the_edge_writes_on_a_writes_key_hop_are_evidence_spec_permissions_4() {
+fn f42_the_grant_writes_on_a_writes_key_hop_are_evidence_spec_permissions_4() {
     const KEY: Thing = paths::KEYS | 0x40;
     let (mut w, [x, _, _, q]) = base();
-    let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+    let grant = w.write(x, |p| p.grant(X, 2, &[], A, KEY, Role::Admin, &[]));
     w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
     let c = w.write(q, |p| p.content(Q, 4, &[A], D));
     let rule = Rule::fixed();
@@ -134,7 +134,7 @@ fn f43_a_key_hop_no_write_puts_pends_until_one_is_held_spec_commits_4() {
     use held_model::evidence::Verdict::{Pending, Valid};
     const KEY: Thing = paths::KEYS | 0x40;
     let (mut w, [x, _, _, q]) = base();
-    let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+    let grant = w.write(x, |p| p.grant(X, 2, &[], A, KEY, Role::Admin, &[]));
     let g = w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
     let c = w.write(q, |p| p.content(Q, 4, &[A], D));
     let st = w.run(&Rule::fixed(), |_| {});
@@ -152,10 +152,10 @@ fn f43_a_key_hop_no_write_puts_pends_until_one_is_held_spec_commits_4() {
 #[test]
 fn a_write_that_pends_stalls_no_later_part_spec_commits_4() {
     let (mut w, [x, _, k, q]) = base();
-    let forged = w.write(q, |p| p.edge(Q, 3, &[], A, K, Role::Admin, &[]));
+    let forged = w.write(q, |p| p.grant(Q, 3, &[], A, K, Role::Admin, &[]));
     let honest = w.write(k, |p| p.content(K, 4, &[], A));
     let early = w.write(q, |p| p.content(Q, 5, &[], A));
-    w.write(x, |p| p.edge(X, 6, &[], A, Q, Role::Write, &[]));
+    w.write(x, |p| p.grant(X, 6, &[], A, Q, Role::Write, &[]));
     let all: Set = (0..w.w.commits.len()).collect();
     assert!(w.pend(&all, forged));
     assert!(!w.pend(&all, honest));

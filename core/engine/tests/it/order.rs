@@ -57,7 +57,7 @@ pub(crate) enum Step {
     /// `Write` plus a write of `t:rec.0` under default purge-by in the same commit: two bodies
     /// when `op` has a keep bound (`generate`'s parts group draws it under purge on replace).
     Mixed { by: usize, t: usize, op: u8, k: u8, v: u8 },
-    /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
+    /// `holder`'s grant on `t` set to `role` (a grant, re-grant or demotion without frontier).
     SetGrant { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
     /// the may-grant flag: a bare grant write like `SetGrant`, or with `flow` through `Engine::grant` (its
@@ -68,7 +68,7 @@ pub(crate) enum Step {
     /// An explicit demotion (removal, or to read) with a frontier as of one of the holder's
     /// writes (`at`: 0 before all of them, backdated; the last: now).
     Demote { by: usize, t: usize, holder: usize, at: u8, to_read: bool },
-    /// `by` removes its own edge on `t`.
+    /// `by` removes its own grant on `t`.
     Leave { by: usize, t: usize },
     /// A compaction snapshot of one aspect (`op` as in `Write`).
     Compact { by: usize, t: usize, op: u8 },
@@ -127,7 +127,7 @@ pub(crate) enum Step {
     NestedItem { by: usize, other: usize, t: usize, k: u8, compact: bool, also: bool },
     /// A commit past the writer's rules (`Engine::commit_hostile`), `how` % 4: a content write on
     /// `a` (for odd `v` acting for `b`); one on each of `a` and `b`; one role commit setting another
-    /// peer's edge on both; `by` raising its own edge on `a`. The author is told of a thing it does
+    /// peer's grant on both; `by` raising its own grant on `a`. The author is told of a thing it does
     /// not know first, so it may hold no path to it.
     Forged { by: usize, a: usize, b: usize, how: u8, op: u8, k: u8, v: u8 },
     /// A commit past the writer's rules with a part that hashes right and is bad by itself, `how` % 2:
@@ -138,10 +138,10 @@ pub(crate) enum Step {
     BigDemote { by: usize, t: usize, holder: usize },
     // for the judgment vectors and scripted examples (`generate` draws `NewTop`, `Setting`,
     // `PurgeSet`, `Two` and `TwoGrants` too):
-    /// A new thing whose mint admin is peer `by` itself: no edge of G reaches it.
+    /// A new thing whose mint admin is peer `by` itself: no grant of G reaches it.
     NewTop { by: usize },
     /// A bare grant write past the writer's rules (`Engine::commit_hostile`):
-    /// `holder`'s edge on `t` set to `role` with the may-grant flag or not, or removed.
+    /// `holder`'s grant on `t` set to `role` with the may-grant flag or not, or removed.
     Hostile { by: usize, t: usize, holder: usize, role: Option<Role>, may_grant: bool },
     /// A `keys.0` write of one field of `t`, unchecked: 1 (`write`) to none, 5 (`deposit_seed`).
     HostileKeys { by: usize, t: usize, field: u64 },
@@ -157,7 +157,7 @@ pub(crate) enum Step {
     Two { by: usize, a: usize, b: usize, v: u8 },
     /// `Two` on three things.
     Three { by: usize, a: usize, b: usize, c: usize, v: u8 },
-    /// One role commit setting `holder`'s edge on both things `a` and `b`, unchecked.
+    /// One role commit setting `holder`'s grant on both things `a` and `b`, unchecked.
     TwoGrants { by: usize, a: usize, b: usize, holder: usize, role: Role },
     /// `by` puts `item("v1", 1)` at key `k` of `t:map.0`, sends that commit to `other` alone,
     /// which sets the entry's field 1 to 7 and compacts. `Nested` writes untyped, so its entries
@@ -186,7 +186,7 @@ pub(crate) enum Step {
     /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a dependent
     /// target is made independent first.
     GrantFlow { by: usize, t: usize, holder: usize, role: Role },
-    /// `by` removes `holder`'s edge (a peer, or 3: G) on `t`, or lowers it to write, through
+    /// `by` removes `holder`'s grant (a peer, or 3: G) on `t`, or lowers it to write, through
     /// `Engine::demote`: a mint admin's record grant included (a removal of no entry,
     /// spec/permissions.md §2).
     RemoveFlow { by: usize, t: usize, holder: usize, lower: bool },
@@ -542,8 +542,8 @@ fn write_op(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, k: u8
     }
 }
 
-/// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
-fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Grant>) -> Mutation {
+/// `holder`'s grant on `t` as remove + put (`None`: removed), spec/permissions.md §2.
+fn grant_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Grant>) -> Mutation {
     let mut m = Mutation::new();
     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
     if let Some(e) = &e {
@@ -776,7 +776,7 @@ fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
             }
         }
     }
-    lp.peers[by].engine.grant(&g, &reader, &edge(Role::Read)).unwrap().commits
+    lp.peers[by].engine.grant(&g, &reader, &grant(Role::Read)).unwrap().commits
 }
 
 /// When a node under test makes its account: its commits date from before any clock under test,
@@ -810,8 +810,8 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
     m.set(g, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.hold(g);
-    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[1], Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[2], Some(grant(Role::Admin)), None);
     let grant = grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
     // the node under test (`Played::reader`), apart from the three: peer 3, from its access
@@ -865,7 +865,7 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
     }
     let mut grants = Vec::new();
     for (h, role) in (0..3).filter(|j| *j != by).map(|j| (ids[j], if write == Some(j) { Role::Write } else { Role::Read })).chain([(reader, Role::Read)]) {
-        let made = lp.peers[by].engine.grant(&t, &h, &edge(role)).unwrap().commits;
+        let made = lp.peers[by].engine.grant(&t, &h, &grant(role)).unwrap().commits;
         access.grants.extend(made.iter().map(|id| (h, lp.peers[by].engine.package(id).unwrap().unwrap())));
         grants.extend(made);
     }
@@ -1009,7 +1009,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
         let th = |t: usize| things[t % things.len()];
         // why this step made no commit, when refused
         let mut no: Option<String> = None;
-        // a `RemoveFlow` of a mint admin's edge
+        // a `RemoveFlow` of a mint admin's grant
         let mut record = false;
         let acted = match st_ {
             Step::Aim(_) | Step::Old(_) | Step::Typed { .. } | Step::NestedItem { .. } => unreachable!("aimed and twinned above"),
@@ -1037,16 +1037,16 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 Some(by)
             }
             Step::SetGrant { by, t, holder, role } => {
-                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(edge));
+                let m = grant_write(&lp.peers[by].engine, th(t), ids[holder], role.map(grant));
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
             Step::Grant { by, t, holder, role, until, may_grant, flow } => {
-                let e = osis_schema::core_types::Grant { until: until.map(|ms| Time(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
+                let e = osis_schema::core_types::Grant { until: until.map(|ms| Time(lp.peers[by].engine.now().0 + ms)), may_grant, ..grant(role) };
                 if flow {
                     lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
-                    let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], Some(e));
+                    let m = grant_write(&lp.peers[by].engine, th(t), ids[holder], Some(e));
                     lp.peers[by].commit(m).unwrap().expect("a grant writes");
                 }
                 Some(by)
@@ -1070,7 +1070,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 let f = lp.peers[by].engine.frontier(&scope, as_of);
                 no = why(&f);
                 if let Ok(f) = f {
-                    let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], to_read.then_some(edge(Role::Read)));
+                    let mut m = grant_write(&lp.peers[by].engine, t, ids[holder], to_read.then_some(grant(Role::Read)));
                     m.frontier(osis_perm::Frontier::new(f.commits));
                     // the histories reach every state a thing may be in, adminless included
                     no = why(&lp.peers[by].engine.leaving_adminless(|e| e.commit(m)));
@@ -1233,7 +1233,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 }
                 let other = ids[(by + 1 + v as usize % 2) % 3];
                 let mut m = Mutation::new();
-                let edge_on = |m: &mut Mutation, t: Tid, holder: Tid, e: osis_schema::core_types::Grant| {
+                let grant_on = |m: &mut Mutation, t: Tid, holder: Tid, e: osis_schema::core_types::Grant| {
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(e.to_value()) }).unwrap();
                 };
@@ -1256,10 +1256,10 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         }
                     }
                     2 => {
-                        edge_on(&mut m, a, other, edge(Role::Write));
-                        edge_on(&mut m, b, other, edge(Role::Write));
+                        grant_on(&mut m, a, other, grant(Role::Write));
+                        grant_on(&mut m, b, other, grant(Role::Write));
                     }
-                    _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Grant { may_grant: v % 2 == 0, ..edge(Role::Admin) }),
+                    _ => grant_on(&mut m, a, ids[by], osis_schema::core_types::Grant { may_grant: v % 2 == 0, ..grant(Role::Admin) }),
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
@@ -1284,7 +1284,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                     bad.insert((b, Ak::new("t:reg.0").unwrap()));
                 } else {
                     for x in [a, b] {
-                        m.op(x, &roles, PathOp { path: vec![PathSeg::Key(Value::Weak(other))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+                        m.op(x, &roles, PathOp { path: vec![PathSeg::Key(Value::Weak(other))], op: Op::Set(grant(Role::Write).to_value()) }).unwrap();
                     }
                     bad.insert((b, Ak::new("roles.0").unwrap()));
                 }
@@ -1310,7 +1310,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         c[..4].copy_from_slice(&b);
                         f.commits.insert(CommitId(c));
                     }
-                    let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
+                    let mut m = grant_write(&lp.peers[by].engine, t, ids[holder], None);
                     m.frontier(osis_perm::Frontier::new(f.commits));
                     no = why(&lp.peers[by].commit(m));
                 }
@@ -1363,13 +1363,13 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             }
             Step::GrantFlow { by, t, holder, role } => {
                 let h = if holder < 3 { ids[holder] } else { things[0] };
-                no = why(&lp.peers[by].engine.grant(&th(t), &h, &edge(role)));
+                no = why(&lp.peers[by].engine.grant(&th(t), &h, &grant(role)));
                 Some(by)
             }
             Step::RemoveFlow { by, t, holder, lower } => {
                 let h = if holder < 3 { ids[holder] } else { things[0] };
                 record = firsts.get(&th(t)) == Some(&h);
-                let d = osis_engine::flows::Demotion { holder: h, new: lower.then(|| edge(Role::Write)), retain: None };
+                let d = osis_engine::flows::Demotion { holder: h, new: lower.then(|| grant(Role::Write)), retain: None };
                 no = why(&lp.peers[by].engine.demote(&th(t), &d));
                 Some(by)
             }
@@ -1386,7 +1386,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 Some(by)
             }
             Step::Hostile { by, t, holder, role, may_grant } => {
-                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Grant { may_grant, ..edge(r) }));
+                let m = grant_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Grant { may_grant, ..grant(r) }));
                 noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("a grant write writes");
                 Some(by)
             }
@@ -1469,7 +1469,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 let mut m = Mutation::new();
                 for x in [th(a), th(b)] {
                     m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(ids[holder])) }).unwrap();
-                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(ids[holder]))], op: Op::Set(edge(role).to_value()) }).unwrap();
+                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(ids[holder]))], op: Op::Set(grant(role).to_value()) }).unwrap();
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
@@ -1575,7 +1575,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         i += 1;
                     }
                 }
-                let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
+                let mut m = grant_write(&lp.peers[by].engine, t, ids[holder], None);
                 m.frontier(osis_perm::Frontier::new(f.commits));
                 let id = lp.peers[by].commit(m).unwrap().expect("a removal");
                 assert!(lp.peers[by].engine.header(&id).unwrap().links.frontier.is_some(), "the frontier goes by link");
@@ -4006,7 +4006,7 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h
 }
 
-/// The pack of the setup's grant on G to peer `to` (0's edge naming `to`'s account; `to` authors
+/// The pack of the setup's grant on G to peer `to` (0's grant naming `to`'s account; `to` authors
 /// a commit in the history).
 fn setup_grant(played: &Played, to: usize) -> usize {
     let decode = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
@@ -4312,8 +4312,8 @@ fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
     m.set(g, &KEPT, &s("k")).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.hold(g);
-    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[1], Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[2], Some(grant(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
     // the setup as made, so the fresh nodes are granted G before they take what it holds
@@ -4354,7 +4354,7 @@ fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
     let before = Time(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
-    let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
+    let mut m = grant_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(osis_perm::Frontier::new(f.commits));
     lp.peers[0].commit(m).unwrap().unwrap();
     let demote = take(&mut lp, 0);
@@ -4401,8 +4401,8 @@ fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     m.set(g, &KEPT, &s("k")).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.hold(g);
-    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[1], Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[2], Some(grant(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
     let set = |lp: &mut LocalPeer, i: usize, v: &str| {
@@ -4429,7 +4429,7 @@ fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
     let before = Time(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
-    let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
+    let mut m = grant_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(osis_perm::Frontier::new(f.commits));
     let demote = lp.peers[0].commit(m).unwrap().unwrap();
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
@@ -4477,7 +4477,7 @@ fn expired_late_part_reads_alike_spec_crdt_4_7() {
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();
     lp.hold(g);
-    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, g, ids[1], Some(grant(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
@@ -5028,7 +5028,7 @@ fn record_held_when_a_waiting_commit_applies_fetches_its_thrown_out_part_spec_co
     caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0, false);
 }
 
-// spec/commits.md §4 (Unjudgeable): as above for a role commit (edges on G and a new thing), which
+// spec/commits.md §4 (Unjudgeable): as above for a role commit (grants on G and a new thing), which
 // a pass applies before the creation: its part on the thing waits as a slot, and the creation's
 // record wakes it.
 #[test]
@@ -5175,8 +5175,8 @@ fn purge_of_a_part_dropped_while_invalid_reads_alike_spec_commits_5() {
 
 // spec/commits.md §4 Unjudgeable: 2 makes a record-only thing t2 and removes from it G's grant it
 // never had, then makes u with admin t2; 0 (G's mint admin) forges one commit putting 2 write on t2
-// and u. The removal, ordered before the forgery, is a held write on G's edge on t2: the forgery's
-// part on t2 is judged there, invalid, and no write is held on the edge of its path to u, so that
+// and u. The removal, ordered before the forgery, is a held write on G's grant on t2: the forgery's
+// part on t2 is judged there, invalid, and no write is held on the grant of its path to u, so that
 // part waits; every node alike, as held-model says
 // (`receive::a_removal_ordered_before_a_part_is_evidence_spec_commits_4`).
 #[test]

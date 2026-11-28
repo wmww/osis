@@ -10,7 +10,7 @@
 - Network clients ship only with a client listener key that does not rotate with reach.
 
 ## Gaps
-- **Thin clients' sharing calls**: `grant`, `leave`, `make_link`, `wait_synced` are the node's only: their engine flows act with the node's authority and take no thing to act as, so a client row would be a confused deputy. Fix: the rest of `act_as` (issues/grant-rename-multi-actor.md).
+- **Thin clients' sharing calls**: `grant`, `leave`, `make_link`, `wait_synced` are the node's only: their engine flows act with the node's authority and take no thing to act as, so a client row would be a confused deputy. Fix: the rest of `act_as` (issues/act-as-several.md).
 - **Thin clients' schemas**: `register_schema` is the node's only (process-wide; a client's could retype the node's aspects), so a client's typed write reaches the node untyped unless the node itself registered it. Needs per-session schemas or a rule that the node itself registers them.
 - **A removed client's actor stays** with its secrets, one record per client ever added.
 - **Stalls**: one port worker per node serves every connection, and a big `write` holds the engine lock throughout, so a client stalls every caller (and the sync driver) as the node itself can; a client is less trusted. Per-connection workers would overlap only off-lock work.

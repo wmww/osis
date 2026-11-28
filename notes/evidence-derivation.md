@@ -21,7 +21,7 @@ S's evidence is the least set of copies holding:
 - **seeds**: the bodies' known path edges and listed delete keys (`atoms`, counted per body).
 - **closure**: an edge brings every held copy with a grant write on it; a delete key brings every held copy recording a step from its base's genesis to a step bearing the key (the parent chain of each bearing step, as far as held steps reach); a member copy (outside the unit) brings its parts' known path edges, the edge each of its grant writes sets, and the keys it lists.
 
-"The edge each of its grant writes sets" is finding 9's clause: a removal applies only once the creations of the entries it resets are held (spec/permissions.md §2), and those creations are writes on the edges the commit writes. held-model's `Rule::commit_edges` brings the edges of the commit's *other* parts; the two give the same members (a member's own edge's writes are already in: it entered by that edge, or as a travel seed whose edge's writes all name the same open holder).
+"The edge each of its grant writes sets" is finding 9's clause: a removal applies only once the creations of the entries it resets are held (spec/permissions.md §2), and those creations are writes on the edges the commit writes. held-model's `Rule::commit_grants` brings the edges of the commit's *other* parts; the two give the same members (a member's own edge's writes are already in: it entered by that edge, or as a travel seed whose edge's writes all name the same open holder).
 
 Unjoined paths and junk (a non-admin's writes on a used edge) are copies under E1: the roster leak and junk copies of notes/a2-spec/README.md Open 2.
 
@@ -52,7 +52,7 @@ A removal reaches a thing other than its own by the evidence closure (wherever a
 
 ## The engine's input (`evidence::held`)
 `held::copies` reads every commit in `ix.commits` (any validity) into copies, from the index and the held `sync.0` bodies, nothing kept:
-- Per aspect on a thing one part; a `roles.0` aspect one part per grant write its commit makes there (`ix.held.edge_commit`: kind, holder, `gives_read` from the edge, no self-removal), hops by `osis_perm::paths::hops` along the role commit's one path; every other aspect and each purge item a content part, hops from `validity::stated` (`None` while a split entry is unopened). An unresolved removal (no ops) is one content part.
+- Per aspect on a thing one part; a `roles.0` aspect one part per grant write its commit makes there (`ix.held.grant_commit`: kind, holder, `gives_read` from the edge, no self-removal), hops by `osis_perm::paths::hops` along the role commit's one path; every other aspect and each purge item a content part, hops from `validity::stated` (`None` while a split entry is unopened). An unresolved removal (no ops) is one content part.
 - `dels`: the aspect's header keys at levels 1 and 3, each for the thing up the record chain whose steps bear it.
 - `steps`: each step entry whose step a held `sync.0` body writes, walked in the fragment (a step joins the sync ID entry its genesis made, so a read of the delta alone shows none); snapshots included, which is how a role compaction keeps steps evidence (Open 4: a carried entry keeps its recording write's stamp).
 - Records: `held::mint`, every held record naming a mint admin.

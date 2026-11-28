@@ -33,13 +33,13 @@ fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(d);
-    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Write)), None);
+    set_grant(&mut lp.peers[0].engine, d, ids[2], Some(grant(Role::Admin)), None);
     // the fresh node's account, granted read on D: what it is handed of D applies (content of a
     // thing outside its node closure waits, spec/commits.md §4 Outside the node closure)
     let mut f = fresh_account();
     lp.meet(0, &mut f).unwrap();
-    set_edge(&mut lp.peers[0].engine, d, f.engine.tid(), Some(edge(Role::Read)), None);
+    set_grant(&mut lp.peers[0].engine, d, f.engine.tid(), Some(grant(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
     (lp, d)
@@ -891,7 +891,7 @@ fn vouched_copy_dates_at_its_write_spec_crdt_4_8() {
     let b = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
     lp.advance(1_000);
     let bob = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
+    set_grant(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
     lp.advance(1_000);
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&d, &ak(A)).unwrap(), Some(s("two")), "X vouched by B");
@@ -969,7 +969,7 @@ fn covered_drops_history(seed: u64) -> usize {
                 lp.peers[0].engine.snapshot(&d, &ak([A, B][below(2) as usize])).unwrap();
             }
             8 | 9 if !removed && i >= 6 => {
-                set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
+                set_grant(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
                 removed = true;
             }
             _ => {}

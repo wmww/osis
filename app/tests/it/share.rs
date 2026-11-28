@@ -83,7 +83,7 @@ fn reach_through_someone_elses_tag() {
 
 /// A grant that ends later still counts now: who can see it must not hide a current reader.
 #[test]
-fn reach_counts_an_edge_until_it_ends() {
+fn reach_counts_an_grant_until_it_ends() {
     let (a, b) = two_people();
     let tag = osis_kit::facets::create(&a, "tag").unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
