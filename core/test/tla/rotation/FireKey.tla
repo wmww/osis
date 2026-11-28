@@ -241,7 +241,7 @@ Masked == \E w \in {ReadF(seen["O"]), cm[StepF(seen["O"])].kw} :
 \* NoLeak (spec/requirements.md Permissions: "The holder stops reading new content once a
 \* party with the right to change the keys has done so knowing of the removal"): a fire
 \* taken while O holds a knowing honest rotation K, unmasked, is sealed to no epoch R
-\* holds, unless the key's commit is concurrent with K (neither's maker held the other;
+\* holds, unless the key's commit is concurrent with K (neither's rotator held the other;
 \* spec/crypto.md §4 Encrypting under: a keyset made without knowing a departure is
 \* sealed to).
 NoLeak == OKey # None /\ ~Masked =>

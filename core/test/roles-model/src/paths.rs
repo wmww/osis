@@ -2130,7 +2130,7 @@ impl Side {
 pub enum Withdraw {
     /// spec/crypto.md §4 as written: a valid rotation is current whatever it covers; the
     /// knowing re-key answers a current epoch not covering a known departure; a node withdraws
-    /// an epoch not current whose maker may not rotate.
+    /// an epoch not current whose rotator may not rotate.
     AsWritten,
     /// The fix: an epoch covering a departure the node's walk does not apply is the other
     /// side's: it is read, never current, supersedes nothing and is not answered.
@@ -2139,7 +2139,7 @@ pub enum Withdraw {
 
 #[derive(Clone, Debug)]
 pub struct Epoch {
-    pub maker: Thing,
+    pub rotator: Thing,
     pub covers: Set,
     pub boxes: Things,
     pub supersedes: BTreeSet<usize>,
@@ -2148,7 +2148,7 @@ pub struct Epoch {
 /// Every node holds every epoch; each pass, each node in turn rotates A when the rule says so.
 /// Returns the epochs (0 the first, valid everywhere) and the rotations made per pass.
 pub fn rotations(passes: usize, rule: Withdraw, sides: impl Fn(usize) -> Vec<Side>) -> (Vec<Epoch>, Vec<usize>) {
-    let mut eps = vec![Epoch { maker: 0, covers: Set::new(), boxes: Things::new(), supersedes: BTreeSet::new() }];
+    let mut eps = vec![Epoch { rotator: 0, covers: Set::new(), boxes: Things::new(), supersedes: BTreeSet::new() }];
     let mut per = vec![];
     for pass in 0..passes {
         let mut made = 0;
@@ -2156,12 +2156,12 @@ pub fn rotations(passes: usize, rule: Withdraw, sides: impl Fn(usize) -> Vec<Sid
             let cur = current(&eps, &s, rule);
             let counted = |i: usize| counts(&eps, i, &s, rule);
             let superseded = |i: usize| (0..eps.len()).any(|f| counted(f) && eps[f].supersedes.contains(&i));
-            let withdrawn: Vec<usize> = (1..eps.len()).filter(|&i| !counted(i) && !superseded(i) && (eps[i].maker == s.node || !s.admins.contains(&eps[i].maker))).collect();
+            let withdrawn: Vec<usize> = (1..eps.len()).filter(|&i| !counted(i) && !superseded(i) && (eps[i].rotator == s.node || !s.admins.contains(&eps[i].rotator))).collect();
             if !s.admins.contains(&s.node) || (!cur.is_empty() && cur.iter().all(|&i| eps[i].covers.is_superset(&s.departures)) && withdrawn.is_empty()) {
                 continue;
             }
             let supersedes = cur.into_iter().chain(withdrawn).collect();
-            eps.push(Epoch { maker: s.node, covers: s.departures.clone(), boxes: s.admins.clone(), supersedes });
+            eps.push(Epoch { rotator: s.node, covers: s.departures.clone(), boxes: s.admins.clone(), supersedes });
             made += 1;
         }
         per.push(made);
@@ -2170,7 +2170,7 @@ pub fn rotations(passes: usize, rule: Withdraw, sides: impl Fn(usize) -> Vec<Sid
 }
 
 fn counts(eps: &[Epoch], i: usize, s: &Side, rule: Withdraw) -> bool {
-    i == 0 || (s.admins.contains(&eps[i].maker) && (rule == Withdraw::AsWritten || eps[i].covers.is_subset(&s.departures)))
+    i == 0 || (s.admins.contains(&eps[i].rotator) && (rule == Withdraw::AsWritten || eps[i].covers.is_subset(&s.departures)))
 }
 
 /// The epochs current at a node: counting, superseded by no counting epoch.

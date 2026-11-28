@@ -17,7 +17,7 @@
 \* rule): its list keeps what it lists stale, but it anchors nothing and is no
 \* Seal candidate (a stale keyset Seal then gives is blocked). ListForeign: a
 \* rotation's keyset lists every current epoch (TRUE) or only those not
-\* foreign at its maker (FALSE, the rule; its history box carries every
+\* foreign at its rotator (FALSE, the rule; its history box carries every
 \* current one, which supersedes at holders of its secret).
 \* Unprompted rotations (any departure's) MaxU of U and MaxT of T per
 \* rotator. Left-out records stand while held (their causes are rotation

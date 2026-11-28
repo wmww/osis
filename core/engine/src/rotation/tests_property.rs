@@ -85,7 +85,7 @@ struct Run {
     /// box (actor, role, epoch, holder actor), the keyset, and the commits the writer held.
     resealed: Vec<(BoxAt, Epoch, BTreeSet<CommitId>)>,
     /// The holder actors (no peers) each rotation commit boxes, per role, each with the keyset
-    /// its box names, as its maker's state read just after it (`record`).
+    /// its box names, as its rotator's state read just after it (`record`).
     boxed: BTreeMap<(CommitId, Role), BTreeSet<(Tid, Epoch)>>,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
@@ -326,7 +326,7 @@ impl Run {
                         if let Some(c) = own {
                             self.boxed.insert((c, r), via.clone());
                         }
-                        // its maker holds what it made (a leaver rotating in its own
+                        // its rotator holds what it made (a leaver rotating in its own
                         // self-removal): rule 1 judges who encrypts under it after
                         let below: BTreeSet<usize> = (0..N).filter(|d| *d != i && !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
                         // a rotator lacking the secret of the keyset it seals a boxed actor at
@@ -867,7 +867,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 // history carries what lies below), and the requirement ends its reading only at a
                 // rotation knowing a removal after that (spec/requirements.md Permissions); a holder
                 // then by a grant concurrent with the rotation, here or on a holder actor the epoch
-                // boxes, its maker unaware, is one. Every grant drawn here goes with history: a
+                // boxes, its rotator unaware, is one. Every grant drawn here goes with history: a
                 // cut's floor would bar the epoch (spec/crypto.md §4 Floors)
                 let holder_at: BTreeSet<Epoch> = run.made.keys().filter(|(t2, r2, e2)| *t2 == t && *r2 == r && held_while_current(run, o, d, t, r, e2)).map(|k| k.2).collect();
                 let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && (!m.below.contains(&d) || holder_at.contains(e2)) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
@@ -958,10 +958,10 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
         out.push(format!("actor {i}: {t:?}, mint admin peer {ow}"));
     }
     if let Some(m) = run.made.get(&k) {
-        let maker = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.signer));
+        let rotator = run.lp.peers[o].engine.core.ix.epoch_intro.get(&k).and_then(|(_, c)| run.lp.peers[o].engine.core.ix.commits.get(c)).map(|c| name(run, &c.header.signer));
         let blind: Vec<String> = m.blind.iter().map(|(t, e)| format!("{} at {}", name(run, t), ep(e))).collect();
         let carried: Vec<String> = m.carried.iter().map(ep).collect();
-        out.push(format!("made by {maker:?}: below {:?}, blind {blind:?}, carried {carried:?}, held the lost commits {:?}", m.below, lost.iter().map(|c| m.held.contains(c)).collect::<Vec<_>>()));
+        out.push(format!("made by {rotator:?}: below {:?}, blind {blind:?}, carried {carried:?}, held the lost commits {:?}", m.below, lost.iter().map(|c| m.held.contains(c)).collect::<Vec<_>>()));
     }
     out.push(format!("lost: {lost:?}"));
     let all = run.all();

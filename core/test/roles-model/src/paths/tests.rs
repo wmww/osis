@@ -429,7 +429,7 @@ fn a_switch_ends_the_rotations() {
         assert_eq!(per[5..], [0, 0, 0], "{rule:?}: {per:?}");
         if rule == Withdraw::SideOnly {
             assert_eq!(per.iter().sum::<usize>(), 3);
-            assert!(eps[1].maker == H && eps[1].boxes.contains(&B));
+            assert!(eps[1].rotator == H && eps[1].boxes.contains(&B));
         }
         let at = s(7);
         let cur = current(&eps, &at[0], rule);

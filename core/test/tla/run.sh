@@ -86,7 +86,7 @@ instances=(
   "cut rotation Cut X_race_noroles.cfg fail"     # negative control: a grant beside a cut with no rotation never reaches the newcomer without roles secrets
   "cut rotation Cut X_hostile.cfg pass"             # a hostile history-less writer rotating with any floor or listing
   "cut rotation Cut X_gone.cfg pass"
-  "cut rotation Cut X_hostile_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
+  "cut rotation Cut X_hostile_norotator.cfg fail"     # negative control: the carry rule blind to e's rotator
   "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
   "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
   "cut rotation Cut X_hostile2_all.cfg fail"        # accepted lockout: a hostile writer's low-floor epoch after the cut misses the newcomer
@@ -121,7 +121,7 @@ instances=(
   "leftout rotation LeftOut LO_voidunheld.cfg fail:NoLeak" # negative control: a record whose cause is not held counts nothing, a co-writer re-seals a keyset made before the cause
   "leftout rotation LeftOut LO_copyheld.cfg fail:NoUndo"   # negative control: a copy keeps only held causes, a co-writer drops the record
   "leftout rotation LeftOut LO_noadd.cfg fail:NoUndo"      # negative control: a keyset h recorded falsely is copied without the rotator's own cause
-  "leftout rotation LeftOut LO_wait.cfg fail:NoChurn"      # negative control: A's keyset waits for its causes, a copied unheld one makes its maker rotate again
+  "leftout rotation LeftOut LO_wait.cfg fail:NoChurn"      # negative control: A's keyset waits for its causes, a copied unheld one makes its rotator rotate again
   "leftout rotation LeftOut LO_anyrec.cfg fail:HostileEnds" # negative control: M re-keyed for a record whatever keyset it names
   "leftout rotation LeftOut LO_nofact.cfg fail:NoUndo"    # negative control: no record, a co-writer undoes the leave-out (churn)
   "leftout rotation LeftOut LO_nodue.cfg fail:Live"     # negative control: no rotation of M for a counting record

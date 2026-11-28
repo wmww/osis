@@ -518,7 +518,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// Invariant: what covers a departure is its rotator's word, and a rotator's word counts
     /// only while it holds the role (spec/crypto.md §4, covers). A rotator lowered below `r`
     /// after rotating has a departure of its own that its epochs of `r` do not name (directly,
-    /// or as the maker of a current epoch when its role ran through a holder actor,
+    /// or as the rotator of a current epoch when its role ran through a holder actor,
     /// `rotation::departures`), so `r` is due for rotation anyway: this costs honest flows
     /// nothing. A leaver's rotation (backdated,
     /// or in its self-removal) and its entries at others' epochs cover nothing, and an entry

@@ -130,7 +130,7 @@ pub(crate) enum Block {
 /// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest edge
 /// write a covering epoch must name (`Departure::newest_needed`), each stale box's superseding
 /// keyset's rotation commit, each keyless grant's edge write, each counting record's causes, and
-/// for a box or maker departure no edge shows, the rotation commit of each epoch its holder holds
+/// for a box or rotator departure no edge shows, the rotation commit of each epoch its holder holds
 /// (`departures::departure_causes`). The whole walk is judged, so every cause is found: every
 /// block has one.
 pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<(Block, BTreeSet<osis_base::CommitId>)>> {
@@ -355,11 +355,11 @@ fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTree
         due = due || unread && boxes_rotator(tx, who, a, r)?;
         // a derived epoch this node wrote under, current until a rotation carries it
         due = due || r == Role::Read && merge::due(tx, a);
-        // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
-        // or by any node that may rotate when its maker may not (or is unknown: a snapshot's
+        // withdraw: an unsuperseded epoch whose names this node does not meet, by its rotator,
+        // or by any node that may rotate when its rotator may not (or is unknown: a snapshot's
         // epoch); withdraws by several fork, which stands
         let current = epochs.role(r).current();
-        due = due || matches!(mode, Due::PassEnd(_)) && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
+        due = due || matches!(mode, Due::PassEnd(_)) && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && epoch_rotator(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
         due = due || matches!(mode, Due::PassEnd(_)) && r == Role::Read && floors::low_floor_due(tx, who, a)?;
         // a current keyset of `a` lacks a KEM key the rule now gives (spec/crypto.md §3, KEM key
@@ -421,23 +421,23 @@ pub(crate) fn departure_rotates(tx: &mut Tx<'_>, who: &Tid, a: &Tid, left: BTree
     }
 }
 
-/// The maker of an epoch as a node sees it (`maker`): whether it is this node, and whether it
+/// The rotator of an epoch as a node sees it (`epoch_rotator`): whether it is this node, and whether it
 /// may rotate the role now.
-struct Maker {
+struct Rotator {
     me: bool,
     may_rotate: bool,
 }
 
-/// The maker of epoch `e` of role `r` of `a` as `who` sees it (withdraw, `rotation_due`): the
+/// The rotator of epoch `e` of role `r` of `a` as `who` sees it (withdraw, `rotation_due`): the
 /// author of its rotation commit (`epoch_intro`); unknown without one (a snapshot's epoch). It
-/// may rotate (`may_rotate`: over grants with key access): a maker
+/// may rotate (`may_rotate`: over grants with key access): a rotator
 /// whose role runs through a keyless grant makes no valid rotation. `me` is this node, not its
 /// account: nodes of one account share an author, and two of them withdrawing alike would fork.
-fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<Maker> {
+fn epoch_rotator(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<Rotator> {
     let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
     let m = core.ix.commits.get(c)?;
     let author = m.view.signer;
-    Some(Maker { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: may_rotate(core, &author, a).contains(&r) })
+    Some(Rotator { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: may_rotate(core, &author, a).contains(&r) })
 }
 
 /// Current holders of `a` for keys (`Core::key_holders`) as a rotation by `who` boxes them

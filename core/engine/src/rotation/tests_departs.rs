@@ -180,7 +180,7 @@ fn self_removal_uncovered_spec_crypto_4() {
     leaver_uncovered(Role::Read, Forge::Listed);
 }
 
-// spec/crypto.md §4 (Holds; Departure; maker; Covers): over grants with key access; the departs mark's author holds r, spec/requirements.md Permissions (a keyless grant gives no read through
+// spec/crypto.md §4 (Holds; Departure; rotator; Covers): over grants with key access; the departs mark's author holds r, spec/requirements.md Permissions (a keyless grant gives no read through
 // it): W writes G and is mint admin of H; G reads H, then H reads G (closing the cycle:
 // keyless). W's self-removal rotates read and write, its departs mark naming itself. W still
 // holds read on G through H, but keyless: it reads nothing through it, so its rotation covers

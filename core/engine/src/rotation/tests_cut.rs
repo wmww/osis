@@ -276,7 +276,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
         .unwrap()
 }
 
-// spec/crypto.md §4 (the carry rule: judges the maker, model X_host_nomaker): H, granted write
+// spec/crypto.md §4 (the carry rule: judges the rotator, model X_hostile_norotator): H, granted write
 // without history, rotates listing only the epoch the cut superseded, with floor 0. Co-holders
 // holding that epoch add no history at H's epoch: H's floor is its cut's n. H reaches nothing
 // before its cut.
@@ -313,7 +313,7 @@ fn floor_above_n_carries_nothing_past_a_later_cut_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Floors: an epoch's floor is what its entries write, a rotation's, the
-// greatest of its maker's and its holders'): W, a writer with history, rotates after N's cut
+// greatest of its rotator's and its holders'): W, a writer with history, rotates after N's cut
 // listing the cut with floor 0, so co-holders carry what came before into W's epoch. N is never
 // boxed there (a writer may leave anyone out), reaches nothing before its cut, and reads A's
 // next epoch, which carries neither W's epoch nor anything before the cut.
@@ -351,7 +351,7 @@ fn nothing_before_a_cut_reaches_its_holder_plain_spec_crypto_4() {
 }
 
 /// The `_plain` property's seeds, a covering set: with the boxing or the carry rule off, every one of
-/// seeds 1-40 fails; with the carry rule's maker clause off 5 (2 among them), with a box allowed
+/// seeds 1-40 fails; with the carry rule's rotator clause off 5 (2 among them), with a box allowed
 /// one floor low 23 (2).
 const NOTHING_BEFORE_SEEDS: [u64; 3] = [1, 2, 3];
 

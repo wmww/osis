@@ -22,7 +22,7 @@
 (* valid at a node unless it holds that rogue's removal by a and the         *)
 (* removal's frontier does not list it. Secrets: boxes, re-seals, then       *)
 (* history entries of held commits at epochs held. An honest rotation names  *)
-(* the removals its maker held, and is established where its secret is held *)
+(* the removals its rotator held, and is established where its secret is held *)
 (* only with them held (names met).                                          *)
 EXTENDS Naturals, FiniteSets
 
@@ -62,7 +62,7 @@ Close(v, S, k) == IF k = 0 THEN S
 Secrets(v) == Close(v, {e \in held[v] \cap EIds : v \in eps[e].boxed} \cup rs[v], Cardinality(Ids))
 
 \* established: held, valid, and, where v holds its secret, its names met (the removals its
-\* maker held are held; spec/crypto.md §4, Established)
+\* rotator held are held; spec/crypto.md §4, Established)
 Est(v) == {e \in held[v] \cap EIds : Valid(v, e) /\ (e \in Secrets(v) => eps[e].names \subseteq held[v])}
 Cur(S) == {e \in S : ~\E f \in S : e \in eps[f].listed}
 Current(v) == Cur(Est(v))
@@ -73,7 +73,7 @@ MaxN(S) == CHOOSE m \in {eps[e].n : e \in S} : \A e \in S : eps[e].n <= m
 \* the holders v boxes: the rogues it has not removed, j once any removal is known
 Holders(v) == Honest \cup (Rogues \ RemOf(v)) \cup (IF RemOf(v) # {} THEN {"j"} ELSE {})
 
-\* names: the removal commits the maker holds; knows: the removals it covers (a removal's
+\* names: the removal commits the rotator holds; knows: the removals it covers (a removal's
 \* own rotation covers that removal too)
 New(by, S, hist, boxed, rm, front, names, knows) ==
   [ep |-> TRUE, n |-> MaxN(S) + 1, by |-> by, listed |-> S, hist |-> hist, boxed |-> boxed,

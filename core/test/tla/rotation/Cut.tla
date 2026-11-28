@@ -10,9 +10,9 @@
 (* reads e's floor as the greatest the entries at e it opens write, at most *)
 (* e's n (only a holder of e's secret writes one); none opened: unknown (0  *)
 (* for boxing and Current, no carry into e). A cut's floor is its own n;    *)
-(* any other honest rotation's, the greatest floor among its maker and the  *)
+(* any other honest rotation's, the greatest floor among its rotator and the  *)
 (* holders it boxes (from their grants). A history entry at e carries f    *)
-(* only when f's floor is at least e's and at least the floor of e's maker  *)
+(* only when f's floor is at least e's and at least the floor of e's rotator  *)
 (* (unknown without e's rotation commit: the greatest of the holders').    *)
 (* A party's floor is its newest grant's: a cut's n; a grant with history, *)
 (* its author's floor. A holder is boxed (rotation, grant, re-seal) at e    *)
@@ -35,7 +35,7 @@
 (* Controls: "old" (no floor: adds, grants, re-seals and rotations carry any *)
 (* earlier secret, boxing ignores grants' cuts), "nocarry" (the carry rule   *)
 (* off), "nofloor" (the boxing rule off), "oldadd" (the History add as   *)
-(* before: any earlier secret; the rest as the rule), "nomaker" (the carry *)
+(* before: any earlier secret; the rest as the rule), "norotator" (the carry *)
 (* rule judges e's floor alone), "nogfloor" (a grant with history gives     *)
 (* floor 0 whoever writes it), "anyfloor" (a floor put by a party lacking  *)
 (* the epoch's secret counts, as one in a keyset would), "nocap" (a floor  *)
@@ -58,7 +58,7 @@ InitH == Admins \cup Readers \cup (IF RemoveM THEN {M} ELSE {})
 Parties == InitH \cup CutTo \cup HistTo
 Honest == Parties \ (Hostile \cup Accomp)
 \* the rule, or one of its parts off that adds to the floor rules (the rest are older controls)
-RuleOn == Rule \in {"cut", "nomaker", "nogfloor", "anyfloor", "nocap", "noreadd"}
+RuleOn == Rule \in {"cut", "norotator", "nogfloor", "anyfloor", "nocap", "noreadd"}
 
 Base == [ep |-> FALSE, n |-> 0, floor |-> 0, cut |-> FALSE, by |-> "a", lists |-> {},
          ents |-> {}, boxes |-> {}, unbox |-> {}, names |-> {}, knows |-> {}, rm |-> "",
@@ -116,13 +116,13 @@ FlW(v, e) == {y[3] : y \in {z \in EntsIn(held[v]) : z[1] = e /\ (e \in Sec(v) \/
 FlKnown(v, e) == FlW(v, e) # {}
 Fl(v, e) == IF ~FlKnown(v, e) THEN 0
             ELSE LET w == Max(FlW(v, e)) IN IF Rule = "nocap" \/ w <= C[e].n THEN w ELSE C[e].n
-\* e's maker's floor: by its rotation commit's author; without it, the greatest of the holders'
-MakerFl(v, e) == IF e \in held[v] THEN FloorOf(v, C[e].by) ELSE Max({FloorOf(v, x) : x \in Holders(v)} \cup {0})
-\* f may be carried in an entry of floor fl at an epoch whose maker's floor is mk
+\* e's rotator's floor: by its rotation commit's author; without it, the greatest of the holders'
+RotatorFl(v, e) == IF e \in held[v] THEN FloorOf(v, C[e].by) ELSE Max({FloorOf(v, x) : x \in Holders(v)} \cup {0})
+\* f may be carried in an entry of floor fl at an epoch whose rotator's floor is mk
 CarryNew(v, f, fl, mk) == Rule = "old" \/ Rule = "nocarry"
-                          \/ (Fl(v, f) >= fl /\ (Rule = "nomaker" \/ Fl(v, f) >= mk))
+                          \/ (Fl(v, f) >= fl /\ (Rule = "norotator" \/ Fl(v, f) >= mk))
 \* ... at held epoch e: never where e's floor is unknown
-CarryAt(v, f, e) == Rule = "old" \/ Rule = "nocarry" \/ (FlKnown(v, e) /\ CarryNew(v, f, Fl(v, e), MakerFl(v, e)))
+CarryAt(v, f, e) == Rule = "old" \/ Rule = "nocarry" \/ (FlKnown(v, e) /\ CarryNew(v, f, Fl(v, e), RotatorFl(v, e)))
 
 \* ---- epochs at a node ---------------------------------------------------------
 \* established: held, and where v holds its secret, the removals it names held
@@ -184,7 +184,7 @@ Rot(v, ls, n, fl, cut, gr, rm) ==
         !.names = names, !.knows = Departed(v) \cup (IF rm = "" THEN {} ELSE {rm}),
         !.rm = rm, !.gr = gr,
         !.wraps = ls \cap Sec(v)]
-\* an honest rotation's floor: a cut's n; else the greatest floor among its maker and the holders it
+\* an honest rotation's floor: a cut's n; else the greatest floor among its rotator and the holders it
 \* boxes, at most n
 NewRot(v, cut, gr, rm) ==
   LET ls == Cur(v) \cup Unsup(v)

@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 /// A departure from an actor A (spec/crypto.md §4): `holder` left roles `from` up to `upto` of A.
 /// `edge`: its edge into A as this node holds it, when that edge shows the departure; `None` for
-/// a box holder or maker the edge does not show departed, which no epoch covers.
+/// a box holder or rotator the edge does not show departed, which no epoch covers.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub holder: Tid,

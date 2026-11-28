@@ -394,7 +394,7 @@ impl EntryRow {
 }
 
 /// A tombstone (spec/sync-ids.md §5): when it was made, whether a verified Delete made it (else
-/// the node's own judgement), and what its maker keeps with it (spec/sync-judgement.md §3: what
+/// the node's own judgement), and what the node keeps with it (spec/sync-judgement.md §3: what
 /// the entry was), opaque here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tombstone {

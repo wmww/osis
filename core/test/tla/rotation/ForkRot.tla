@@ -52,7 +52,7 @@ HVM(s) == {k \in hm[s] : VM(s, k)}
 RECURSIVE Anc(_, _)
 Anc(s, k) == LET l == mk[k].lists \cap HVM(s) IN l \cup UNION {Anc(s, j) : j \in l}
 CurM(s) == {k \in HVM(s) : ~\E j \in HVM(s) : k \in mk[j].lists}
-\* M's keyset covers the departure from M s knows (its maker knew it)
+\* M's keyset covers the departure from M s knows (its rotator knew it)
 CovM(s, k) == ~ForkM \/ s \in mk[k].knows
 CovA(s, e) == ~ForkA \/ s \in ak[e].knows
 
@@ -179,7 +179,7 @@ Due == \E s \in Sides : RotADue(s) \/ RotMDue(s) \/ (ResealAt(s) # {} /\ SealOK(
 \* epoch boxing M at a keyset of its own side (M's readers there read it)
 Live == (AllHeld /\ ~Due) =>
           \A s \in Sides : \E e \in CurA(s) : ~Blocked(s, e) /\ \E S \in Boxes(s, e) : S \subseteq HVM(s)
-\* Kept: once settled, every epoch valid at a side (its maker wrote under it)
+\* Kept: once settled, every epoch valid at a side (its rotator wrote under it)
 \* is that side's current epoch or listed by one, through history (its later
 \* holders read it)
 RECURSIVE Hist(_)

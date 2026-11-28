@@ -1,5 +1,5 @@
 # Members connected to each other stop syncing a thing they share
-> Summary: Dogfood smoke pass, three accounts on loopback: a link joiner's first post reached the chat's maker but not another member for minutes (its `status` Synced); a told grant, accepted by holding, gave no role or content for minutes; both cleared only after both daemons restarted. Reproducible: after `unhold` and `hold` again, the grantee never gets the thing back (no record of it, both sides `NotConnected` while connected). Cause unknown.
+> Summary: Dogfood smoke pass, three accounts on loopback: a link joiner's first post reached the link's sharer but not another member for minutes (its `status` Synced); a told grant, accepted by holding, gave no role or content for minutes; both cleared only after both daemons restarted. Reproducible: after `unhold` and `hold` again, the grantee never gets the thing back (no record of it, both sides `NotConnected` while connected). Cause unknown.
 > Priority: normal
 > Tags: sync
 

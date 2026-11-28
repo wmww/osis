@@ -57,16 +57,16 @@ impl RowList {
 
     /// Applies `ops` (from `reconcile` against `keys()`) to `list` and to the rows. Masonry cannot
     /// move a widget between slots, so a row that moved or changed is rebuilt.
-    pub fn apply(&mut self, list: &mut WidgetMut<'_, VirtualList>, ops: &[Op<String>], maker: &mut Maker, rows: &[ListRow], style: Style) {
+    pub fn apply(&mut self, list: &mut WidgetMut<'_, VirtualList>, ops: &[Op<String>], builder: &mut Builder, rows: &[ListRow], style: Style) {
         for op in ops {
             match op {
                 Op::Remove(i) if *i < self.rows.len() => {
-                    maker.acts.forget(&self.rows.remove(*i).1);
+                    builder.acts.forget(&self.rows.remove(*i).1);
                     VirtualList::remove_row(list, *i);
                 }
                 Op::Insert(i, k) if *i <= self.rows.len() => {
                     let (w, _, b) = match rows.get(*i) {
-                        Some(row) => maker.row(row, style),
+                        Some(row) => builder.row(row, style),
                         None => (NewWidget::new(SizedBox::empty()).erased(), false, Built::default()),
                     };
                     self.rows.insert(*i, (k.clone(), b));
@@ -78,14 +78,14 @@ impl RowList {
     }
 
     /// Makes the more row match `l`'s, when its label or side changed.
-    pub fn update_more(&mut self, list: &mut WidgetMut<'_, VirtualList>, maker: &mut Maker, l: &List) {
+    pub fn update_more(&mut self, list: &mut WidgetMut<'_, VirtualList>, builder: &mut Builder, l: &List) {
         if self.more.as_ref().map(|(label, before, _)| (label.clone(), *before)) == more_of(l) {
             return;
         }
         if let Some((_, _, b)) = self.more.take() {
-            maker.acts.forget(&b);
+            builder.acts.forget(&b);
         }
-        let (row, before) = match maker.more(l) {
+        let (row, before) = match builder.more(l) {
             Some((row, label, before, built)) => {
                 self.more = Some((label, before, built));
                 (Some(row), before)
@@ -148,7 +148,7 @@ impl Acts {
 
 /// Makes the widgets of blocks, registering what they do: a slot's (`blocks`), or rows the shell
 /// patches into a kept list (`RowList::apply`).
-pub struct Maker<'a> {
+pub struct Builder<'a> {
     data: &'a Data,
     window: &'a WindowState,
     look: &'a Arc<Look>,
@@ -162,9 +162,9 @@ pub struct Maker<'a> {
     list_slot: Option<String>,
 }
 
-impl<'a> Maker<'a> {
-    pub fn new(data: &'a Data, window: &'a WindowState, look: &'a Arc<Look>, acts: &'a mut Acts, current: Option<Tid>, path: &'a str) -> Maker<'a> {
-        Maker { data, window, look, acts, built: Built::default(), current, path, listing: None, list_slot: None }
+impl<'a> Builder<'a> {
+    pub fn new(data: &'a Data, window: &'a WindowState, look: &'a Arc<Look>, acts: &'a mut Acts, current: Option<Tid>, path: &'a str) -> Builder<'a> {
+        Builder { data, window, look, acts, built: Built::default(), current, path, listing: None, list_slot: None }
     }
 
     /// Child views the rows made opened, for the shell to give slots.
@@ -175,7 +175,7 @@ impl<'a> Maker<'a> {
 
 /// The widgets of `blocks`, registering what they do.
 pub fn blocks(data: &Data, window: &WindowState, look: &Arc<Look>, acts: &mut Acts, path: &str, blocks: &[Block], current: Option<Tid>) -> (NewWidget<dyn Widget>, Built) {
-    let mut r = Maker { list_slot: Some(path.to_string()), ..Maker::new(data, window, look, acts, current, path) };
+    let mut r = Builder { list_slot: Some(path.to_string()), ..Builder::new(data, window, look, acts, current, path) };
     let mut col = style::column(look, 8.0);
     // what fills the space takes what the column is given: a lone child view, or a filled one
     let fill = |b: &Block| matches!(b, Block::Filled { .. } | Block::List(_)) || (blocks.len() == 1 && matches!(b, Block::View { .. }));
@@ -206,7 +206,7 @@ fn tile_icon(m: &Mark) -> TileIcon {
     }
 }
 
-impl Maker<'_> {
+impl Builder<'_> {
     /// What `id` does, to fill in; forgotten with the slot.
     fn hook(&mut self, id: WidgetId) -> &mut Hooks {
         self.built.ids.push(id);
@@ -334,7 +334,7 @@ impl Maker<'_> {
     }
 
     /// A row of a list on its own: its widget, whether it runs the full width, and what it
-    /// registered (its child views also count as this maker's).
+    /// registered (its child views also count as this builder's).
     fn row(&mut self, row: &ListRow, style: Style) -> (NewWidget<dyn Widget>, bool, Built) {
         let outer = std::mem::take(&mut self.built);
         let (w, span) = self.list_row(row, style);

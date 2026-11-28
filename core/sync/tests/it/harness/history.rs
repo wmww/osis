@@ -1156,7 +1156,7 @@ impl Model {
 /// The one excuse (spec/permissions.md §3 Left out): account `a` may fail to read thing `k` at
 /// quiet exactly when its last grant on `k` and a change of `k`'s read keys were made each by a
 /// node that had not surely received the other (`Made::know`), and no account that change boxed
-/// (its maker's, the thing's minting node's, and those whose grants its maker had surely received)
+/// (that of the node that made it, the thing's minting node's, and those whose grants that node had surely received)
 /// holds write or above on `k` at the end (every node is on at the check: such a node re-seals).
 /// A grant or change whose commits a release lost all of (`lost_writes`) was never made. It
 /// permits a failure, never requires one.

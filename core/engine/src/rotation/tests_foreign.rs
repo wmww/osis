@@ -363,7 +363,7 @@ fn fork_with_one_role_rotators() -> (LocalPeer, Tid, Tid, Tid, Epoch) {
 // on P's side Q's epoch eQ of A is foreign, current and blocked, and lists A's first epoch, which
 // it keeps stale. W rotates G: Seal gives that stale keyset, so W leaves A out of G, recording
 // eQ with causes that stand for good. R re-keys A at G's pass end; its rotation carries
-// eQ in its history box, superseding it at R (its maker, holding the secret), so eQ is no current
+// eQ in its history box, superseding it at R (its rotator, holding the secret), so eQ is no current
 // keyset of A there and the record no longer leaves A out: five more pass ends of G, W
 // re-sealing and nobody rotating G, rotate A no more.
 #[test]

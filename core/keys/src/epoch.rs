@@ -237,8 +237,8 @@ pub struct Floors {
     /// Per epoch with a known floor (a live entry of its history box opened, or fixed or
     /// derived): the greatest those entries write, at most its n.
     known: BTreeMap<Epoch, u64>,
-    /// Per epoch whose maker's floor is known: that floor (its newest grant's).
-    makers: BTreeMap<Epoch, u64>,
+    /// Per epoch whose rotator's floor is known: that floor (its newest grant's).
+    rotators: BTreeMap<Epoch, u64>,
     /// This node's own floor on the actor.
     own: u64,
 }
@@ -480,7 +480,7 @@ impl RoleEpochs {
     /// establishment dropped, as a node holding none of the role's secrets counts them (but for
     /// what the history boxes it opens list), ascending. One unsuperseded and not current here
     /// has names this node does not meet, yet is current wherever its secret is not held: a
-    /// rotation lists it, and its maker withdraws it.
+    /// rotation lists it, and its rotator withdraws it.
     pub fn unsuperseded(&self) -> Vec<Epoch> {
         let est = self.established_names_aside();
         let superseded: BTreeSet<&Epoch> = est.keys().filter_map(|e| self.map.get(e)).flat_map(EpochInfo::superseding).collect();
@@ -543,19 +543,19 @@ impl RoleEpochs {
         self.is_established(e) && !self.superseded(e) && self.at_own_floor(e)
     }
 
-    /// Sets the floors this node reads (spec/crypto.md §4, Floors): `makers` the floor of each
-    /// epoch's maker where it is known, `own` this node's. Each epoch's floor is the greatest its
+    /// Sets the floors this node reads (spec/crypto.md §4, Floors): `rotators` the floor of each
+    /// epoch's rotator where it is known, `own` this node's. Each epoch's floor is the greatest its
     /// live history entries opened here write (only a holder of its secret writes one, so no
     /// other party sets it), at most its n; a fixed epoch's, or one an independent thing
     /// adopted from its mint admin, is 0 (a dependent thing's view reads its base epochs' floors,
     /// `derived`); one with no entry opened has none known.
-    pub fn set_floors(&mut self, makers: BTreeMap<Epoch, u64>, own: u64) {
+    pub fn set_floors(&mut self, rotators: BTreeMap<Epoch, u64>, own: u64) {
         let known = self
             .map
             .iter()
             .filter_map(|(e, i)| if i.established.is_some_and(Provenance::sticky) { Some((*e, 0)) } else { i.floor.map(|w| (*e, w.min(e.n()))) })
             .collect();
-        self.floors = Some(Box::new(Floors { known, makers, own }));
+        self.floors = Some(Box::new(Floors { known, rotators, own }));
     }
 
     /// Whether floors are read for this role (the read role of an actor's view).
@@ -583,11 +583,11 @@ impl RoleEpochs {
     }
 
     /// The carry rule (spec/crypto.md §4): an entry at epoch `e` may carry `f`'s secret: `f`'s
-    /// floor is at least `e`'s and at least the floor of `e`'s maker. Never where `e`'s floor or
-    /// its maker's is unknown here.
+    /// floor is at least `e`'s and at least the floor of `e`'s rotator. Never where `e`'s floor or
+    /// its rotator's is unknown here.
     pub fn carries(&self, e: &Epoch, f: &Epoch) -> bool {
         let Some(fl) = &self.floors else { return true };
-        let (Some(fe), Some(fm)) = (fl.known.get(e), fl.makers.get(e)) else { return false };
+        let (Some(fe), Some(fm)) = (fl.known.get(e), fl.rotators.get(e)) else { return false };
         let ff = self.floor(f);
         ff >= *fe && ff >= *fm
     }
@@ -608,7 +608,7 @@ impl RoleEpochs {
     }
 
     /// The carry rule for the entry of the epoch a rotation makes, of floor `floor` (its own epoch
-    /// is not in the view yet). Its maker's floor is at most `floor`, the greatest of its maker's
+    /// is not in the view yet). Its rotator's floor is at most `floor`, the greatest of its rotator's
     /// and its holders' (`rotate`), so `floor` alone decides.
     pub fn carries_into(&self, floor: u64, f: &Epoch) -> bool {
         self.floors.is_none() || self.floor(f) >= floor
@@ -865,7 +865,7 @@ impl ActorEpochs {
             // stays kept on every dependent thing below it
             if let Some(f) = &o.floors {
                 let through = |m: &BTreeMap<Epoch, u64>| m.iter().filter_map(|(e, x)| ids.get(e).map(|d| (d.0, *x))).collect();
-                a.role_mut(r).floors = Some(Box::new(Floors { known: through(&f.known), makers: through(&f.makers), own: f.own }));
+                a.role_mut(r).floors = Some(Box::new(Floors { known: through(&f.known), rotators: through(&f.rotators), own: f.own }));
             }
         }
         a

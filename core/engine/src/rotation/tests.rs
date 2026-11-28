@@ -1307,7 +1307,7 @@ fn partial_views_rotate_nothing_for_forks_spec_crypto_4() {
     forks_stand(&mut lp, g, &[Role::Write], 5, "five forks");
 }
 
-/// Peers `0..forks` of `lp`, each the maker of one of `forks` current epochs of each of `roles`
+/// Peers `0..forks` of `lp`, each the rotator of one of `forks` current epochs of each of `roles`
 /// of `g`, all held alike: nothing is due at any peer, and each holds every fork's secret (each
 /// rotation boxed every holder).
 fn forks_stand(lp: &mut LocalPeer, g: Tid, roles: &[Role], forks: usize, what: &str) {
@@ -1985,10 +1985,10 @@ fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>
 // (2, reader), R (3, admin). A demotes a2 to write (D); a2, unaware, removes M (W); R, holding W
 // but not D, rotates read (e_R, naming W, boxing no M). At A, W applies nothing (a2 a writer at
 // its point): M reads on, and e_R's names are met at no holder of its secret, yet e_R is current
-// at M (it lacks the secret: established by its commit alone). R, its maker, withdraws it: a
+// at M (it lacks the secret: established by its commit alone). R, its rotator, withdraws it: a
 // rotation listing it, which every holder counts alike.
 #[test]
-fn unmet_epoch_withdrawn_by_its_maker_spec_crypto_4() {
+fn unmet_epoch_withdrawn_by_its_rotator_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(5_000);
@@ -2025,7 +2025,7 @@ pub(super) fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
     matches!(v, Some(osis_base::Value::Map(m)) if m.contains_key(&osis_base::Value::Str(k.into())))
 }
 
-/// `unmet_epoch_withdrawn_by_its_maker`'s shape with N (4) not yet a holder, settled (e_R
+/// `unmet_epoch_withdrawn_by_its_rotator`'s shape with N (4) not yet a holder, settled (e_R
 /// withdrawn), then A writes "after". R's write of "w" under e_R before D reaches it, as its sync ID
 /// entry (sealed at writing): made on a copy of the world, so no peer holds it but by this blob.
 /// Returns e_R and that entry. Built once per test process, a copy each call.
@@ -2605,7 +2605,7 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
 }
 
 /// D (0's) whose admin is T, a dependent thing of holder H (granted past the writer rules); H's writers
-/// W1 (1), W2 (2) read D; with a peer 3, it is a direct admin of D. D's maker (0) has left.
+/// W1 (1), W2 (2) read D; with a peer 3, it is a direct admin of D. D's rotator (0) has left.
 /// (lp, H, T, D).
 fn admin_through_a_dependent_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = synced(n);
@@ -2647,7 +2647,7 @@ fn admin_through_a_dependent_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
 // when its new epoch boxes a holder that may rotate the role, so orphaned rotations do not trade
 // back and forth. D's admin is T, a thing of holder H with no keyset (granted past the writer
 // rules: a dependent holder actor, as a thing whose only keyset part turned invalid is), so every
-// rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's maker
+// rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's rotator
 // leaves: W1 rotates (its departure), a write epoch boxed to nobody that may rotate write, so
 // orphaned at W2, whose rotation would be orphaned at W1 again.
 #[test]
@@ -2661,7 +2661,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
             lp.sync_all().unwrap();
         }
     }
-    assert!(made >= 1, "W1 rotates for the maker's departure");
+    assert!(made >= 1, "W1 rotates for the rotator's departure");
     assert!(made <= 2, "{made} rotations: orphaned epochs traded back and forth");
     let writes = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&d).unwrap().write.newest_held().is_some();
     assert!(!writes(&lp, 1) && !writes(&lp, 2), "no rotation boxes T: H's writers hold no write epoch of D");
@@ -2683,7 +2683,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
 // after a departure, is the rotators' boxed at it to judge): rotations stop once every epoch is
 // covered where it is read. D's admins are A (direct) and T, a dependent thing of holder H (no
 // keyset: every rotation leaves it out); H's writers W1, W2 read D directly, so each may rotate
-// D's write role and holds only the write epochs it makes. D's maker leaves; W1 rotates. Each
+// D's write role and holds only the write epochs it makes. D's rotator leaves; W1 rotates. Each
 // write epoch boxes A, which judges it; W2, lacking W1's, rotated, then W1, lacking W2's, for good.
 #[test]
 fn a_rotator_lacking_an_epoch_leaves_it_to_its_readers_spec_crypto_4() {
@@ -2696,7 +2696,7 @@ fn a_rotator_lacking_an_epoch_leaves_it_to_its_readers_spec_crypto_4() {
         }
         made
     };
-    assert!(rounds(&mut lp) >= 1, "the maker's departure is rotated");
+    assert!(rounds(&mut lp) >= 1, "the rotator's departure is rotated");
     let later: usize = (0..3).map(|_| rounds(&mut lp)).sum();
     assert_eq!(later, 0, "rotations go on once every epoch is covered where it is read");
 }

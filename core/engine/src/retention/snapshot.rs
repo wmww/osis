@@ -1267,8 +1267,8 @@ pub(crate) fn snapshot_actor(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
 /// node's epoch (`sync_ids::opened::passes_on`): a write it read only under an epoch not
 /// established here waits for that epoch (its withheld removal arriving) or stays uncompacted.
 /// A body none of whose writes lives in the state gives the snapshot nothing (spec/crypto.md §5
-/// Passing on binds the writes a snapshot carries): a writer granted later holds the maker's
-/// first writes under epochs it reads but never establishes (derived from the maker's
+/// Passing on binds the writes a snapshot carries): a writer granted later holds a thing's
+/// first writes under epochs it reads but never establishes (derived from its mint admin's
 /// secrets), and their replacement leaves them nothing to pass on. A snapshot carries state, not
 /// the commits: the floor clause binds it not, so one written after a cut carries the state
 /// written before it to the cut's holder (spec/crypto.md §4, State at a cut).

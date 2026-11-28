@@ -922,7 +922,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     forge_snapshot_sec(w, by, ak, ts, f, mutate, memory, reroot, sec)
 }
 
-/// The secrets a forger lists for `w.t`: its maker's delete keys, a made-up level-2 key.
+/// The secrets a forger lists for `w.t`: the delete keys its minting lists, a made-up level-2 key.
 fn hand(w: &mut World) -> crate::engine::secrets::HandSecrets {
     let rec = w.lp.peers[0].engine.get_typed(&w.t, &ct::CREATED).unwrap().unwrap();
     w.lp.peers[0].engine.hand_secrets(&[rec])

@@ -185,7 +185,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     forge_reg_keyed(lp, 1, d, ak, lo, ts, v, true)
 }
 
-/// `forge_reg` by peer `by`, listing the keys `d`'s maker lists (`listed`) or made-up ones.
+/// `forge_reg` by peer `by`, listing the keys an honest writer of `d` lists (`listed`) or made-up ones.
 #[allow(clippy::too_many_arguments)]
 fn forge_reg_keyed(lp: &mut LocalPeer, by: usize, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str, listed: bool) -> Vec<u8> {
     use crate::common::{forged_write, held_secrets, seal_with};
@@ -2915,7 +2915,7 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 }
 
 /// `forge_created` with purge-by `purge_by`, in a commit expiring at `expires`, listing the
-/// delete keys the record's maker lists (`listed`) or made-up ones.
+/// delete keys an honest minting of the record lists (`listed`) or made-up ones.
 #[allow(clippy::too_many_arguments)]
 fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, purge_by: osis_schema::PurgeBy, expires: Option<u64>, listed: bool) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, writer_ctx};

@@ -110,7 +110,7 @@ fn reading_the_name_writes_nothing() {
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
 }
 
-/// A link to a chat already here (pasted by its maker or a participant) opens it without the link's
+/// A link to a chat already here (pasted by its sharer or a participant) opens it without the link's
 /// peer; text that is no link still fails.
 #[test]
 fn join_held_chat_opens_it() {

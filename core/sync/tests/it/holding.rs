@@ -311,7 +311,7 @@ fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
 // on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
 // it and keeps it unread by the sync secret T0's sync role gives; Bob still reads it.
 #[test]
-fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
+fn lowering_the_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
     w.write(0, |e| told(e, &t1, &bob, &edge(Role::Write))).unwrap();
@@ -350,7 +350,7 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
 // and D's sync IDs, read still, name a commit she forgets with T1: each is parked again
 // (store::Follow::lost_parks), so the access returning opens it.
 #[test]
-fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
+fn removing_the_only_path_parks_its_entries_spec_permissions_3() {
     let mut w = contacts();
     w.parks = true;
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
@@ -375,7 +375,7 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
 // She removes T0's record edge on T1, her only path to T1, a self-removal: she keeps T1's
 // secrets and store until Bob holds the removal, so Bob's roster loses T0 as the reference's.
 #[test]
-fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3() {
+fn a_self_removal_of_the_only_path_reaches_the_reader_spec_permissions_3() {
     let mut w = contacts();
     let (t0, t1, bob) = t0_holding_t1(&mut w, true);
     w.write(0, |e| told(e, &t1, &bob, &edge(Role::Read))).unwrap();

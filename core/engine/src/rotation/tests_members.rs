@@ -1378,12 +1378,12 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
     assert!(done.commits.is_empty(), "no write history from a reader");
 }
 
-// spec/crypto.md §4 (Departure: a maker that no longer holds r): an honest maker whose role
+// spec/crypto.md §4 (Departure: a rotator that no longer holds r): an honest rotator whose role
 // on M runs through holder T (keyed) is lowered on T, then re-granted. The admin rotates M once
 // for it; re-granted, P has departed nothing, and no further pass rotates M (bounded: the
-// maker's departure ends with its epoch, superseded).
+// rotator's departure ends with its epoch, superseded).
 #[test]
-fn lowered_maker_rotates_once_spec_crypto_4() {
+fn lowered_rotator_rotates_once_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.tid();
     let t = independent_thing(&mut lp, 0);
@@ -2453,13 +2453,13 @@ fn a_box_departure_is_recorded_with_its_epochs_rotation_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, g], z, start), Vec::<Tid>::new(), "Z opens nothing");
 }
 
-// spec/crypto.md §4 (Left out: a box or maker departure's cause; Departure): M {m0, P admin}.
-// P rotates M (kP). A departure of P no edge into M shows (a maker departure: its role ran
+// spec/crypto.md §4 (Left out: a box or rotator departure's cause; Departure): M {m0, P admin}.
+// P rotates M (kP). A departure of P no edge into M shows (a rotator departure: its role ran
 // through a holder actor it has left) has kP's rotation as its cause, the epoch P holds the
 // secret of; where P's own edge shows it leaving, that edge's newest needed write instead (a
 // regrant ends it, and the record with it).
 #[test]
-fn a_maker_departures_cause_is_its_rotation_spec_crypto_4() {
+fn a_rotator_departures_cause_is_its_rotation_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = synced(2);
     let p = lp.peers[1].engine.tid();
@@ -2470,15 +2470,15 @@ fn a_maker_departures_cause_is_its_rotation_spec_crypto_4() {
     rotate_skipping(&mut lp, 1, m, &read, &[]);
     let p_rot = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
     lp.sync_all().unwrap();
-    let maker = osis_keys::Departure::holder(p, Role::Read).upto(Role::Read);
-    let got = lp.peers[0].engine.run(|tx| super::departures::departure_causes(tx, &m, Role::Read, &maker, &[])).unwrap();
-    assert_eq!(got, BTreeSet::from([p_rot]), "the maker departure's cause is P's rotation");
+    let departure = osis_keys::Departure::holder(p, Role::Read).upto(Role::Read);
+    let got = lp.peers[0].engine.run(|tx| super::departures::departure_causes(tx, &m, Role::Read, &departure, &[])).unwrap();
+    assert_eq!(got, BTreeSet::from([p_rot]), "the rotator departure's cause is P's rotation");
     let before = commit_ids(&mut lp, 0);
     removal_alone(&mut lp, 0, m, p);
     let rm: BTreeSet<CommitId> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     let deps = lp.peers[0].engine.departures(&m).unwrap();
     assert!(deps.iter().any(|d| d.holder == p && d.edge.is_some()), "P's edge shows it leaving");
-    let got = lp.peers[0].engine.run(|tx| super::departures::departure_causes(tx, &m, Role::Read, &maker, &deps)).unwrap();
+    let got = lp.peers[0].engine.run(|tx| super::departures::departure_causes(tx, &m, Role::Read, &departure, &deps)).unwrap();
     assert!(!got.is_empty() && got.is_subset(&rm), "with an edge showing it, the edge's write: {got:?}");
 }
 
@@ -2521,15 +2521,15 @@ fn a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4() 
     assert!(all_boxed(&mut lp, 0, &[g]));
 }
 
-// spec/crypto.md §4 (Left out: a maker departure's cause is its epoch's rotation; Departure),
+// spec/crypto.md §4 (Left out: a rotator departure's cause is its epoch's rotation; Departure),
 // model `LO_nofact` (no record: churn): M {m0, N write, W reader}, N {n0, P write}, G {g0, W
 // admin, M reader}. P rotates M through N (kP); n0 removes P from N. W, reading M but not N, finds
-// P's departure from M by kP's maker alone (no edge into M shows it), leaves M out of G and
+// P's departure from M by kP's rotator alone (no edge into M shows it), leaves M out of G and
 // records kP with P's rotation among its causes (beside N's rotation, which makes kP's box to N
 // stale). g0, reading no secret of M, seals M at kP nowhere; m0's re-key ends it and P opens
 // nothing written after. (A removal alone, with an empty frontier, would cut P's rotation.)
 #[test]
-fn a_maker_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
+fn a_rotator_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = synced(5);
     let [_, p, _, w, _] = std::array::from_fn(|i| lp.peers[i].engine.tid());
@@ -2556,7 +2556,7 @@ fn a_maker_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
     removal(&mut lp, 2, n, p);
     lp.sync_all().unwrap();
     let deps = lp.peers[3].engine.departures(&m).unwrap();
-    assert!(deps.iter().any(|d| d.holder == p && d.edge.is_none()), "W sees P's maker departure: {deps:?}");
+    assert!(deps.iter().any(|d| d.holder == p && d.edge.is_none()), "W sees P's rotator departure: {deps:?}");
     rotate_skipping(&mut lp, 3, g, &read, &[]);
     assert_eq!(sealed_at(&mut lp, 3, g, m), None, "W leaves M out");
     let rec = recorded(&lp, 3, g, m);

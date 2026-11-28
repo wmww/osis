@@ -5,7 +5,7 @@
 \* invalidator i is held (a concurrent demotion of its author, a side switch).
 \* Kind "edge": c writes edges (a departure, a keyless grant) and stands while
 \* valid; "rot": c writes a keyset (a stale box's superseder, the epoch a box or
-\* maker departure holds, a keyset held invalid) and stands while held. x opens
+\* rotator departure holds, a keyset held invalid) and stands while held. x opens
 \* every keyset of M made without knowing c valid. Sealers w (reads M: judges a
 \* keyset of M by its names) and c (holds none of M's secrets: judges by order)
 \* rotate and re-seal A; r rotates M, holding none of M's secrets unless RSec.
@@ -39,11 +39,11 @@ CPos == 1     \* c's place in the order of making (M's initial keyset: 0)
 Start == IF Hostile THEN {"g"} ELSE {}
 HCauses == (IF HasC THEN {"c"} ELSE {}) \cup {"f", "g"}
 
-VARIABLES mk,   \* M's keysets: [lists, knows (maker held c valid), pos, ht]
+VARIABLES mk,   \* M's keysets: [lists, knows (rotator held c valid), pos, ht]
           ak,   \* A's epochs: [lists, box (keysets of M: joint when two; {}:
                 \* left out), rec ([k, cz, at]), pos, by ("h", else "s": a sealer),
-                \* khr (maker held hr);
-                \* lo: the keysets its maker left M out at, a ghost]
+                \* khr (rotator held hr);
+                \* lo: the keysets its rotator left M out at, a ghost]
           rs,   \* re-seals: [e, ks]
           hm, ha, hr, hc,  \* per node: keysets, epochs, re-seals, events held
           wr,   \* <<epoch, writer>>: content written knowing c
@@ -261,8 +261,8 @@ Due == \E n \in Sealers : RotADue(n) \/ ResealOK(n) \/ RotMDue
 Good == \A n \in Sealers : \A e \in CurA(n) : Boxes(n, e) # {} /\ ~EncBlocked(n, e)
 Live == (AllHeld /\ ~Due) => Good
 
-\* NoUndo: while c is valid, no re-seal boxes M at a keyset an epoch's maker
-\* left it out at (its maker would rotate A again: one rotation of A per
+\* NoUndo: while c is valid, no re-seal boxes M at a keyset an epoch's rotator
+\* left it out at (its rotator would rotate A again: one rotation of A per
 \* re-seal, for good where no rotator of M re-keys)
 NoUndo == ~HasInv => \A s \in rs : s.ks \cap ak[s.e].lo = {}
 

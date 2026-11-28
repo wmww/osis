@@ -155,7 +155,7 @@ EpTs(e) == IF e = 0 THEN 0 ELSE (CHOOSE c \in cs \cup Static : c.id = Ep(e).comm
 OrderedBefore(n, e) == \E h \in Departed(n), c \in cs \cup Static :
                          c.id \in held[n] /\ c.kind \in {"chg", "self"} /\ c.h = h /\ c.val < READ /\ EpTs(e) < c.ts
 NeedRot(n) == \E e \in Current(n) : IF e \in Sec(n) THEN ~CoversAll(n, e) ELSE OrderedBefore(n, e)
-\* withdraw: an unsuperseded epoch not current at n, by its maker, or by anyone when its maker
+\* withdraw: an unsuperseded epoch not current at n, by its rotator, or by anyone when its rotator
 \* may not rotate
 Withdraw(n) == \E e \in Unsup(n) \ Current(n) : Ep(e).author = n \/ Role(n, Ep(e).author) < ADMIN
 HasCurrent(n) == Current(n) \cap Sec(n) # {}

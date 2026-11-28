@@ -1,14 +1,14 @@
 //! Floors (spec/crypto.md §4, Floors): what a holder granted without history may be handed. A
 //! party's floor on an actor is its newest grant's (a cut's n; a grant with history, its
 //! author's), the least over the paths it reaches the actor by; the read role of an actor's view
-//! reads each epoch's floor from its opened history entries and each maker's from its grant.
+//! reads each epoch's floor from its opened history entries and each rotator's from its grant.
 //!
 //! Invariant (the property every rule here serves): no secret of an epoch below a holder's floor
 //! reaches it from a box or history entry an honest node writes. A box goes only to a holder whose
 //! floor the epoch's floor reaches (`RoleEpochs::allows`); an entry at e carries f only when f's
-//! floor reaches e's and e's maker's (`RoleEpochs::carries`): every epoch below a cut has a floor
+//! floor reaches e's and e's rotator's (`RoleEpochs::carries`): every epoch below a cut has a floor
 //! below the cut's n (floors never exceed n, n grows along every supersedes chain), so neither
-//! hands it to a holder of the cut's floor, nor to a maker that wrote a low floor.
+//! hands it to a holder of the cut's floor, nor to a rotator that wrote a low floor.
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
@@ -63,9 +63,9 @@ fn floor_in(core: &Core, a: &Tid, p: &Tid, seen: &mut BTreeSet<Tid>) -> u64 {
 }
 
 /// Sets the read floors of `view`, `a`'s epochs as this node holds them (`RoleEpochs::set_floors`,
-/// each epoch's own floor read from its opened history entries): its maker's floor (the author of its
+/// each epoch's own floor read from its opened history entries): its rotator's floor (the author of its
 /// rotation commit; unknown, as for an epoch held by a snapshot alone: the greatest floor of any
-/// holder, every maker it could be), and this node's own.
+/// holder, every rotator it could be), and this node's own.
 pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     // no party has a floor: no rule has anyone to keep anything from (actors never cut pay nothing)
     if !any_floor(core, a) {
@@ -73,7 +73,7 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     }
     let re = view.role(Role::Read);
     let epochs: Vec<osis_crypto::Epoch> = re.epochs().map(|(e, _)| *e).collect();
-    let mut makers = BTreeMap::new();
+    let mut rotators = BTreeMap::new();
     let mut unknown = None;
     for e in &epochs {
         let author = core.ix.epoch_intro.get(&(*a, Role::Read, *e)).and_then(|(_, c)| core.ix.commits.get(c)).map(|m| m.view.signer);
@@ -81,10 +81,10 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
             Some(x) => party_floor(core, a, &x),
             None => *unknown.get_or_insert_with(|| greatest(core, a)),
         };
-        makers.insert(*e, f);
+        rotators.insert(*e, f);
     }
     let own = party_floor(core, a, &core.tid());
-    view.role_mut(Role::Read).set_floors(makers, own);
+    view.role_mut(Role::Read).set_floors(rotators, own);
 }
 
 /// What tells whether a part on a thing of secret actor `a` lies sealed below this node's floor

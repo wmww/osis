@@ -1,10 +1,10 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
 //! knows of, read from the role timeline (each holder's edge into the actor as this node holds
 //! it, `EdgeLog`: a holder holding less now than its edge gave it) and from the `secrets.0`
-//! state (box holders at a current epoch that hold less than that role now), and the makers of
+//! state (box holders at a current epoch that hold less than that role now), and the rotators of
 //! current epochs that hold less than that role now by any path with key access; the names rotations write
 //! (`names`), read from the same edges. A departure from a holder actor of `a` is none of `a`'s
-//! (spec/crypto.md §4, Holder actors), but a maker whose role ran through one holds the epoch
+//! (spec/crypto.md §4, Holder actors), but a rotator whose role ran through one holds the epoch
 //! it made: its lowering departs `a`. Departures are recomputed on demand (O(edge history)) and
 //! cached per actor (`departures`), never stored. Keys read no clock: an edge counts by its role
 //! with its `until` disregarded (`key_role`), so an edge past its `until` departs only by its
@@ -150,11 +150,11 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
 /// more than the edge holds it at now and than it holds now (`Core::key_holders`), shown by that
 /// edge (a destroyed holder actor's edge stands, and its departure is its box's); and, shown by nothing (no
 /// epoch covers them until a rotation supersedes the epoch), each holder with a box of the
-/// `secrets.0` state at a current epoch of a role it holds less than now, and each maker of a
+/// `secrets.0` state at a current epoch of a role it holds less than now, and each rotator of a
 /// current epoch holding less than its role now (`members::role_for_keys`: through holder
 /// actors with key access). An edge departure concerns the roles above its current one up to the highest
-/// it had; a box or maker departure that role alone (an epoch of another role it neither made
-/// nor holds a box at is no concern of it: counted, a link maker that left kept the link's
+/// it had; a box or rotator departure that role alone (an epoch of another role it neither made
+/// nor holds a box at is no concern of it: counted, a link's sharer that left kept the link's
 /// admin epoch, which nobody may rotate, uncovered, and so every role of the link and of what it
 /// holds, for good).
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
@@ -187,7 +187,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
                 note(k.holder.0, current.get(&k.holder.0).copied(), k.role);
             }
         }
-        // the maker of a current epoch holds its secret whatever the boxes say: one holding
+        // the rotator of a current epoch holds its secret whatever the boxes say: one holding
         // less than that role now, for keys, by any path with key access (its role may have run
         // through a holder actor, whose departures are none of `a`'s; a keyless grant reads
         // nothing), departed it
@@ -204,7 +204,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 
 /// The causes (spec/crypto.md §4, Left out) of departure `d` from `x` that an epoch of role `r`
 /// does not cover, `deps` the departures from `x` known: its newest edge write a covering epoch
-/// must name (`Departure::newest_needed`), or, for a box or maker departure no edge shows (no
+/// must name (`Departure::newest_needed`), or, for a box or rotator departure no edge shows (no
 /// epoch covers it), that of its holder's edge departure concerning `r` where there is one, else
 /// the rotation commit of each current epoch of `r` its holder holds a box at or made.
 ///

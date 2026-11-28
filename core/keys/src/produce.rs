@@ -284,7 +284,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         });
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
         // the floor (spec/crypto.md §4, Floors): a cut's own n; else the greatest floor among
-        // its maker and the holders it boxes (each boxed, none handed what lies below its own)
+        // its rotator and the holders it boxes (each boxed, none handed what lies below its own)
         let cut = cut && r == Role::Read;
         let floor = match (cut, re.has_floors()) {
             (true, _) => n + 1,
@@ -299,7 +299,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
             // ones keep no order n
             wrap = newest_of(established.iter().map(|(e, _)| e));
         }
-        // the carry rule (spec/crypto.md §4): what its floor lets in (its maker's is at most it);
+        // the carry rule (spec/crypto.md §4): what its floor lets in (its rotator's is at most it);
         // a cut's floor, its own n, none
         let earlier: Vec<(Epoch, Secret32)> = established.into_iter().filter(|(e, _)| !cut && re.carries_into(floor, e)).collect();
         in_history.insert(r, earlier.iter().map(|(e, _)| *e).collect());
@@ -443,7 +443,7 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
             }
             // the carry rule (spec/crypto.md §4): what the live entries list goes again as it is
             // (every holder of e reads it already); what this node adds, only as e's floor and
-            // its maker's let in
+            // its rotator's let in
             for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n() && !re.is_current(x) && re.carries(&e, x)) {
                 earlier.entry(x).or_insert_with(|| sx.secret().clone());
             }
