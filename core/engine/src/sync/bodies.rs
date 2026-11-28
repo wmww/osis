@@ -523,7 +523,7 @@ impl Engine {
     /// carry; and the header-only copy its certificates name (a rotation, a request, a minting),
     /// which goes where no other body of the commit does. Only a commit with a part certificates
     /// are made of (a role-class part, `sync.0` steps placing listed delete keys among them; a
-    /// card; a record) or a request has copies, so content never reads the certificates.
+    /// record) or a request has copies, so content (a card included) never reads the certificates.
     fn bodies_for(&mut self, t: &Tid, c: &CommitId) -> Result<ThingBodies> {
         let closure = match self.body_things(c).contains(t) {
             true => self.closure_body(t, c)?,
