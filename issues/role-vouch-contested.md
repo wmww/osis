@@ -1,11 +1,11 @@
-# Nothing vouches for a role write: the notice
-> Summary: Decided (Tess): a role write by a removed party that its remover's list does not name is dropped, whoever else received it; no vouch keeps it. A node that received it in time tells its user through the removal's result, and the user redoes it as their own write. Built but the notice.
+# Nothing vouches for a role write: the dropped-write report
+> Summary: Decided (Tess): a role write by a removed party that its remover's list does not name is dropped, whoever else received it; no vouch keeps it. A node that received it in time tells its user through the removal's result, and the user redoes it as their own write. Built but the dropped-write report.
 > Priority: normal
 > Tags: perm, engine, api
 
 ## The rule
 - A role write of X that removal R of X does not list is invalid, as unlisted content with no addendum is (spec/permissions.md §5.1 Frontier). Content addenda (§5.2) are a separate mechanism and stay.
-- **The notice** (to build, notes/redesign-plan.md S3): a node holding a role write of X that R dropped, received in R's window, reports it in the removal's result in the `osis` API (what arrived unnamed and was discarded). Local only: nothing on the wire, no rule in the walk. The redo is an ordinary write by the user; a removed key contesting it is an ordinary admin fight.
+- **The dropped-write report** (to build, notes/redesign-plan.md S3): a node holding a role write of X that R dropped, received in R's window, reports it in the removal's result in the `osis` API (what arrived unnamed and was discarded). Local only: nothing on the wire, no rule in the walk. The redo is an ordinary write by the user; a removed key contesting it is an ordinary admin fight.
 - Not in core: waiting for a sync before writing a removal. An app may.
 
 ## Why no vouch can work
