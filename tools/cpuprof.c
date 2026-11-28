@@ -59,7 +59,8 @@ static void dump(void) {
             if (dladdr(a, &info) && info.dli_fname) {
                 if (info.dli_fname != last) {
                     last = info.dli_fname;
-                    if (!realpath(last, abs)) snprintf(abs, sizeof abs, "%s", last);
+                    // a name realpath cannot resolve is the main binary run by PATH lookup
+                    if (!realpath(last, abs) && !realpath("/proc/self/exe", abs)) snprintf(abs, sizeof abs, "%s", last);
                 }
                 fprintf(f, "%s:%lx ", abs, (unsigned long)((char *)a - (char *)info.dli_fbase) - 1);
             }

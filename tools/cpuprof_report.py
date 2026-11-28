@@ -8,13 +8,71 @@ name contains it.
   --callers FN  also, per sample holding a frame whose name contains FN, the frame calling its
                 outermost one (`(root)` at the stack's base): what FN's cost is spent for
   --under FN    only samples holding FN, each cut to FN and what it calls: what FN spends on
-The symbolizer is llvm-symbolizer on PATH, else the newest /usr/bin/llvm-symbolizer-*."""
+The symbolizer is llvm-symbolizer on PATH, else the newest /usr/bin/llvm-symbolizer-*.
+`cpuprof_report.py --keep SAMPLES` (tools/cpuprof runs it after each run) keeps every object the
+samples name in SAMPLES.objs/ (a hard link, else a copy) and records `# object PATH BUILDID KEPT`
+lines; a report symbolizes from the kept copy and refuses an object with no kept copy, or one whose
+build id moved (a later build rewriting a linked file in place)."""
 import collections
 import glob
+import os
 import re
 import shutil
 import subprocess
 import sys
+
+
+def build_id(path):
+    """The object's GNU build id, or None."""
+    r = subprocess.run(["readelf", "-n", path], capture_output=True, text=True)
+    m = re.search(r"Build ID: ([0-9a-f]+)", r.stdout)
+    return m.group(1) if m else None
+
+
+def objects(lines):
+    """Every object a sample line names, in first-seen order."""
+    seen = {}
+    for line in lines:
+        if not line.startswith("#"):
+            for f in line.split():
+                if ":" in f:
+                    seen.setdefault(f.rsplit(":", 1)[0], None)
+    return list(seen)
+
+
+def keep(path):
+    lines = open(path).read().splitlines()
+    head = []
+    for obj in objects(lines):
+        bid = build_id(obj)
+        if bid is None:
+            sys.exit(f"cpuprof: {obj} has no build id")
+        kept = f"{path}.objs/{os.path.basename(obj)}.{bid}"
+        os.makedirs(os.path.dirname(kept), exist_ok=True)
+        if not os.path.exists(kept):
+            try:
+                os.link(obj, kept)
+            except OSError:
+                shutil.copy2(obj, kept)
+        head.append(f"# object {obj} {bid} {kept}")
+    with open(path, "w") as f:
+        f.write("\n".join(head + [x for x in lines if not x.startswith("# object ")]) + "\n")
+
+
+def kept_objects(lines):
+    """{object path as sampled: its kept copy}, exiting on one missing or not as profiled."""
+    rec = {x.split()[2]: x.split()[3:5] for x in lines if x.startswith("# object ")}
+    out = {}
+    for obj in objects(lines):
+        if obj not in rec:
+            sys.exit(f"cpuprof: no kept copy of {obj} (samples not written by tools/cpuprof --keep)")
+        bid, kept = rec[obj]
+        if not os.path.exists(kept):
+            sys.exit(f"cpuprof: kept copy {kept} of {obj} is gone")
+        if build_id(kept) != bid:
+            sys.exit(f"cpuprof: kept copy {kept} of {obj} is not the profiled build (build id moved from {bid})")
+        out[obj] = kept
+    return out
 
 
 def symbolize(sym, obj, addrs, inlines):
@@ -35,6 +93,8 @@ def outermost(fns, fn):
 
 
 def main(argv):
+    if argv[:1] == ["--keep"] and len(argv) == 2:
+        return keep(argv[1])
     inlines, callers, under, pos = False, None, None, []
     it = iter(argv)
     for a in it:
@@ -56,6 +116,7 @@ def main(argv):
     if sym is None:
         sys.exit("cpuprof: no llvm-symbolizer on PATH")
     lines = [line for line in open(path) if line.strip()]
+    kept = kept_objects(lines)
     taken = next((int(x.split()[2]) for x in lines if x.startswith("# taken ")), None)
     samples = [line.split() for line in lines if not line.startswith("#")]
     addrs = collections.defaultdict(set)
@@ -66,7 +127,7 @@ def main(argv):
                 addrs[obj].add(a)
     name = {}
     for obj, aa in addrs.items():
-        for a, frames in symbolize(sym, obj, sorted(aa), inlines).items():
+        for a, frames in symbolize(sym, kept[obj], sorted(aa), inlines).items():
             name[(obj, a)] = frames
     stacks = [[fr for f in s for fr in name.get(tuple(f.rsplit(":", 1)), [("??", "")])] for s in samples]
     if under:

@@ -4,7 +4,8 @@
 # Samples stay in OUT.<pid>; `tools/cpuprof --report OUT.<pid> [N] [FILTER...] [--inlines]
 # [--callers FN] [--under FN]` reprints them (per FILTER: only samples with a frame whose name
 # contains it; inlined frames, FN's callers, FN's callees: tools/cpuprof_report.py). Builds cpuprof.c on first use. Sets
-# cargo's [env] (tools/cargo_env.sh), so a copied test binary runs what `cargo test` runs.
+# cargo's [env] (tools/cargo_env.sh), so a copied test binary runs what `cargo test` runs. Keeps each
+# profiled object in OUT.<pid>.objs/ (a hard link, else a copy), so a report outlives the binary.
 set -e
 . "$(dirname "$0")/cargo_env.sh"
 dir="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +23,6 @@ fi
 status=0
 CPUPROF_OUT="$out" LD_PRELOAD="$lib" "$@" || status=$?
 for f in "$out".*; do
-    [ -f "$f" ] && python3 "$dir/cpuprof_report.py" "$f" 40
+    [ -f "$f" ] && python3 "$dir/cpuprof_report.py" --keep "$f" && python3 "$dir/cpuprof_report.py" "$f" 40
 done
 exit $status
