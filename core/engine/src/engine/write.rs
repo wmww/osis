@@ -278,11 +278,9 @@ pub(crate) fn required_role(ak: &str) -> Role {
 }
 
 /// The role a local write of `ops` on `ak` needs: `required_role`, but admin for a `keys.0` op
-/// outside the fields a writer rotates (its read, write and sync keysets and box records), as
-/// its receivers judge it (`apply::validity::rotation_required`: the inbox, deposit seed, sync ID
-/// and step keys are an admin's).
+/// outside `flows::WRITER_FIELDS`, as its receivers judge it (`apply::validity::rotation_required`).
 pub(crate) fn ops_role(ak: &str, ops: &[PathOp]) -> Role {
-    let writers = |op: &PathOp| matches!(op.path.first(), Some(osis_crdt::PathSeg::Field(f)) if [0, 1, 7, crate::flows::SEALED].contains(f));
+    let writers = |op: &PathOp| matches!(op.path.first(), Some(osis_crdt::PathSeg::Field(f)) if crate::flows::WRITER_FIELDS.contains(f));
     if ak == "keys.0" && !ops.iter().all(writers) { Role::Admin } else { required_role(ak) }
 }
 

@@ -213,7 +213,7 @@ impl KeysWrite {
 }
 
 /// The field of `keys.0` holding `role`'s keyset (spec/data-model.md §9).
-pub fn keyset_field(role: Role) -> u64 {
+pub const fn keyset_field(role: Role) -> u64 {
     match role {
         Role::Read => 0,
         Role::Write => 1,

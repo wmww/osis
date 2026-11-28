@@ -86,6 +86,11 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_on
 /// `keys.0`'s field of box records (spec/crypto.md §4 Box records; spec/wire.md §7).
 pub(crate) const SEALED: u64 = 8;
 
+/// The `keys.0` fields a writer writes (spec/crypto.md §3, spec/permissions.md §3): the read,
+/// write and sync keysets it rotates and box records; every other is an admin's (the admin
+/// keyset, inbox, deposit seed, sync ID, step keys, and any field this list does not name).
+pub(crate) const WRITER_FIELDS: [u64; 4] = [osis_keys::aspects::keyset_field(Role::Read), osis_keys::aspects::keyset_field(Role::Write), osis_keys::aspects::keyset_field(Role::Sync), SEALED];
+
 /// Removes from `m` every record of `actor`'s `keys.0` state at the roles `roles` a rotation
 /// rotates: its records replace them, as its keysets replace theirs (spec/crypto.md §4 Box
 /// records).
