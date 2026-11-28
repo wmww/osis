@@ -419,7 +419,6 @@ fn a_card_importer_holds_the_accounts_keys_spec_sync_inbox_5() {
 // `chat relay` and its host's `osis hold`), so it keeps K unread; node 2 redeems while it reaches
 // node 1 only, and reads T.
 #[test]
-#[ignore = "issues/node-root-hold-of-account-sync.md"]
 fn a_link_is_redeemed_at_a_node_keeping_t_and_k_unread_spec_permissions_7() {
     use crate::harness::history::{Gives, world_of, value_ak};
     use osis_crdt::{Op, PathOp};

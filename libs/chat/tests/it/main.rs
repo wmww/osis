@@ -26,10 +26,16 @@ pub fn node(seed: u64, c: &Arc<ManualClock>) -> Osis {
 
 /// A fresh node `seed` on `net`, at `c`.
 pub fn on(net: &ManualNet, seed: u64, c: &Arc<ManualClock>) -> Osis {
+    dialing(net, seed, c, &[])
+}
+
+/// A fresh node `seed` on `net`, at `c`, dialing `dial`.
+pub fn dialing(net: &ManualNet, seed: u64, c: &Arc<ManualClock>, dial: &[osis::Address]) -> Osis {
     let mut o = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     o.app.internals.seed = Some(seed);
     o.app.internals.clock = Some(c.clone());
     o.app.internals.net = Some(net.clone());
+    o.cfg.dial = dial.to_vec();
     osis::internals::create(o).unwrap()
 }
 

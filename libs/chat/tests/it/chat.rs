@@ -212,3 +212,42 @@ fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
     assert_eq!(texts(&bob, c), ["hi from bob", "hi from alice"]);
 }
 
+
+// notes/dogfood.md (the shared node), spec/sync-set.md §2 Own things, spec/permissions.md §7
+// Redeem: a node of its own account, granted sync on a chat and its link's K by `relay`, keeps
+// both unread by holding them from its node root (`osis hold`); a member joins by the link and
+// syncs both ways with the admin through that node alone, the two never meeting.
+#[test]
+fn a_member_joins_and_syncs_through_a_relay_holding_from_its_node_root_spec_sync_set_2() {
+    let c0 = clock();
+    let net = ManualNet::new(c0.clone());
+    let host = on(&net, 30, &c0);
+    let host_acc = osis_account::Account::make(&host).unwrap();
+    let addr = host.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+    let card = host_acc.realm().contact_card(&host).unwrap();
+    let alice = dialing(&net, 10, &c0, std::slice::from_ref(&addr));
+    let account = osis_account::Account::make(&alice).unwrap();
+    drive(&net, account.realm().import_contact(&alice, &card)).unwrap();
+    let c = create(&alice, &Options { name: "room".into(), ..Options::default() }, account.thing()).unwrap();
+    let link = alice.make_link(c, Role::Write, account.thing(), LinkOpts::default()).unwrap();
+    let k = alice.links().unwrap().into_iter().find(|l| l.target == c).unwrap().id.thing();
+    assert_eq!(relay(&alice, c, host_acc.thing()).unwrap(), [c, k]);
+    net.run();
+    let root = host.node_root().unwrap();
+    let mut w = host.write();
+    w.hold(root, c).unwrap();
+    w.hold(root, k).unwrap();
+    w.commit().unwrap();
+    net.run();
+    assert!(host.engine(|e| e.closure_holds(&c) && e.closure_holds(&k)), "the relay keeps the chat and K");
+    assert!(host.at(c, SETTINGS).get().unwrap().is_none(), "unread");
+    let bob = dialing(&net, 20, &c0, &[addr]);
+    let bob_acc = osis_account::Account::make(&bob).unwrap();
+    assert_eq!(drive(&net, bob.redeem(&link, bob_acc.thing())).unwrap(), c);
+    post(&bob, c, "hi from bob");
+    net.run();
+    assert_eq!(texts(&alice, c), ["hi from bob"]);
+    post(&alice, c, "hi from alice");
+    net.run();
+    assert_eq!(texts(&bob, c), ["hi from bob", "hi from alice"]);
+}

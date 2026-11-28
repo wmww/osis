@@ -1128,9 +1128,14 @@ fn role_on(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Role> {
 }
 
 /// Whether a sync-only cut of `y` taken under `o` counts for unit `c` (`Core::cut_under`): in the
-/// local part, of what its log counts.
+/// local part, of what its log counts, taken under `o` or under a holder `o` holds sync or above
+/// on as the local part judges it (the node's role is its own things' through the holders on the
+/// way, spec/sync-set.md §2 Own things: a node root's strong to a thing its account syncs).
 fn cut_under(core: &Core, c: Ctx, o: &Tid, y: &Tid) -> bool {
-    core.cut_under(o, y) && (c != Ctx::Local || crate::sync::local_log::counts(core, y))
+    if c != Ctx::Local {
+        return core.cut_under(o, y);
+    }
+    crate::sync::local_log::counts(core, y) && core.cut_holders(y).any(|h| h == *o || role_on(core, c, o, &h) >= Some(Role::Sync))
 }
 
 /// Whether the public syncs `y` by its grant (`Core::public_syncs`) as unit `c` reads it.
