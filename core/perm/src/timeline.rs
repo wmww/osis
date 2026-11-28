@@ -497,6 +497,12 @@ impl<S: Store> Timeline<S> {
         self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
     }
 
+    /// The grant (`holder`, `target`) holds just before `point`: the last applied write before
+    /// it, else the record grant's admin, else none.
+    pub fn grant_before(&self, holder: &Holder, target: &Tid, point: Point) -> Option<Grant> {
+        self.paths.value_before(holder, target, &key_of(point))
+    }
+
     /// The verdict part `ix` of `h` (`Held::deltas`) has over what is held, whether `h` is held
     /// or not (`Paths::judge`).
     pub fn judge(&self, h: &paths::Commit, ix: u32) -> Option<paths::Content> {

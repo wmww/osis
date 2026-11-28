@@ -111,3 +111,41 @@ fn a_signal_is_followed_where_its_holder_is_read_spec_sync_inbox_5() {
     assert_eq!(lp.peers[1].engine.role_on(&g), None, "peer 1 reads G no more");
     assert_eq!(synced_under(&mut lp, 1, &s), None, "X let go");
 }
+
+// spec/sync-inbox.md §5 (Grant signal), spec/sync-set.md §2 (Own things: a role is the thing's
+// grants as the node holds them): a signal tells of the grant G held on X at its fire; once the
+// node holds that grant's removal, the signal is let go and the removed node's X goes with its
+// lost access (following it gave only X's role entries, showing G none). A re-grant's own
+// signal, fired where G held none, is followed. Fails with a signal followed until its fire
+// leaves the inbox's held history.
+#[test]
+fn a_signal_is_let_go_once_its_grant_is_removed_spec_sync_inbox_5() {
+    let mut lp = synced(2);
+    let n = lp.peers[1].engine.tid();
+    let x = own_thing(&mut lp, 0, false);
+    let g = own_thing(&mut lp, 0, false);
+    let s = lp.peers[0].engine.sync_id_of(&x).unwrap().expect("X's sync ID");
+    lp.peers[0].engine.grant(&g, &n, &grant(Role::Read)).unwrap();
+    lp.hold_at(1, g);
+    let inbox = own_thing(&mut lp, 1, true);
+    lp.peers[0].engine.grant(&x, &g, &grant(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    signal(&mut lp, 1, inbox, x, s, g);
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.take_carried().unwrap();
+    assert_eq!(synced_under(&mut lp, 1, &s), Some([x].into()), "X followed");
+    assert_eq!(lp.peers[1].engine.core.keyed_role_now(&g, &x), Some(Role::Read), "the grant held");
+    lp.peers[0].engine.lower(&x, &super::Lowering { holder: g, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.take_carried().unwrap();
+    assert_eq!(lp.peers[1].engine.core.keyed_role_now(&g, &x), None, "the removal held");
+    lp.peers[1].engine.role_duties().unwrap();
+    lp.peers[1].engine.drop_lost_secrets().unwrap();
+    lp.peers[1].engine.take_carried().unwrap();
+    assert_eq!(synced_under(&mut lp, 1, &s), None, "X let go");
+    lp.peers[0].engine.grant(&x, &g, &grant(Role::Read)).unwrap();
+    signal(&mut lp, 1, inbox, x, s, g);
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.take_carried().unwrap();
+    assert_eq!(synced_under(&mut lp, 1, &s), Some([x].into()), "the re-grant's signal followed");
+}

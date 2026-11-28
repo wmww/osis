@@ -684,6 +684,11 @@ impl<'a> On<'a> {
     pub fn roster(&self, at: osis_perm::At) -> BTreeMap<Tid, osis_perm::Grant> {
         self.tl.roster(&self.thing, at)
     }
+    /// `holder`'s grant on it just before `point` (`Timeline::grant_before`), read from that
+    /// pair's writes alone.
+    pub fn grant_before(&self, holder: &Tid, point: osis_perm::Point) -> Option<osis_perm::Grant> {
+        self.tl.grant_before(&osis_base::Holder::Thing(*holder), &self.thing, point)
+    }
     /// The grant write on it in force for `holder` (`Timeline::in_force`).
     pub fn in_force(&self, holder: &Tid) -> Option<osis_base::CommitId> {
         self.tl.in_force(&osis_base::Holder::Thing(*holder), &self.thing)

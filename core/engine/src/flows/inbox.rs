@@ -110,8 +110,9 @@ impl Engine {
 
     /// Judges each held grant signal (spec/sync-inbox.md §5 Grant signal): its row goes once it
     /// is held valid here no more (the inbox's setting keeps it no longer); it is followed while
-    /// held and this node reads its holder (its role there, as it holds the holder's grants), and
-    /// let go when either ends. Whether any moved.
+    /// held, this node reads its holder (its role there, as it holds the holder's grants) and the
+    /// grant it tells of has not ended here (`signal_ended`), and let go when any of these ends.
+    /// Whether any moved.
     ///
     /// Invariant: a node follows a signal only where it reads the signal's holder, so a node
     /// reading the inbox but not the holder follows nothing for it; and every held signal naming a thing is followed under its own
@@ -134,7 +135,7 @@ impl Engine {
             // the inbox its fire is on, whose held history holds the fire's weak (`units::stubs_by`)
             let inbox = self.core.ix.commits.get(c).and_then(|m| m.view.aspects.iter().find(|a| a.ak.as_str() == GRANT_FIRE).map(|a| a.tid));
             // followed only where that history holds it: else no stub, and nothing to follow
-            let follow = inbox.filter(|i| valid && crate::engine::refs::kept::holds_history(&self.core, i) && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read));
+            let follow = inbox.filter(|i| valid && crate::engine::refs::kept::holds_history(&self.core, i) && crate::rotation::role_here(&self.core, &sig.holder) >= Some(Role::Read) && !signal_ended(&self.core, c, &sig.thing, &sig.holder));
             let fl = &mut self.core.followed_links;
             match (follow, fl.follows_signal(&sig.thing, &sig.sync_id, c)) {
                 (Some(inbox), false) => fl.follow_signal(sig.thing, sig.sync_id, *c, inbox),
@@ -198,6 +199,20 @@ impl Engine {
         let ak = super::ak(STRANDED_FIRE)?;
         self.run(|tx| save(tx, OwedFire { thing: t, ak, what: Fire::Expiring(v, expires), to: BTreeSet::new(), commit: None, pages: Default::default() }))
     }
+}
+
+/// Whether grant signal `fire`, naming `x` and telling `holder`, tells of a grant ended here:
+/// `holder`'s grant on `x` as this node holds it gave a role just before the fire (the grant it
+/// tells of) and gives none now (removed, or removed saying retain). Following it then gives only
+/// `x`'s role entries, which show the holder none (spec/sync-set.md §2 Own things). A signal fired
+/// where the holder held no grant is followed as one ahead of its grant: a re-grant's signal,
+/// fired after the removal it follows, is followed until the re-grant is held.
+fn signal_ended(core: &crate::engine::Core, fire: &CommitId, x: &Tid, holder: &Tid) -> bool {
+    let gives = |g: Option<osis_perm::Grant>| g.is_some_and(|g| !g.says_retain());
+    let Some(m) = core.ix.commits.get(fire) else { return false };
+    let Some(on) = core.timelines().on(x) else { return false };
+    let at = osis_perm::Point { ts: m.header.ts, node: m.header.signer, commit: *fire };
+    !gives(on.grant_at(holder, None)) && gives(on.grant_before(holder, at))
 }
 
 /// Whether a valid fire of signal `ak` is taken for what it carries (`Engine::take_fire`): a
