@@ -1004,7 +1004,11 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
     // dependent of an X they do not open names nothing the unit's readers know of X (spec/sync-ids.md
     // §2 What a sync holder learns), so it brings X's stub as a weak does
     let enters = strong && (independent || !opens.is_empty());
-    if !enters && (!opens.is_empty() || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a)) || fired) {
+    let carried = !opens.is_empty() || own.iter().any(|o| role_on(core, c, o, &a) >= Some(Role::Sync) || cut_under(core, c, o, &a));
+    // X's record naming an owner or a thing of the unit its mint admin: the record edge is X's
+    // grant the unit's readers hold by that record, so they hold X's stub whatever became of it
+    let record = !carried && own.iter().any(|o| record_admin(core, c, o, &a).is_some());
+    if !enters && (carried || fired) || record {
         out.extend(stub(a));
     }
     for o in &own {
@@ -1022,6 +1026,21 @@ fn stubs_by(core: &Core, (c, x): Vx, y: Tid, independent: bool, strong: bool, ou
         };
         out.extend(chain.into_iter().filter_map(stub));
     }
+}
+
+/// The mint admin of independent `a` where `a`'s record names unit `c`'s owner `o` or a thing `c`
+/// holds whole (spec/sync-set.md §2 Stubs): its record edge is `a`'s grant that `c`'s readers
+/// hold by `a`'s record, so `c` carries `a`'s stub with that edge's writes, whatever `c`'s role on
+/// `a` is now. Who writes it: `a`'s minter (the record), fixed in `a`'s tid.
+pub(crate) fn record_admin(core: &Core, c: Ctx, o: &Tid, a: &Tid) -> Option<Tid> {
+    let m = core.mint_admin(a)?;
+    let cl = &core.ix.closure;
+    let held = match c {
+        Ctx::Read(t) => cl.unit_holds(&t, &m),
+        Ctx::Local => cl.local_holds(&m),
+        Ctx::Unread(_) | Ctx::Stub(_) => false,
+    };
+    (m == *o || held).then_some(m)
 }
 
 /// The independent holders on `o`'s chains of grants with key access giving `r` or above on

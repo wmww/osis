@@ -212,10 +212,37 @@ impl Engine {
                 }
                 self.add_closure(ev, &seeds, out);
                 self.public_key_record_into(ev, &x, out);
-            } else if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
-                out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Sync));
+            } else {
+                if self.core.keyed_role_now(g, &x) >= Some(osis_base::Role::Sync) {
+                    out.sync_cuts.insert(x, crate::sync::units::chain_holders(&self.core, crate::sync::units::Ctx::Read(*g), g, &x, osis_base::Role::Sync));
+                }
+                self.record_edge_into(ev, g, &x, out);
             }
         }
+    }
+
+    /// Where `x`'s record names `g` or a thing of `g`'s unit M its mint admin, `g`'s keys not
+    /// opening `x` (spec/permissions.md §4 Stub, a record edge's writes): each held commit writing
+    /// M's edge on `x`, cut to the stub for readers opening M and `g`, with its evidence, and
+    /// `x`'s public key record. So a reader of `g` holding `x`'s record learns that `x` is
+    /// independent and what became of the record edge, and of `x`'s roster nothing else.
+    fn record_edge_into(&mut self, ev: &Ev, g: &Tid, x: &Tid, out: &mut Certs) {
+        let Some(m) = crate::sync::units::record_admin(&self.core, crate::sync::units::Ctx::Read(*g), g, x) else { return };
+        let on_m = |rc: &osis_perm::RoleCommit| rc.ops.iter().any(|op| op.target == *x && op.holder.thing() == Some(m));
+        let cs: Vec<CommitId> = self.core.ix.held.edge_commits(x).iter().filter(|rc| on_m(rc)).map(|rc| rc.id).collect();
+        let open = BTreeSet::from([*g, m]);
+        let mut seeds = BTreeSet::new();
+        for c in cs {
+            let parts = self.stub_parts(&c, x, &open);
+            if !parts.is_empty() {
+                out.add(c, parts);
+                out.records.insert(*x);
+                out.records.extend(self.header(&c).map(|h| h.signer));
+                seeds.insert((c, *x));
+            }
+        }
+        self.add_closure(ev, &seeds, out);
+        self.public_key_record_into(ev, x, out);
     }
 
     /// The stub cut of commit `c` on `x` for readers opening `open`: its

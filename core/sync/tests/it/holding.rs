@@ -706,7 +706,6 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
 // no reader of T0 reads T2, its maker's nodes included, and every entry under T0's sync ID filed
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
-#[ignore = "issues/record-edge-removal-carriage.md"]
 fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {
     // in either order the entries are filed again in
     for back in [false, true] {
@@ -728,6 +727,36 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
             w.advance(osis_proto::limits::PASS_WAIT_MS);
             w.run();
         }
+    }
+}
+
+// spec/sync-set.md §2 (Stubs: a record naming the unit's thing its mint admin brings the stub),
+// spec/permissions.md §4 (Stub: the record edge's writes): Bob's node 1 makes T0 and grants Alice
+// read on it; his node 2 mints T2 with admin T0, grants Alice sync on T2, untold (T2 made
+// independent), and removes T0's record edge or lowers it to sync. Only once that settled does
+// Alice hold T0: T0's sync ID carries T2's minting, so she reads T2 no more only by T0's carrying
+// T2's stub with the record edge's writes. She reads T0, and none of T2.
+#[test]
+fn a_mint_admins_later_reader_reads_nothing_its_record_edge_no_longer_gives_spec_sync_set_2() {
+    for to in [None, Some(Role::Sync)] {
+        let mut w = siblings();
+        let alice = w.node(0).account.unwrap();
+        let t0 = make(&mut w, 1, None, "t0");
+        w.write(1, |e| told(e, &t0, &alice, &edge(Role::Read))).unwrap();
+        w.run();
+        let t2 = make_in(&mut w, 2, t0, "t2");
+        w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
+        lower_record_edge(&mut w, 2, t2, t0, to);
+        w.run();
+        w.advance(osis_proto::limits::PASS_WAIT_MS);
+        w.run();
+        strong(&mut w, 0, None, t0, true);
+        w.run();
+        w.advance(osis_proto::limits::PASS_WAIT_MS);
+        w.run();
+        assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "to {to:?}: Alice reads T0");
+        assert_eq!(value(&mut w, 0, &t2), None, "to {to:?}: Alice reads T2 no more");
+        assert!(!holds_value(&mut w, 0, &t2), "to {to:?}: Alice holds T2's value");
     }
 }
 
