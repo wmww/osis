@@ -1,6 +1,10 @@
 # held_set_decides: a purge history judged differently by what was held
-> Summary: osis-engine `order::held_set_decides_plain` fails on main at a gate seed (Purges emphasis): one held set reads a later message than the model after purges by author and by ID; not shrunk.
+> Summary: osis-engine `order::held_set_decides_plain` fails on main at a gate seed (Purges emphasis): the node keeping every body ignores a purge by name whose right (a write grant) arrives after it; shrunk to four steps, not yet fixed.
 > Priority: normal
 > Tags: engine, tests
 
-Found by a gate on main (fails on the merge base alike, so no branch's change). Replay: `OSIS_ORDER_SEED=851492042192 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (`want Ok(Some(Str("m5")))`, `got Ok(Some(Str("m8")))`); `OSIS_ORDER_SHRINK=1` shrinks it. The history opens with a signal and messages by peers 1 and 2 on thing 0, then `PurgeAuthor { by: 0, t: 0, of: 1 }` and `Purge { by: 0, t: 0, of: 2, .. }`: start the study from spec/commits.md §5 (purges) and notes/purge-model.md. Seeds move with the harness: work from the shrunk script, then a hand test.
+Shrunk (`OSIS_ORDER_SHRINK=1` from seed 851492042192, LEN 60) to four steps, failing at seed 0 too:
+`Aim(SetGrant { by: 0, t: 5, holder: 2, role: Some(Write) })`, `Aim(Message { by: 2, t: 0, v: 8 })`, `Aim(Message { by: 2, t: 2, v: 5 })`, `Aim(PurgeNamed { by: 2, t: 2, of: 2, back: 0, v: 0 })`: on one thing, 0 grants 2 write (commit 25), 2 writes m8 (26) and m5 (27), then purges m5 by name (28, 29).
+- `order_checks(&play(0, &h), order)` passes delivered as made and wholly reversed; it fails with the setup first and then 29, 28, 27, 26, 25 (the purge before its grant): the node keeping every body reads m5 (`want`), the judged node m8. Dropping 25 from that order passes.
+- So the node keeping every body takes the purge as holding no right when it arrives before the grant, and does not judge it again once the grant arrives (spec/permissions.md §6 Judgment: the role timeline in any arrival order). The judged node, which drops bodies, reads it right. Start from how the keep-everything node re-judges a held purge request when a grant on its signer's path arrives.
+- The hand test is the four steps above with that order, at seed 0 (about 15 s; a smaller setup than the order harness's 25-commit base would be better).
