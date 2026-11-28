@@ -332,7 +332,9 @@ pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// A job of `run_jobs` (a seed of `run_seeds`) is marked hung once its thread has used this many CPU-seconds on it
 /// (a livelock), or has used no CPU at all for this many seconds (a deadlock); where a thread's
 /// CPU time cannot be read (not Linux), once it has run this many seconds of wall time.
-/// `OSIS_SEED_TIMEOUT_SECS` overrides; 0 is refused. CPU time, not wall time: a seed starved by
+/// `OSIS_SEED_TIMEOUT_SECS` overrides; 0 is refused. Per run of the seed: each candidate of a
+/// shrink and each replay after it counts afresh (`new_run`), so a full-size shrink, many runs
+/// long, is not hung (`SHRINK_CANDIDATES` bounds it). CPU time, not wall time: a seed starved by
 /// load (a `nice 19` run beside others at load 30-50 took 701 s for a 5 CPU-s seed) is not
 /// hung. Only the seed's thread counts: a seed waiting on threads it spawned reads as blocked
 /// (seeds are single-threaded). Minor consequence, test-only: near 0 every seed is hung; at
@@ -368,6 +370,9 @@ struct JobCtx {
     hung: std::sync::atomic::AtomicBool,
     traced: std::sync::atomic::AtomicBool,
     last: std::sync::Mutex<Option<(&'static std::panic::Location<'static>, std::time::Instant)>>,
+    /// where the job's latest run began (`new_run`), for `Run::judge` to count from: its thread's
+    /// CPU clock (`None` without one) and the instant
+    began: std::sync::Mutex<Option<(Option<u64>, std::time::Instant)>>,
 }
 
 impl JobCtx {
@@ -399,11 +404,23 @@ pub fn checkpoint() {
     });
 }
 
+/// The calling `run_jobs` job begins another run of its seed (a shrink's candidate, a replay of
+/// what the shrink found): `SEED_TIMEOUT_SECS` counts from here. Outside a job, nothing.
+fn new_run() {
+    CURRENT.with(|c| {
+        let Some(ctx) = c.borrow().clone() else { return };
+        let cpu = thread_clock().and_then(|c| cpu_ns(&c));
+        *ctx.began.lock().unwrap_or_else(|e| e.into_inner()) = Some((cpu, std::time::Instant::now()));
+    });
+}
+
 /// A job being run.
 struct Run {
     start: std::time::Instant,
     ctx: std::sync::Arc<JobCtx>,
-    /// its thread's CPU clock (`thread_clock`), and that clock at the start
+    /// when its latest run began (`new_run`), else `start`
+    run_start: std::time::Instant,
+    /// its thread's CPU clock (`thread_clock`), and that clock at its latest run's start
     clock: Option<(std::path::PathBuf, u64)>,
     /// the CPU clock last read, and when it was last seen to move
     cpu: u64,
@@ -415,8 +432,14 @@ impl Run {
     /// grows no faster than wall time, and a clock unmoved since `moved` stays so at best.
     fn judge(&mut self, now: std::time::Instant, limit: std::time::Duration) -> Result<std::time::Instant, String> {
         let limit_secs = limit.as_secs();
+        if let Some((cpu, at)) = self.ctx.began.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.run_start = at;
+            if let (Some((_, from)), Some(cpu)) = (&mut self.clock, cpu) {
+                *from = cpu;
+            }
+        }
         let Some(cpu) = self.clock.as_ref().and_then(|(c, _)| cpu_ns(c)) else {
-            return if now >= self.start + limit { Err(format!("ran past {limit_secs} s")) } else { Ok(self.start + limit) };
+            return if now >= self.run_start + limit { Err(format!("ran past {limit_secs} s")) } else { Ok(self.run_start + limit) };
         };
         if cpu != self.cpu {
             (self.cpu, self.moved) = (cpu, now);
@@ -496,10 +519,10 @@ pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visibl
                     return;
                 };
                 g.next += 1;
-                let ctx = Arc::new(JobCtx { label: label(job), hung: false.into(), traced: false.into(), last: Mutex::new(None) });
+                let ctx = Arc::new(JobCtx { label: label(job), hung: false.into(), traced: false.into(), last: Mutex::new(None), began: Mutex::new(None) });
                 let clock = clock.as_ref().and_then(|c| Some((c.clone(), cpu_ns(c)?)));
                 let now = Instant::now();
-                g.running.insert(i, Run { start: now, ctx: ctx.clone(), cpu: clock.as_ref().map_or(0, |c| c.1), clock, moved: now });
+                g.running.insert(i, Run { start: now, ctx: ctx.clone(), run_start: now, cpu: clock.as_ref().map_or(0, |c| c.1), clock, moved: now });
                 (i, job, ctx)
             };
             CURRENT.with(|c| *c.borrow_mut() = Some(ctx.clone()));
@@ -617,12 +640,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn run_on(clock: Option<std::path::PathBuf>, start: Instant) -> Run {
-        let ctx = std::sync::Arc::new(JobCtx { label: String::new(), hung: false.into(), traced: false.into(), last: std::sync::Mutex::new(None) });
+        let ctx = std::sync::Arc::new(JobCtx { label: String::new(), hung: false.into(), traced: false.into(), last: std::sync::Mutex::new(None), began: std::sync::Mutex::new(None) });
         let clock = clock.map(|c| {
             let n = cpu_ns(&c).unwrap();
             (c, n)
         });
-        Run { start, ctx, cpu: clock.as_ref().map_or(0, |c| c.1), clock, moved: start }
+        Run { start, ctx, run_start: start, cpu: clock.as_ref().map_or(0, |c| c.1), clock, moved: start }
     }
 
     // a seed is hung by the CPU its thread used, not by the wall time it took (a starved seed
@@ -669,6 +692,46 @@ mod tests {
         let mut run = run_on(None, long_ago);
         assert_eq!(run.judge(Instant::now(), Duration::from_secs(1)), Err("ran past 1 s".to_string()));
         assert!(run_on(None, Instant::now()).judge(Instant::now(), Duration::from_secs(1)).is_ok());
+    }
+
+    // a seed's timeout counts per run: a shrink's candidates together past the limit, each
+    // under it, are not hung; one candidate past it is; without a CPU clock, wall time per run
+    // (spec: none, test infrastructure)
+    #[test]
+    fn seed_timeout_counts_each_run_of_a_shrink() {
+        let Some(clock) = thread_clock() else { return };
+        let limit = Duration::from_millis(30);
+        let spin = |ns: u64| {
+            let end = cpu_ns(&clock).unwrap() + ns;
+            let mut x = 0u64;
+            while cpu_ns(&clock).unwrap() < end {
+                x = std::hint::black_box(x.wrapping_add(1));
+            }
+        };
+        let mut run = run_on(Some(clock.clone()), Instant::now());
+        CURRENT.with(|c| *c.borrow_mut() = Some(run.ctx.clone()));
+        // five candidates of 20 ms each: 100 ms in all
+        let mut tried = 0;
+        let mut judged = Vec::new();
+        let s = shrink(vec![1u32; 5], 5, |_| {
+            tried += 1;
+            spin(20_000_000);
+            judged.push(run.judge(Instant::now(), limit).is_ok());
+            false
+        }, |_| Vec::new(), |_: &[u32], _| {});
+        assert_eq!((s.candidates, tried), (5, 5));
+        assert_eq!(judged, vec![true; 5], "each candidate under the limit");
+        // the run after the shrink counts afresh too; one past the limit is hung
+        assert!(run.judge(Instant::now(), limit).is_ok());
+        spin(40_000_000);
+        assert!(run.judge(Instant::now(), limit).is_err());
+        // no CPU clock: a new run moves the wall start
+        let mut run = run_on(None, Instant::now() - Duration::from_secs(5));
+        CURRENT.with(|c| *c.borrow_mut() = Some(run.ctx.clone()));
+        assert!(run.judge(Instant::now(), Duration::from_secs(1)).is_err());
+        new_run();
+        assert!(run.judge(Instant::now(), Duration::from_secs(1)).is_ok());
+        CURRENT.with(|c| *c.borrow_mut() = None);
     }
 
     // a caller's `Cpu` counts the CPU of the threads par_map and run_jobs ran for it, nested,
@@ -827,11 +890,13 @@ pub struct Shrunk<A> {
 /// Shrinks `steps`, which `fails`, while it still fails, trying at most `budget` candidates:
 /// chunks dropped ddmin-style (halves first, down to single steps, each size swept once while it
 /// drops something), then each step replaced by a `simpler` form, to a fixpoint. `found` sees
-/// each smaller failing run as it is found (a shrink cut short keeps its progress).
+/// each smaller failing run as it is found (a shrink cut short keeps its progress). Each candidate,
+/// and the caller's run of what it returns, is a run of its own for `SEED_TIMEOUT_SECS` (`new_run`).
 pub fn shrink<A: Clone>(mut steps: Vec<A>, budget: u64, mut fails: impl FnMut(&[A]) -> bool, simpler: impl Fn(&A) -> Vec<A>, mut found: impl FnMut(&[A], u64)) -> Shrunk<A> {
     let mut tried = 0u64;
     let mut attempt = |h: &[A], tried: &mut u64| {
         *tried += 1;
+        new_run();
         fails(h)
     };
     'fix: loop {
@@ -880,6 +945,7 @@ pub fn shrink<A: Clone>(mut steps: Vec<A>, budget: u64, mut fails: impl FnMut(&[
             break;
         }
     }
+    new_run();
     Shrunk { steps, candidates: tried }
 }
 
@@ -947,6 +1013,7 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
     eprintln!("shrunk from {n} to {} steps in {} candidates{cut}", shrunk.steps.len(), shrunk.candidates);
     let same = same_failure(panic_message(&*first));
     for (name, play) in elsewhere {
+        new_run();
         let outcome = match quiet_failure(|| play(&shrunk.steps)) {
             None => "passes".to_string(),
             Some(m) if same(&m) => "fails the same way".to_string(),
@@ -955,6 +1022,7 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
         eprintln!("the shrunk script on {name}: {outcome}");
     }
     eprintln!("the shrunk run:");
+    new_run();
     replay(&shrunk.steps, true);
     resume_unwind(first)
 }
