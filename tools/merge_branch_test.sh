@@ -1,6 +1,6 @@
 #!/bin/sh
 # Tests tools/merge-branch against a temp repo with a bare origin, the real tools/claim and
-# tools/land, and fakes: wt (claim, list, release), tools/policy.py (exits $POLICY_RC),
+# tools/land, and fakes: wt (claim, list, release), tools/policy.py (exits $POLICY_RC), tools/known_replay.py (passes),
 # tools/gate.sh (prints a summary, exits $GATE_RC) and cargo (logs its arguments, exits $CARGO_RC).
 # gate: a conflict in notes/handoff.md alone takes main's side, any other stops before the gate as
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
@@ -53,6 +53,7 @@ cp "$tools/merge-branch" "$tools/claim" "$tools/land" "$tools/known_failures_mer
 printf '%s\n' 'import os, subprocess, sys' 'h, m = os.environ.get("POLICY_HOOK"), os.environ.get("CARGO_LOG", "") + ".policy-hooked"' \
     'if h and not os.path.exists(m): open(m, "w").close(); subprocess.run(["sh", "-c", h], capture_output=True)' \
     'sys.exit(int(os.environ.get("POLICY_RC", "0")))' > tools/policy.py
+echo 'pass' > tools/known_replay.py
 # GATE_KEEP=DIR: a failed gate keeps its files for the summary's re-read
 # GATE_STALE: summary lines to print (KNOWN-BUT-PASSED, STALE-COST)
 printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'printf "%b" "${GATE_STALE:-}"' 'echo "== gate exit ${GATE_RC:-0}"' \

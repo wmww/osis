@@ -351,6 +351,15 @@ def listed(wanted, cmd):
     return 1 if missing else 0
 
 
+def replay_command(name, repro):
+    """The command replaying one `rate:` line at its REPRO (the gate's REPLAY_STAGE; tools/known_replay.py)."""
+    at = repro[len("rate:"):]
+    if name.startswith("sim-sweep:"):
+        return ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", "1", "--from", at, "--only", name.split(":", 1)[1]]
+    crate, _, path = name.rpartition("/")
+    return ["env", *at.split(","), "cargo", "test", "--locked", "--no-fail-fast", "-p", crate, "--tests", "--", "--exact", path, "--include-ignored"]
+
+
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--listed"] and "--" in args:
@@ -407,20 +416,17 @@ def main():
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
     # each `rate:` line of a selected crate or scenario replayed at its REPRO, its log naming it
     for name, repro in gate_failures.replays("."):
-        at = repro[len("rate:"):]
         if name.startswith("sim-sweep:"):
             if not sim:
                 continue
-            c = ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", "1", "--from", at, "--only", name.split(":", 1)[1]]
         else:
-            crate, _, path = name.rpartition("/")
+            crate = name.rpartition("/")[0]
             if crate not in selected and crate not in local:
                 continue
             # built by the properties' build already, or once here
             if not any(b[:3] == ["cargo", "test", "--locked"] and crate in b[4::2] for b in build):
                 build.append(["cargo", "test", "--locked", "-p", crate, "--tests", "--no-run"])
-            c = ["env", *at.split(","), "cargo", "test", "--locked", "--no-fail-fast", "-p", crate, "--tests", "--", "--exact", path, "--include-ignored"]
-        replays.append(f"printf 'gate: replay %s %s\\n' {shlex.quote(name)} {shlex.quote(repro)} && {shlex.join(c)}")
+        replays.append(f"printf 'gate: replay %s %s\\n' {shlex.quote(name)} {shlex.quote(repro)} && {shlex.join(replay_command(name, repro))}")
     if emit:
         with open(emit, "a") as f:
             f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"check {shlex.join(c)}\n" for c in checks] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds]

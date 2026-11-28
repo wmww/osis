@@ -7,6 +7,8 @@
 # Policy runs whole after any rebase, even one touching none of the branch's files: its costly checks
 # (doc_refs, code_refs, spec_map) are cross-file, so a moved file can break a branch file's citation,
 # and the per-file ones cost about a CPU-s.
+# A `rate:` line of tools/known_failures.txt that HEAD adds is replayed once first and judged as the gate
+# will (tools/known_replay.py): a pattern matching off the failure's seed line fails every later gate.
 # One command, so no `;` or `echo $?` between the check and the push drops the check's exit (that
 # pushed policy violations to main twice). `--delete BRANCH` then deletes origin's BRANCH (the
 # landed branch's pushed copy), only after the push succeeded: a delete chained after a piped land
@@ -31,6 +33,7 @@ current() {
         echo "land: HEAD lacks origin/main ($(git rev-list --count HEAD..origin/main) commits${1:-}): git -c rerere.enabled=false rebase origin/main, read its result, then clippy and the tests of the crates of the files both sides changed (${both:-none}); not pushed" >&2; exit 1; }
 }
 current
+python3 tools/known_replay.py || { echo "land: a new rate: known line does not replay as the gate will judge it (above); not pushed" >&2; exit 1; }
 python3 tools/policy.py --baseline || { echo "land: policy failed (above); not pushed" >&2; exit 1; }
 current ", landed while policy ran"
 echo "land: pushing $(git rev-list --count origin/main..HEAD) commits:" >&2

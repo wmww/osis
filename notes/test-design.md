@@ -37,7 +37,6 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
-- Policy (or `tools/land`) replays a newly added `rate:` known line once and checks its pattern matches the failure's seed line, as the gate will (a line that could never match failed every branch's gate).
 - `holds_on` shrinks a replayed script under `OSIS_SYNC_SHRINK=1` (it only shrinks generated histories, while its message offers to).
 - holding.rs tests that call `w.advance(PASS_WAIT_MS); w.run()` by hand: check whether they still need it since `World::run` waits out passes begun during its wait (d1d4081146).
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).

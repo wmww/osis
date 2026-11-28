@@ -163,13 +163,14 @@ def known(root=ROOT):
     return names, errs
 
 
-def replays(root=ROOT):
-    """[(NAME, REPRO)] of every well-formed `rate:` line: what the gate replays."""
-    path = os.path.join(root, KNOWN)
-    if not os.path.exists(path):
-        return []
+def replays(root=ROOT, lines=None):
+    """[(NAME, REPRO)] of every well-formed `rate:` line (of the list at root, or of `lines`): what
+    the gate replays."""
+    if lines is None:
+        path = os.path.join(root, KNOWN)
+        lines = open(path).read().split("\n") if os.path.exists(path) else []
     out = []
-    for line in open(path):
+    for line in lines:
         f = line.split(None, 3)
         if len(f) == 4 and not f[0].startswith("#") and (RATE_SIM if f[0].startswith("sim-sweep:") else RATE_TEST).match(f[1]):
             out.append((f[0], f[1]))
