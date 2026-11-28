@@ -448,7 +448,7 @@ impl Engine {
     /// may-grant grant of a key holding none. Nothing is sealed to a key: no boxes, no rotation, no
     /// delivery. `key` then signs as `target` (`Mutation::sign_as`) where its key store holds it.
     pub fn grant_key(&mut self, target: &Tid, key: &osis_base::SignKey, grant: Option<&Grant>) -> Result<Done> {
-        if grant.is_some_and(|e| e.retain || e.floor.is_some() || e.until == Some(Time(0))) {
+        if grant.is_some_and(|e| !crate::apply::validity::perm_grant(e).fits_key()) {
             return Err(Error::Misuse("a key's grant carries no retain, no floor and no until 0"));
         }
         let (t, holder) = (*target, Holder::Key(*key));

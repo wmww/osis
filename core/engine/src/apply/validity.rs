@@ -92,10 +92,9 @@ impl Grants {
             Holder::Key(k) => k.to_value(),
         }
     }
-    /// Whether `e` is a grant this aspect may hold: a key's carries no `retain` and no `floor`, and
-    /// is no `until` 0 removal (spec/data-model.md §9 `signers.0`).
+    /// Whether `e` is a grant this aspect may hold: any thing's, a key's as `Grant::fits_key`.
     fn fits(self, e: &Grant) -> bool {
-        self == Grants::Things || !e.retain && e.floor.is_none() && e.until != Some(osis_base::Time(0))
+        self == Grants::Things || e.fits_key()
     }
 }
 
