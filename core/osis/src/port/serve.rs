@@ -400,7 +400,7 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         method::PUT_CARD => on(args, |(on, of): (Tid, Tid)| h.put_card(here(h, on)?, of)),
         method::REMOVE_CARD => on(args, |(on, of): (Tid, Tid)| h.remove_card(here(h, on)?, of)),
         method::LINKS => on(args, |()| h.links()),
-        method::REVOKE_LINK => on(args, |(id,): (crate::LinkId,)| h.revoke_link(id)),
+        method::END_LINK => on(args, |(id,): (crate::LinkId,)| h.end_link(id)),
         method::PUBLISH_DIAL_ON => on(args, |(things,): (Vec<Tid>,)| h.publish_dial_on(&things)),
         method::ROTATE_PEER_ADDRESS => on(args, |()| h.rotate_peer_address()),
         method::DISPUTES => on(args, |()| h.disputes()),

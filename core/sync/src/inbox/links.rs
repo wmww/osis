@@ -27,7 +27,7 @@
 //! only way there (spec/permissions.md §7). Limit: a node stopping between the join's write and
 //! its row's forgets the link at its next start (the join is the account's), so that join waits
 //! for a source through D's strong to K alone. Not built: the other end, every route refusing L's static
-//! entry (a link revoked before its join was taken is followed until then).
+//! entry (a link ended before its join was taken is followed until then).
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 //!

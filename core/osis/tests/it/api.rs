@@ -803,7 +803,7 @@ fn waiting_calls_are_send() {
         send(db.wait_synced(osis::SyncScope::All));
         send(db.redeem(&link, t));
         send(db.set_role(t, t, None, o));
-        send(db.revoke_link(id));
+        send(db.end_link(id));
         send(db.connect_node(&login));
         send(db.unit_source(t, osis::UnitSource::Local));
         send(Osis::connect(std::slice::from_ref(&login), osis::AppConfig::default()));

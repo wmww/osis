@@ -92,8 +92,8 @@ pub mod method {
     pub const REMOVE_CARD: u64 = 36;
     /// `[] -> [link info*]` (`links`)
     pub const LINKS: u64 = 37;
-    /// `[link id] -> []` (`revoke_link`)
-    pub const REVOKE_LINK: u64 = 38;
+    /// `[link id] -> []` (`end_link`)
+    pub const END_LINK: u64 = 38;
     /// `[[tid*]] -> []` (`publish_dial_on`)
     pub const PUBLISH_DIAL_ON: u64 = 39;
     /// `[] -> []` (`rotate_peer_address`)

@@ -370,7 +370,7 @@ Steps (§8) are their canonical bytes as byte strings; blobs are byte strings; `
     | 35 | put card | `[on, of] -> []`; main only |
     | 36 | remove card | `[on, of] -> []`; main only |
     | 37 | links | `[] -> [[link, target, role, Opt(until), single_use]*]`, link the link's thing; main only |
-    | 38 | revoke link | `[link] -> []`; main only |
+    | 38 | end link | `[link] -> []`; main only |
     | 39 | publish dial on | `[[tid*]] -> []`; main only |
     | 40 | rotate peer address | `[] -> []`; main only |
     | 41 | disputes | `[] -> [[dispute*], left out]`, a dispute `[id text, target, author, holder, commit id, side, chosen]`, side 0 author, 1 holder; main only |

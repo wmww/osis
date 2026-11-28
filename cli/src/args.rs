@@ -543,7 +543,7 @@ pub enum LinkCmd {
     /// The account's working links (of thing T)
     Ls { t: Option<String> },
     /// End link ID (a join no writer received yet is undone)
-    Revoke { id: String },
+    End { id: String },
 }
 
 #[derive(Subcommand, Debug)]

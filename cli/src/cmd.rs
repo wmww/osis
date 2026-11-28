@@ -180,7 +180,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Link(LinkCmd::Make { .. })
             | Cmd::Link(LinkCmd::Locator { .. })
             | Cmd::Contact(ContactCmd::Show)
-            | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
+            | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::End { .. })
             | Cmd::Contact(ContactCmd::Import { .. })
             | Cmd::Chat(_)
             | Cmd::Status { .. }
@@ -347,14 +347,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let open = ctx.account()?.remove_node(&db, n, o)?;
             if end_links {
                 for l in &open {
-                    db.revoke_link(l.id)?;
+                    db.end_link(l.id)?;
                 }
             }
             let say = |l: &osis::LinkInfo| {
                 if end_links {
                     format!("ended link {} to {}", l.id, l.target.to_uri())
                 } else {
-                    format!("link {} to {} still works for whoever holds that node: osis link revoke {}", l.id, l.target.to_uri(), l.id)
+                    format!("link {} to {} still works for whoever holds that node: osis link end {}", l.id, l.target.to_uri(), l.id)
                 }
             };
             ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
@@ -519,9 +519,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {} {}", l.id, l.role.name(), l.until.map_or("-".into(), |u| ts_text(raw, u.0)), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
-        Cmd::Link(LinkCmd::Revoke { id }) => {
+        Cmd::Link(LinkCmd::End { id }) => {
             let id: osis::LinkId = id.parse()?;
-            Ok(db.revoke_link(id)?)
+            Ok(db.end_link(id)?)
         }
         Cmd::Card(CardCmd::Put { on, of }) => Ok(db.put_card(ctx.tid(&on)?, ctx.tid(&of)?)?),
         Cmd::Card(CardCmd::Rm { on, of }) => Ok(db.remove_card(ctx.tid(&on)?, ctx.tid(&of)?)?),

@@ -160,7 +160,7 @@ fn links_are_the_accounts_spec_permissions_7() {
     drive(&net, db.wait_synced(account)).unwrap();
     drive(&net, b.wait_synced(account)).unwrap();
     assert_eq!(b.links().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), [id], "listed on the other node");
-    b.revoke_link(id).unwrap();
+    b.end_link(id).unwrap();
     assert!(b.links().unwrap().is_empty());
 }
 

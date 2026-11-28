@@ -237,7 +237,7 @@ impl Engine {
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
     /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
     /// redemption (L's grant already gone: its entry is reset again, spec/permissions.md §2), or
-    /// to revoke the link. K rotates before its next encryption (L's departure). The link ends
+    /// to end the link. K rotates before its next encryption (L's departure). The link ends
     /// with it, and so does its seed (`let_seeds_go`).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
         let keeps = self.link_seeds(k, l)?;

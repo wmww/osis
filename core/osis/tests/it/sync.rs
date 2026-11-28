@@ -330,7 +330,7 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
     assert!(!matches!(b.role_on(t), Ok(Some(_))), "joined nothing");
 }
 
-// spec/permissions.md §7 (Finalized; the seed thing goes): a revoked link is listed no more and
+// spec/permissions.md §7 (Finalized; the seed thing goes): an ended link is listed no more and
 // revoking it again changes nothing; its joiner keeps its role until set_role removes it,
 // through the link's thing.
 #[test]
@@ -346,9 +346,9 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
     let link = a.make_link(t, Role::Read, a.node(), LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, b.redeem(&link, b.node())).unwrap(), t);
     let id = a.links().unwrap().into_iter().find(|l| l.target == t).unwrap().id;
-    a.revoke_link(id).unwrap();
+    a.end_link(id).unwrap();
     assert!(a.links().unwrap().is_empty(), "ended");
-    a.revoke_link(id).unwrap();
+    a.end_link(id).unwrap();
     // the joiner: b's node thing, as it named (spec/permissions.md §7 Redeem)
     let joiner = b.node();
     let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.thing == joiner);

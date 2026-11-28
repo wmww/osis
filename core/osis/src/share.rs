@@ -125,7 +125,7 @@ pub struct LinkOpts {
     pub single_use: bool,
 }
 
-/// Names a link (`LinkInfo::id`, `Osis::revoke_link`). Its text form is what `FromStr` reads.
+/// Names a link (`LinkInfo::id`, `Osis::end_link`). Its text form is what `FromStr` reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LinkId(pub(crate) Tid);
 
@@ -153,7 +153,7 @@ impl std::str::FromStr for LinkId {
 /// A link this node made (`links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
-    /// What `revoke_link` takes.
+    /// What `end_link` takes.
     pub id: LinkId,
     /// The thing it shares.
     pub target: Tid,
@@ -673,10 +673,10 @@ impl Osis {
     }
 
     /// Makes a share link to `target` with `role` (read or above: `Invalid` below). Anyone
-    /// holding the link can redeem it until `until` or `revoke_link`. The link's thing is minted
+    /// holding the link can redeem it until `until` or `end_link`. The link's thing is minted
     /// with admin `admin` (as `Write::create`'s), a thing this node is an admin of (`Permission`
     /// otherwise): every node holding `admin` holds the link, and any of its admins lists and
-    /// ends it (`links`, `revoke_link`). A person's links take their account, so each of its
+    /// ends it (`links`, `end_link`). A person's links take their account, so each of its
     /// nodes sees and ends them.
     pub fn make_link(&self, target: Tid, role: Role, admin: Tid, opts: LinkOpts) -> Result<Link> {
         if let Some(at) = self.process_at("make_link")? {
@@ -799,7 +799,7 @@ impl Osis {
     }
 
     /// The links that still work made with an `admin` (`make_link`) this node holds, whichever
-    /// node made them: an admin of that `admin` ends them (`revoke_link`). Filter by
+    /// node made them: an admin of that `admin` ends them (`end_link`). Filter by
     /// `LinkInfo::target`. `Unsupported` on a client with a thing of its own, which is also why a node
     /// connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
@@ -844,9 +844,9 @@ impl Osis {
     /// one, `set_role`. Writes at once: a join this node has not received yet is undone (one another
     /// writer received stands, as `set_role` says). `Permission` unless this node is an admin of
     /// the link's `admin` (`make_link`); `Unsupported` on a client with a thing of its own.
-    pub fn revoke_link(&self, id: LinkId) -> Result<()> {
-        if let Some(at) = self.process_at("revoke_link")? {
-            return self.forward(&at, crate::port::method::REVOKE_LINK, (id,));
+    pub fn end_link(&self, id: LinkId) -> Result<()> {
+        if let Some(at) = self.process_at("end_link")? {
+            return self.forward(&at, crate::port::method::END_LINK, (id,));
         }
         match self.link_key(id.0)? {
             Some(l) => {

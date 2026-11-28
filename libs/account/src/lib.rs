@@ -203,7 +203,7 @@ impl Account {
     /// the account's rotation, erasing unless `o.retain_copy` says retain, and its dial and settings
     /// entries on the account and its profile dropped. It returns what is easy to forget: the
     /// account's links still working. The removed node keeps their keys, so whoever holds it can
-    /// read and join through each until `revoke_link`, and ending them is the caller's choice.
+    /// read and join through each until `end_link`, and ending them is the caller's choice.
     /// None when `node` was not one of the account's (its entries dropped where they stand). `Permission` unless this node is an admin
     /// node of the account; `Unsupported` on a client with a thing of its own.
     pub fn remove_node(&self, db: &Osis, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {

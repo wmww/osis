@@ -964,7 +964,7 @@ fn a_main_session_makes_the_nodes_calls_spec_wire_11() {
     cl.make_link(t, Role::Read, a.author(), Default::default()).unwrap();
     let links = cl.links().unwrap();
     assert_eq!((links.len(), &links), (1, &a.links().unwrap()));
-    cl.revoke_link(links[0].id).unwrap();
+    cl.end_link(links[0].id).unwrap();
     assert!(a.links().unwrap().is_empty());
     assert_eq!(cl.retained_copies().unwrap(), a.retained_copies().unwrap());
     assert_eq!(cl.disputes().unwrap(), a.disputes().unwrap());
