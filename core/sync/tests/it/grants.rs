@@ -454,7 +454,7 @@ fn a_link_joiners_write_reaches_another_reader_spec_commits_4() {
     w.add_node();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Write)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &grant(Role::Write)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
     w.run();
     root_strong(&mut w, 1, t, true);
     let link = w.make_link(0, t, Role::Write);
