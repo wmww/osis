@@ -14,7 +14,7 @@ Goal: a commit that, as far as known, behaves roughly correctly: no catastrophic
 Blocking, in order:
 1. Main red only with listed failures (the local-part log's landing and whatever else broke the sim and rotation tests).
 2. The full-size sync differential's classes: each fixed or judged a model question (issues/differential-full-size-classes.md).
-3. Security: issues/demoted-writer-deletes-at-stores.md and issues/record-edge-removal-carriage.md.
+3. Security: issues/record-edge-removal-carriage.md.
 4. A dogfood smoke pass (notes/dogfood.md): chat between two accounts, pairing, removing a node, a link; fix what is broken.
 5. One full gate at the candidate, known failures each judged not blocking.
 Not blocking: perf and cost issues, low issues, the structural items below.

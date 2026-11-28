@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: security, sync, tess-call
 
-**Decided (Tess):** option 1 if it is easy, with spec/requirements.md Deletion's "anyone who ever held the right" becoming "anyone holding write now" (approved); left as it is if it turns out a mess.
+**Open design problem (Tess):** both options as stated are broken. Option 1 is not "anyone holding the right now": at a store of another unit R carrying D it is "someone current on R who holds a D key", a rule that depends on which units carry the thing (a store cannot tell its own thing's blobs from a carried thing's). Option 3 leaves a lowered writer able to erase its own past writes at stores until it is removed. Option 2 may be too expensive. Not blocking the alpha; wants a design pass.
 
 What a user sees: Bob writes messages in a chat, then is made a reader. Bob can still delete his old messages from a server that only stores the chat. People who have them keep them; a new node syncing only through that server never gets them. (Pinned: osis-sync `delete_keys::a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_*`.)
 
