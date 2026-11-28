@@ -14,6 +14,7 @@
 - Every tess-call issue, listed in notes/priorities.md, Parked on Tess; the model questions first.
 - **Chain holders at sync**: a reader of a unit learns its own chain's holders of a thing it reaches at sync (notes/stub-rewrite.md, Decided). Sheave reads that as spec/requirements.md's "who granted it"; a strict reading of a sync holder learning no role grants wants her word.
 - **Dispute sides end with the removal held**: spec/permissions.md §5.1, a recorded dispute side ends when the node no longer holds that removal commit, so releasing a thing returns its storage to a fresh node's and a node syncing it again judges the dispute afresh. Sheave reads "sides stick" as while the thing is held.
+- **Wording in spec/requirements.md and README.md** (renames to lower/remove done everywhere else): three requirements lines and one README line, plus one wording in notes/principles.md; listed in issues/deprecated-terms.md (the role-words and limit rows).
 - issues/shared-things-refuse-readers-stranded-notices.md has its plan, for after the alpha.
 
 ## The route (Tess)
