@@ -38,7 +38,7 @@ const KEPT: [&str; 6] = ["created.0", "retention^.0", "roles.0", "signers.0", "k
 
 /// Whether a part on `ak` is a certificate (spec/commits.md §5 What a held thing needs): the
 /// record or a role-class part, `secrets.0` included.
-fn certificate(ak: &Ak) -> bool {
+pub(crate) fn certificate(ak: &Ak) -> bool {
     ak.as_str() == "created.0" || osis_schema::core_types::is_role_class(ak.as_str())
 }
 
