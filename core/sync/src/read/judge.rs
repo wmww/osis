@@ -213,7 +213,7 @@ impl Mine<'_> {
 
     /// `t` has come (the answer moves when the clock reaches it).
     fn reached(&self, t: u64) -> bool {
-        t <= self.clock.until(Some(t))
+        self.clock.reached(t)
     }
 }
 

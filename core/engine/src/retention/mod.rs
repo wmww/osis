@@ -545,7 +545,7 @@ fn purged_unlisted(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
 /// passed), on the memo clock.
 fn purge_unlisted(core: &Core, c: &CommitId, ai: usize) -> bool {
     let t = crate::engine::listing::purged_keep(core, c, ai);
-    t < osis_commit::FOREVER && core.time.until(Some(t)) >= t
+    t < osis_commit::FOREVER && core.time.reached(t)
 }
 
 /// Drops every part judged invalid in this transaction (`Core::drop_due`), held or missing, but
@@ -1626,7 +1626,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let keeps = self.part_keeps(c)?;
-        let reached = |e: &Engine, t: u64| e.core.time.until(Some(t)) >= t;
+        let reached = |e: &Engine, t: u64| e.core.time.reached(t);
         // held or missing parts a cover may drop: past their keep bound, an own-gone leftover
         // (never a missing part) only past its expiry
         let mut parts = Vec::new();

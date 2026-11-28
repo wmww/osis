@@ -2200,7 +2200,7 @@ fn judge_rooms(g: &mut Inner, fx: &mut Effects<(SyncId, Cap), bool>) -> Result<B
         };
         let fits = || {
             // every entry it refused expired: none of them is left anywhere to take
-            if r.expires != u64::MAX && g.clock.until(Some(r.expires)) >= r.expires {
+            if r.expires != u64::MAX && g.clock.reached(r.expires) {
                 return Ok(true);
             }
             g.read_in(matches!(k.1, Cap::Memory | Cap::MemoryTotal), |t, env| room_fits(t, env, &k.0, k.1, r.need))

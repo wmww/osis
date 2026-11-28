@@ -651,7 +651,7 @@ impl Engine {
         // (`Engine::forgettable`): a re-grant gives it force with its parts still invalid
         let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));
         // a bound still ahead wakes the judgement when it passes
-        let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));
+        let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| !self.core.time.reached(*k)));
         // a dropped part's own bound as it dropped (`Dropped::peer_delete_from`), a held one's keep
         // bound plus `MAX_DRIFT` (spec/commits.md §5 Keep at least)
         let peer_delete_from = b.parts.iter().map(|ai| match m.dropped(*ai) {

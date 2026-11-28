@@ -1141,7 +1141,7 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     }
     let fresh_all = fresh_all(&*g, work, s, p.pulled, sources);
     let deadline = p.deadline.0;
-    let timed_out = clock.until(Some(deadline)) >= deadline;
+    let timed_out = clock.reached(deadline);
     // a record that no longer holds S has nothing of S left to read (closed: a Lost)
     let holding = g.records_holding(s).unwrap_or_default();
     let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));

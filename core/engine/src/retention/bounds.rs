@@ -138,7 +138,7 @@ pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::A
 /// setting keeps history for its aspect nothing is dated and it adds no bound.
 fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
     // read with a wake at `last`: the bound moves when the clock passes it
-    if last > k && core.time.until(Some(last)) < last { last } else { k }
+    if last > k && !core.time.reached(last) { last } else { k }
 }
 
 /// `part_bounds` of every part of `c`, by part index (`Engine::part_keeps`). A memo

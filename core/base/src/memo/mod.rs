@@ -1635,6 +1635,11 @@ impl Clock {
         self.now
     }
 
+    /// Whether the clock is at or past `t`, for a reader whose answer turns there (`until`).
+    pub fn reached(&self, t: u64) -> bool {
+        self.until(Some(t)) >= t
+    }
+
     /// The time, for a reader that judges by it: inside a memo or `Effects` settle computing
     /// (`computing`), the time as a bound held over its frame reads it (`bound`, `at`: the
     /// answer holds until that deadline), else a read of the time whole: an answer that

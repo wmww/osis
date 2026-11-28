@@ -938,7 +938,7 @@ impl Engine {
     /// Whether the memo clock reached `t`, read up to `t`: a value judged by it moves when `t`
     /// passes, and `clock_next` wakes the driver then.
     pub fn reached(&self, t: Time) -> bool {
-        self.core.time.until(Some(t.0)) >= t.0
+        self.core.time.reached(t.0)
     }
 
     /// Moves the memo clock to `now`.

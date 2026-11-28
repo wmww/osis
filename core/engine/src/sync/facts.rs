@@ -173,7 +173,7 @@ impl Engine {
         let mut out = PartSet::new();
         for ai in &b.parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let kept = keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k);
+            let kept = keeps.get(*ai).is_some_and(|k| !self.core.time.reached(*k));
             if !kept && !self.delta_live(c, &a.tid, &a.ak)? {
                 continue;
             }
