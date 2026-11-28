@@ -5,7 +5,7 @@
 //! (creation records, `box` values, AKs, value depth) are read by their own crates' rules.
 
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE, MAX_PATH_THINGS, MAX_VALUE_DEPTH};
-use osis_base::{Ak, CreationRecord, Limits, Value, cbor};
+use osis_base::{CreationRecord, Limits, Value, cbor};
 use osis_proto::Msg;
 use osis_proto::examples::messages;
 
@@ -319,14 +319,6 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
             }
         }),
         30 => n(4).and_then(|_| b(&a[0], 16)).and_then(|_| b(&a[1], 15)).and_then(|_| list(&a[2], 0, usize::MAX, |c| arr(c).map(|_| ()))).and_then(|_| records(&a[3])),
-        31 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| {
-            list(&a[1], 1, usize::MAX, |s| {
-                let s = tuple(s, 3)?;
-                b(&s[0], 15)?;
-                ok(matches!(&s[1], Value::Str(t) if Ak::new(t.clone()).is_ok()), "ak")?;
-                b(&s[2], 16)
-            })
-        }),
         32 | 33 => {
             let proofs = |v: &Value| {
                 list(v, 0, 256, |p| {

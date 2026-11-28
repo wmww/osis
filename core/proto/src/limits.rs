@@ -59,7 +59,7 @@ pub const SESSION_ID_LEN: usize = 16;
 
 /// A step's greatest canonical encoding: eight fixed-size items, `prev` present (spec/wire.md §8).
 pub const MAX_STEP_BYTES: usize = 289;
-/// A step's greatest encoding as a byte string in a message (spec/wire.md §11.2 Offer: 326).
+/// A step's greatest encoding as a byte string in a message (spec/wire.md §11.2 Head: 292).
 pub const MAX_STEP_WIRE: usize = MAX_STEP_BYTES + 3;
 /// Steps in one HeadReply (spec/wire.md §11.2 Head): ⌊`REPLY_BUDGET` / 292⌋.
 pub const MAX_HEAD_STEPS: usize = REPLY_BUDGET / MAX_STEP_WIRE;

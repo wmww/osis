@@ -126,14 +126,14 @@ fn grown(m: &Msg, pos: usize, inner: Option<(usize, usize)>, n: usize) -> Value 
     Value::List(items)
 }
 
-// spec/wire.md §11.2 (per-message caps): Offer, Lost, Digest, Prove, Resume: every list cap
-// takes its cap and refuses one more
+// spec/wire.md §11.2 (per-message caps): Offer, Lost, Digest, Prove (proofs and copies), Head,
+// Resume, Fetch, Want: every list cap takes its cap and refuses one more
 #[test]
 fn list_caps_spec_wire_11_2() {
     use crate::limits::*;
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     type Case<'a> = (&'a str, usize, Option<(usize, usize)>, usize);
-    let cases: [Case; 10] = [
+    let cases: [Case; 12] = [
         ("delete", 3, None, MAX_DELETE_ITEMS),
         ("status", 2, None, MAX_DELETE_ITEMS),
         ("fetch reply", 2, None, MAX_FETCH_IDS),
@@ -143,6 +143,8 @@ fn list_caps_spec_wire_11_2() {
         ("shared", 2, None, MAX_OFFER_ITEMS),
         ("members", 2, None, MAX_MEMBERS),
         ("prove", 2, None, MAX_PROOFS),
+        ("prove", 3, None, MAX_PROOF_COPIES),
+        ("head reply", 2, None, MAX_HEAD_STEPS),
         ("resume", 3, None, MAX_RESUME_TAGS),
     ];
     for (name, pos, inner, cap) in cases {
@@ -159,6 +161,19 @@ fn list_caps_spec_wire_11_2() {
     assert!(at.len() <= MAX_MESSAGE, "fetch: {} bytes at its cap", at.len());
     assert!(Msg::decode(&at).is_ok(), "fetch at its cap");
     assert_eq!(rejected(fetch(MAX_FETCH_IDS + 1).to_value()).code(), Code::MALFORMED, "fetch past its cap");
+    // a Want's cap counts its commit IDs in all, across its sync IDs
+    let want = |n: usize| {
+        let c = |i: usize| {
+            let mut b = [0u8; 32];
+            b[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            osis_base::CommitId(b)
+        };
+        Msg::Want { id: crate::limits::TOP_BIT | 1, max_reply: 32_768, ids: vec![(osis_base::SyncId([0x0a; 16]), (0..n / 2).map(c).collect()), (osis_base::SyncId([0x0b; 16]), (n / 2..n).map(c).collect())] }
+    };
+    let at = want(MAX_FETCH_IDS).encode();
+    assert!(at.len() <= MAX_MESSAGE, "want: {} bytes at its cap", at.len());
+    assert!(Msg::decode(&at).is_ok(), "want at its cap");
+    assert_eq!(rejected(want(MAX_FETCH_IDS + 1).to_value()).code(), Code::MALFORMED, "want past its cap");
 }
 
 // spec/wire.md §11.2 (Offer: a Deposit item's blob at most `MAX_BLOB`; Pull: a cursor at most

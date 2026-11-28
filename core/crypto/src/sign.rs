@@ -22,14 +22,12 @@ pub enum Domain {
     /// A stamp or deposit signature of an entry deletes are judged by: a role commit or a
     /// request (spec/sync-ids.md §6, storage caps).
     RoleEntry,
-    /// A boxes payload's signature by its role commit's author (spec/wire.md §9).
-    InboxBoxes,
     /// A claim block's signature by the sync key it is bound to (spec/wire.md §5).
     ClaimBlock,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 11] = [
+    pub const ALL: [Domain; 10] = [
         Domain::Commit,
         Domain::SyncStep,
         Domain::SyncEndorse,
@@ -39,7 +37,6 @@ impl Domain {
         Domain::Delete,
         Domain::ConnectionProof,
         Domain::RoleEntry,
-        Domain::InboxBoxes,
         Domain::ClaimBlock,
     ];
     pub const fn as_str(self) -> &'static str {
@@ -53,7 +50,6 @@ impl Domain {
             Domain::Delete => "osis v1 delete",
             Domain::ConnectionProof => "osis v1 connection proof",
             Domain::RoleEntry => "osis v1 role entry",
-            Domain::InboxBoxes => "osis v1 inbox boxes",
             Domain::ClaimBlock => "osis v1 claim block",
         }
     }
@@ -69,7 +65,6 @@ impl Domain {
             Domain::Delete => "verify: delete",
             Domain::ConnectionProof => "verify: connection proof",
             Domain::RoleEntry => "verify: role entry",
-            Domain::InboxBoxes => "verify: inbox boxes",
             Domain::ClaimBlock => "verify: claim block",
         }
     }
