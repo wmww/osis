@@ -946,7 +946,7 @@ impl Engine {
                 let mut sections: BTreeMap<(Tid, bool), Vec<usize>> = BTreeMap::new();
                 for ai in &row.parts {
                     let Some(a) = h.aspects.get(*ai) else { continue };
-                    sections.entry((a.tid, osis_keys::under_roles(a.ak.as_str()))).or_default().push(*ai);
+                    sections.entry((a.tid, osis_schema::core_types::under_roles(a.ak.as_str()))).or_default().push(*ai);
                 }
                 for parts in sections.values().filter(|ps| !ps.iter().any(strip)) {
                     carried.extend(parts.iter().copied());
@@ -978,7 +978,7 @@ impl Engine {
                 for ai in &held {
                     let Some(a) = h.aspects.get(*ai) else { continue };
                     of_thing.entry(a.tid).or_default().push(*ai);
-                    sections.entry((a.tid, osis_keys::under_roles(a.ak.as_str()))).or_default().push(*ai);
+                    sections.entry((a.tid, osis_schema::core_types::under_roles(a.ak.as_str()))).or_default().push(*ai);
                 }
                 let mut sealed = carried;
                 for ((tid, _), parts) in &sections {

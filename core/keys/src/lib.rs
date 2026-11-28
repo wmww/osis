@@ -25,5 +25,5 @@ pub use error::Error;
 pub use open::{HistoryAlts, has_box, Opened, Opener, ingest, ingest_held, ingest_with, open_boxes, open_histories};
 pub use osis_crypto::Epoch;
 pub use delete::delete_candidates;
-pub use wrap::{UNDER_ROLES, newer_than_head, registered_epoch, registered_key, registration_epochs, under_roles, wrap_epoch};
+pub use wrap::{newer_than_head, registered_epoch, registered_key, registration_epochs, wrap_epoch};
 pub use produce::{Carried, HistoryBox, HistoryBoxes, HolderKeys, LeftOut, Recipient, Rotated, Rotation, box_dropped, box_holder, box_keysets, history_adds, history_boxes, reseal_holder, roles_up_to, rotate, rotate_leaving_out, symmetric_box};

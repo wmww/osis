@@ -72,7 +72,7 @@ pub(crate) fn blob_bound(c: &CommitBlob) -> usize {
     // the claim-block count byte, and per thing its role parts are on the least block (two
     // entries); the entries of the holders a block carries past that are its encryption's
     // (spec/sync-ids.md §3: counted where it is framed)
-    let roles = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "secrets.0" | "sync.0")).map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len();
+    let roles = h.aspects.iter().filter(|a| osis_schema::core_types::under_roles(a.ak.as_str())).map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len();
     let blocks = 1usize.saturating_add(roles.saturating_mul(MIN_CLAIM_BLOCK));
     let prefix = PREFIX_FIXED_LEN.saturating_add(groups.saturating_mul(1 + 3 * COMMITMENT_LEN)).saturating_add(blocks);
     osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads).saturating_add(keyed))

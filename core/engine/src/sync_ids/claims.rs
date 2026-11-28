@@ -59,7 +59,7 @@ impl Engine {
         let id = c.id();
         let mut by: BTreeMap<Tid, Vec<usize>> = BTreeMap::new();
         for p in &c.parts {
-            if let Some(a) = h.aspects.get(p.ai).filter(|a| osis_keys::under_roles(a.ak.as_str())) {
+            if let Some(a) = h.aspects.get(p.ai).filter(|a| osis_schema::core_types::under_roles(a.ak.as_str())) {
                 by.entry(a.tid).or_default().push(p.ai);
             }
         }

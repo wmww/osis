@@ -349,7 +349,7 @@ impl Engine {
     }
 
     /// Seals a body as a fresh blob (spec/sync-judgement.md §1, spec/wire.md §4; a fresh blob key,
-    /// salt and blob ID): one section per thing (its role parts, `osis_keys::under_roles`, in one of their own under
+    /// salt and blob ID): one section per thing (its role parts, `osis_schema::core_types::under_roles`, in one of their own under
     /// the epoch's roles secret, spec/crypto.md §4 Roles secrets) among the commit's held parts that may go under
     /// an epoch of this node's choosing (`opened::passes_on`, spec/crypto.md §5 Passing on), each
     /// under that thing's read secret (a dependent thing's derives from its mint admin's by tid,
@@ -371,7 +371,7 @@ impl Engine {
         let c = CommitBlob::decode_stored(&pt)?;
         let resolved = self.resolved_header(&c);
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
-        let roles: Vec<bool> = resolved.aspects.iter().map(|a| osis_keys::under_roles(a.ak.as_str())).collect();
+        let roles: Vec<bool> = resolved.aspects.iter().map(|a| osis_schema::core_types::under_roles(a.ak.as_str())).collect();
         let id = c.id();
         // a held section goes as it came only where none of its parts strips here (a purge's or
         // an expiry's leftover, one dropped as covered under purge on replace: `bodies::strips`)
@@ -527,7 +527,7 @@ impl Engine {
     /// thing enters (`section_keys`).
     pub(crate) fn section_opens(&self, h: &osis_commit::Header, sec: &Section) -> SectionOpens {
         let Some(a) = sec.ais.first().and_then(|ai| h.aspects.get(*ai)) else { return SectionOpens::Whole };
-        if osis_keys::under_roles(a.ak.as_str()) || self.holds_sections(&a.tid) {
+        if osis_schema::core_types::under_roles(a.ak.as_str()) || self.holds_sections(&a.tid) {
             return SectionOpens::Whole;
         }
         if self.core.created(&a.tid).is_none() && !self.core.destroyed(&a.tid) {
@@ -598,7 +598,7 @@ impl Engine {
         let mut out = std::collections::BTreeSet::new();
         for ai in parts {
             let Some(a) = v.aspects.get(ai) else { continue };
-            if osis_keys::under_roles(a.ak.as_str()) {
+            if osis_schema::core_types::under_roles(a.ak.as_str()) {
                 continue;
             }
             if let Some(x) = self.secret_actor_row(&a.tid)
@@ -746,7 +746,7 @@ impl Engine {
     /// they supersede, never another (`giving_wrap_epoch`). `None`: no current secret held
     /// (stranded: nothing is logged), none of the superseded epochs held, or a part of `c` it
     /// carries this node may not pass on under an epoch of its choosing (spec/crypto.md §5
-    /// Passing on). A blob carrying a role part of that actor (`osis_keys::under_roles`) goes
+    /// Passing on). A blob carrying a role part of that actor (`osis_schema::core_types::under_roles`) goes
     /// under the epoch's roles secret (spec/crypto.md §4, Roles secrets): every holder of the
     /// actor opens it.
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
@@ -754,12 +754,12 @@ impl Engine {
         Ok(self.wrap_under(g, c)?.and_then(|(_, k)| k.of(roles)))
     }
 
-    /// Whether these deltas of `c` hold a role part (`osis_keys::under_roles`) of the actor `g`'s
+    /// Whether these deltas of `c` hold a role part (`osis_schema::core_types::under_roles`) of the actor `g`'s
     /// secrets derive from.
     fn carries_roles(&self, g: &Tid, c: &CommitId, parts: &[usize]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
-        parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && osis_keys::under_roles(x.ak.as_str()))
+        parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && osis_schema::core_types::under_roles(x.ak.as_str()))
     }
 
     /// `wrap_secret` with its epoch: `epoch_under`, where the commit's header may go under it.
@@ -930,7 +930,7 @@ impl Engine {
         }
         // role parts go under the roles secret alone (spec/crypto.md §4 Roles secrets), which a
         // holder of a floor holds of every earlier epoch; any other part needs the secret
-        let roles_only = parts.iter().filter_map(|ai| h.aspects.get(*ai)).all(|x| osis_keys::under_roles(x.ak.as_str()));
+        let roles_only = parts.iter().filter_map(|ai| h.aspects.get(*ai)).all(|x| osis_schema::core_types::under_roles(x.ak.as_str()));
         let held = |s: &Epoch| if roles_only { epochs.read.checked_roles(s).is_some() } else { epochs.read.secret(s).is_some() };
         Ok(epochs.read.wrapped_under(&given, held).map_or(GivingWrap::Lacking, |e| GivingWrap::Under(e, rotation)))
     }

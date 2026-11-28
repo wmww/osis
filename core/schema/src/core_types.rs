@@ -17,6 +17,20 @@ pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
 }
 
+/// The aspects whose parts a writer seals, and whose blobs it wraps, under the roles secret of the
+/// epoch it chose (spec/crypto.md §4, Roles secrets): what a holder judges role commits and
+/// establishes epochs by, `sync.0` among them: its steps place the delete keys every part lists
+/// (spec/crypto.md §7 Checked keys), so whoever opens a thing's role parts opens the steps that
+/// judge them, in the same blobs. Every holder of the actor opens them, one with a floor
+/// included; their contents are public keys, sealed boxes and entries, steps and grants. Nothing
+/// else goes there.
+pub const UNDER_ROLES: [&str; 4] = ["roles.0", "keys.0", "secrets.0", "sync.0"];
+
+/// Whether a part on aspect `ak` is sealed under the roles secret (`UNDER_ROLES`).
+pub fn under_roles(ak: &str) -> bool {
+    UNDER_ROLES.contains(&ak)
+}
+
 /// Whether `ak` is never compaction-snapshotted (spec/commits.md §2): the role timeline walks
 /// every grant write.
 pub fn never_compacted(ak: &str) -> bool {
