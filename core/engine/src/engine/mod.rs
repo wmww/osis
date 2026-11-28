@@ -2755,7 +2755,7 @@ pub struct Engine {
     pub(crate) check_every_tx: bool,
 }
 
-/// Tests: the work whose transaction faults at its end (`Core::end_fault`).
+/// Tests: the work that faults (`Core::end_fault`), at the end of its transaction unless said.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EndFault {
@@ -2763,6 +2763,8 @@ pub(crate) enum EndFault {
     Commit(CommitId),
     /// Learning this thing's record (`apply::learn_records_in`).
     Record(Tid),
+    /// Finding what a tick has due (`retention::find_due`), where it starts.
+    Find,
 }
 
 type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];

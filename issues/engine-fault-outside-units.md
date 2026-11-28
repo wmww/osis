@@ -1,9 +1,0 @@
-# Engine faults the unit split does not catch
-> Summary: Faults set their unit aside (notes/engine-apply.md), but a tick's shared work faulting with no unit leaves `timer_floor` due, so a driver ticks again at once and spins, telling the fault each time. A fault in `store_pages` on an arrival faults again in the set-aside transaction, so the arrival errs instead of being set aside. A hostile part whose aspect rebuild faults sets aside every honest timer unit on that aspect.
-> Priority: normal
-> Tags: engine, security
-
-- **Tick shared work**: `retention::tick` (core/engine/src/retention/mod.rs, around `due_timers`, `leaving::due`, `compaction.passed`): a fault there leaves `units` empty, `split_units` runs nothing and returns `Ok`, and `timers_due()` stays true. Fix: judge that work per unit too, or move the floor past what faulted until the next open.
-- **Arrival pages**: `set_aside_arrival` (core/engine/src/apply/mod.rs) stores the pages again (`store_pages`, which walks peer page data via `large::tree_blobs`). Where that walk is what faulted, the set-aside faults the same way and the error reaches the caller. Its `Ok(false)` is dropped too: that one is unreachable today (the first attempt refuses it), but it should be handled. Fix: store pages in a step, and on a fault set the commit aside without them.
-- **Timers sharing an aspect**: `tick_units` batches rebuilds per aspect. If a hostile part makes aspect X's rebuild fault, every timer unit on X faults alone and is set aside. This repeats after each open, so honest expiries on X never run while that part is held.
-- **Order**: a fault that only two units cause together lands on whichever runs second (`CommitId` order in `reexamine`, due order in a tick), and the alone runs drop the round's roles-first order. This should converge through later wakes. It is acceptable for build bugs, but notes/engine-apply.md should say so.

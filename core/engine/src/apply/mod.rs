@@ -1072,12 +1072,11 @@ fn ingest_blob_class(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Resul
     }
 }
 
-/// What a received commit came with (`Engine::set_aside_arrival`): its bytes, the blobs and
-/// pages handed in with it, the records it carries sealed (`Engine::ingest_carrying`).
+/// What a received commit came with (`Engine::set_aside_arrival`): its bytes, the blobs handed
+/// in with it, the records it carries sealed (`Engine::ingest_carrying`).
 struct Came<'a> {
     bytes: &'a [u8],
     blobs: Vec<(BlobId, Vec<u8>)>,
-    pages: &'a [Vec<u8>],
     records: Vec<CreationRecord>,
 }
 
@@ -1811,10 +1810,6 @@ impl Engine {
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
     /// transaction, which is then rolled back): `None` for those. One kept is carried by `from`.
     fn ingest_kept(&mut self, bytes: &[u8], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
-        self.ingest_kept_paged(bytes, &[], from, refuse)
-    }
-
-    fn ingest_kept_paged(&mut self, bytes: &[u8], pages: &[Vec<u8>], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
         let blob = match CommitBlob::decode(bytes) {
             Ok(b) if b.header.ephemeral.is_none() => b,
             Ok(_) => return Err(Error::BadInput("an ephemeral commit on the durable path")),
@@ -1832,10 +1827,6 @@ impl Engine {
                 None => CommitBlob::decode(bytes)?,
             };
             e.run(|tx| {
-                if !pages.is_empty() && !store_pages(tx, &blob, pages)? {
-                    *refused = true;
-                    return Err(Error::Misuse("refused"));
-                }
                 let out = arrive(tx, &id, blob, false)?;
                 *refused = refuse(tx.core, &id, &ais, &out);
                 if *refused {
@@ -1861,7 +1852,7 @@ impl Engine {
                 refused = true;
                 Ok(set_aside)
             }
-            Err(e) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs: Vec::new(), pages, records: Vec::new() }, from, &e),
+            Err(e) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs: Vec::new(), records: Vec::new() }, from, &e),
             r => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
@@ -1916,13 +1907,13 @@ impl Engine {
     }
 
     /// The transaction taking received commit `id` (as it `came`) failed for fault `e` of this
-    /// node: one that only sets it aside (`set_aside`), its blobs and pages stored (what it waits
-    /// for at the next open), with the records it carries, carried by `carrier` (`None`: a memory
+    /// node: one that only sets it aside (`set_aside`), its blobs stored (what it waits for at the
+    /// next open), with the records it carries, carried by `carrier` (`None`: a memory
     /// commit, or by nothing). The commit and each record are its units (`take_units`): a record
     /// whose learning faults is left unlearned, told; the commit's own setting aside faulting is a
     /// fault of the node's, the error.
     fn set_aside_arrival(&mut self, id: &CommitId, came: Came<'_>, carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
-        let Came { bytes, blobs, pages, records } = came;
+        let Came { bytes, blobs, records } = came;
         let blob = CommitBlob::decode(bytes)?;
         let memory = blob.header.ephemeral.is_some();
         // `None`: the commit; each record its own unit
@@ -1941,9 +1932,6 @@ impl Engine {
                     return Ok(None);
                 }
                 let fresh = !memory && !tx.store_blobs(blobs.clone())?.is_empty();
-                if !pages.is_empty() {
-                    store_pages(tx, &blob, pages)?;
-                }
                 let out = set_aside(tx, id, Some(bytes), e)?;
                 crate::sync_ids::opened::persist(tx, id)?;
                 carriers::taken(tx, id, carrier)?;
@@ -2046,7 +2034,7 @@ impl Engine {
         }
         let r = match (r, seen) {
             // a memory commit's copy is the memory lane's
-            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs, pages: &[], records }, (!memory).then_some(carriers::Carrier::Entry), &e),
+            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, Came { bytes, blobs, records }, (!memory).then_some(carriers::Carrier::Entry), &e),
             (r, _) => r,
         };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)

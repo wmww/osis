@@ -1263,12 +1263,35 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
 pub(crate) type Due = (u64, CommitId, usize, u8);
 
 /// A unit of a tick's work (`Engine::tick`), set aside alone at a fault (`Engine::take_units`,
-/// `Core::ticks_aside`): a due timer row (its time, commit, part and kind), or an aspect whose
-/// history moved past a bound (`leaving::passed`).
+/// `Core::ticks_aside`): finding what is due (`find_due`), a due timer row (its time, commit, part
+/// and kind), or an aspect whose history moved past a bound (`leaving::passed`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TickUnit {
+    Find,
     Timer(Due),
     Leave(Tid, Ak),
+}
+
+/// What a tick has due (`TickUnit::Find`, a unit of its own): the timers and leaving aspects not
+/// set aside, the live bounds passed weighed by the trigger, the timer floor moved past them all.
+/// Set aside, it finds nothing until the next open, and the floor waits on drift alone.
+fn find_due(tx: &mut Tx<'_>) -> Result<Vec<TickUnit>> {
+    if tx.core.ticks_aside.contains(&TickUnit::Find) {
+        tx.core.timer_floor = crate::apply::next_at(tx.core).unwrap_or(u64::MAX);
+        return Ok(Vec::new());
+    }
+    #[cfg(test)]
+    if tx.core.end_fault == Some(crate::engine::EndFault::Find) {
+        return Err(crate::error::Error::Corrupt("a find fault (tests)"));
+    }
+    let (due, next) = due_timers(tx)?;
+    let (leave, next_leave) = leaving::due(tx.core, tx.now().0);
+    // live bounds passed: the trigger weighs those aspects
+    let now = tx.now().0;
+    tx.core.compaction.passed(now);
+    // the timers these put lower it again
+    tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX));
+    Ok(due.into_iter().map(TickUnit::Timer).chain(leave.into_iter().map(|(t, a)| TickUnit::Leave(t, a))).collect())
 }
 
 /// The timers due by the wall clock, and when the first of the others is (`u64::MAX`: none).
@@ -1304,6 +1327,10 @@ fn tick_units(tx: &mut Tx<'_>, units: Vec<TickUnit>) -> Result<()> {
     crate::apply::run_batched(tx, |tx| {
         for u in units {
             match u {
+                // taken alone: what it finds are units of their own
+                TickUnit::Find => {
+                    find_due(tx)?;
+                }
                 TickUnit::Timer((t, c, ai, kind)) => {
                     // a memory commit's timer is memory work: what it writes stays in memory
                     let memory = tx.is_memory_commit(&c);
@@ -1396,23 +1423,19 @@ impl Engine {
         if !self.core.fallen.is_empty() {
             self.resnapshot_fallen()?;
         }
-        // each due timer and leaving aspect is a unit (`Engine::take_units`): one faulting is
-        // set aside alone, until the next open
+        // finding what is due, each due timer and each leaving aspect is a unit
+        // (`Engine::take_units`): one faulting is set aside alone, until the next open
         let mut units = Vec::new();
         let r = self.run(|tx| {
-            let (due, next) = due_timers(tx)?;
-            let (leave, next_leave) = leaving::due(tx.core, tx.now().0);
-            // live bounds passed: the trigger weighs those aspects
-            let now = tx.now().0;
-            tx.core.compaction.passed(now);
-            // the timers these put lower it again
-            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at()).min(crate::apply::next_at(tx.core).unwrap_or(u64::MAX));
-            units = due.into_iter().map(TickUnit::Timer).chain(leave.into_iter().map(|(t, a)| TickUnit::Leave(t, a))).collect();
-            tick_units(tx, units.clone())
+            units = vec![TickUnit::Find];
+            let found = find_due(tx)?;
+            units.extend(found.iter().cloned());
+            tick_units(tx, found)
         });
         let r = match r {
             Err(e) if e.is_fault() => self.split_units(units, e, tick_units, |e, u, err| {
                 let (commit, things) = match &u {
+                    TickUnit::Find => (None, Vec::new()),
                     TickUnit::Timer((_, c, _, _)) => (Some(*c), Vec::new()),
                     TickUnit::Leave(t, _) => (None, vec![*t]),
                 };
@@ -1427,7 +1450,11 @@ impl Engine {
             self.core.timer_floor = 0;
         }
         r?;
-        self.core.timer_floor = self.core.timer_floor.min(self.core.compaction.next_at());
+        self.core.timer_floor = match self.core.ticks_aside.contains(&TickUnit::Find) {
+            // as `find_due` set aside leaves it, whatever the faulting finding did not get to
+            true => crate::apply::next_at(&self.core).unwrap_or(u64::MAX),
+            false => self.core.timer_floor.min(self.core.compaction.next_at()),
+        };
         self.reexamine()
     }
 
@@ -1443,13 +1470,15 @@ impl Engine {
     /// none of a read's in-memory work (`Engine::read`: a mark, an undo, its debug check), which
     /// a borrow cannot need.
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
-        // past the rows set aside (`Core::ticks_aside`), each due already
+        // past the rows set aside (`Core::ticks_aside`), each due already; with the finding set
+        // aside, nothing it would find
+        let found = !self.core.ticks_aside.contains(&TickUnit::Find);
         let aside = self.core.ticks_aside.len();
-        let first = self.scan_local(records::TIMER, aside + 1)?;
+        let first = if found { self.scan_local(records::TIMER, aside + 1)? } else { Vec::new() };
         let core = &self.core;
         let part = first.iter().filter_map(|(k, v)| Some((records::parse_timer(k.get(records::TIMER.len()..)?).ok()?, v.first().copied().unwrap_or(0)))).find(|((t, c, ai), kind)| !core.ticks_aside.contains(&TickUnit::Timer((*t, *c, *ai, *kind)))).map(|((t, _, _), _)| t);
-        let aspect = leaving::next_due(core);
-        let live = Some(core.compaction.next_at()).filter(|t| *t != u64::MAX);
+        let aspect = leaving::next_due(core).filter(|_| found);
+        let live = Some(core.compaction.next_at()).filter(|t| found && *t != u64::MAX);
         let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
         // a commit pending for its `ts` ahead (`apply::Wake::At`)
         let drift = crate::apply::next_at(core);

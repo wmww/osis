@@ -2,7 +2,7 @@
 //! (`Engine::take_units`): a received commit whose taking faults pends (`apply::set_aside`), a
 //! tick's timer is left unrun, a record unlearned; the node goes on with everything else, the app
 //! is told, and an open takes the unit again. Planted in a commit's own step (`Core::apply_fault`)
-//! or at the end of the transaction doing a unit's work (`Core::end_fault`).
+//! or in a unit's work (`Core::end_fault`).
 //! spec: spec/commits.md §4 (No local error from peer bytes).
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -133,6 +133,35 @@ fn a_timer_faulting_at_a_tick_is_set_aside_alone_spec_commits_4() {
     assert_eq!(faults_told(&rx), vec![Some(ca)]);
     let now = e.now().0;
     assert!(e.next_timer().unwrap().is_none_or(|x| x > now) && !e.timers_due(), "nothing due now");
+    lp.peers[0].restart(1).unwrap();
+    lp.peers[0].tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("x:a.0")).unwrap(), None, "run after the open");
+}
+
+// A tick whose finding of what is due faults (its work shared by every timer) sets that finding
+// aside until the next open: the tick returns, nothing is left due (a driver ticking at once,
+// faulting again: a spin), the app is told once, and an open finds and runs the timer.
+#[test]
+fn a_tick_whose_finding_faults_sets_it_aside_spec_commits_4() {
+    let mut lp = LocalPeer::fresh(1, T0);
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
+    m.expires(t, &ak("x:a.0"), osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let rx = lp.peers[0].engine.subscribe();
+    lp.peers[0].engine.core.end_fault = Some(EndFault::Find);
+    lp.peers[0].clock.advance(120_000);
+    lp.peers[0].tick().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let now = e.now().0;
+    assert!(e.next_timer().unwrap().is_none_or(|x| x > now) && !e.timers_due(), "nothing due now");
+    assert_eq!(e.get(&t, &ak("x:a.0")).unwrap(), Some(Value::Int(1)), "its timer not found");
+    lp.peers[0].tick().unwrap();
+    assert_eq!(faults_told(&rx), vec![None], "told once");
     lp.peers[0].restart(1).unwrap();
     lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("x:a.0")).unwrap(), None, "run after the open");
