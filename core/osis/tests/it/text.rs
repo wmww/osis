@@ -107,6 +107,30 @@ fn text_two_sessions_keep_both_texts() {
     assert_eq!(b.commit().unwrap(), None);
 }
 
+// spec/data-model.md §3 (standard named types): a field the schema types by a name standing for
+// text, `markdown` or an alias of it, is text as core expands it: two sessions keep both texts, and
+// `set_stream` writes a string, not a blob.
+#[test]
+fn text_named_types_are_text_spec_data_model_3() {
+    for ty in ["markdown", "note"] {
+        let db = db(0);
+        db.register_schema("t.osis", &format!("revision 1;\ntype note = markdown;\naspect n:body.0: {ty};\naspect n:title.0: string;\n")).unwrap();
+        let k = db.aspect_key("n:body.0").unwrap();
+        let t = db.commit_with(|w| w.create_held()).unwrap();
+        let (a, b) = (open(&db, t, &k), open(&db, t, &k));
+        a.edit("", "one").unwrap();
+        b.edit("", "two").unwrap();
+        a.commit().unwrap().unwrap();
+        db.settle();
+        db.settle();
+        let f = field(&db, t, &k).unwrap();
+        assert!(f.contains("one") && f.contains("two"), "{ty}: {f}");
+        drop((a, b));
+        db.commit_with(|w| w.at(t, k.clone()).path(osis::p![]).set_stream(&b"streamed"[..])).unwrap();
+        assert_eq!(field(&db, t, &k).as_deref(), Some("streamed"), "{ty}");
+    }
+}
+
 // A session's own commit is its echo: no merge reported, pending typing not committed by it.
 #[test]
 fn text_own_commit_reports_and_commits_nothing() {

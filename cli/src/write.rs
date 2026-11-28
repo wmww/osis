@@ -54,7 +54,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &DynamicAspectKey, s: &str, write: b
 
 /// The schema type at a path, for parsing what is written there.
 fn type_at(key: &DynamicAspectKey, p: &Path) -> Option<ValueType> {
-    text::type_at_path(key.value_type()?.get(), &p.0)
+    key.value_type()?.at(p).map(|t| t.get())
 }
 
 fn expiry(e: &ExpiryFlags) -> anyhow::Result<Option<Expiry>> {

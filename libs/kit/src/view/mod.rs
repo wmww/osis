@@ -411,7 +411,7 @@ pub const TYPED: Local<u64> = Local::new("typed", || 0);
 /// The field to type in next, `(thing, aspect)`: the next update focuses the first editor of it
 /// that it builds and wants the keyboard (a thing just made: its title). Any view may set it; `Ui`
 /// clears it after that update, so no later rebuild of the field asks again.
-pub const TYPE_IN: Local<Option<(Tid, &'static str)>> = Local::new("type_in", || None);
+pub const TYPE_IN: Local<Option<(Tid, osis::Ak)>> = Local::new("type_in", || None);
 
 pub struct WindowInner {
     pub sessions: Sessions,
@@ -588,7 +588,7 @@ impl Action for UseOffer {
             None => {
                 let t = act.create_with(o.set)?;
                 act.set_local(QUERY, String::new());
-                act.set_local(TYPE_IN, Some((t, crate::facets::name::TITLE)));
+                act.set_local(TYPE_IN, Some((t, osis::core::NAME.name())));
             }
             Some(t) => act.commit(|w| (o.set)(act.data, w, t))?,
         }

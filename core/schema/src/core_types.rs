@@ -31,6 +31,13 @@ pub fn is_addenda(ak: &str) -> bool {
     ak == ADDENDA_AK
 }
 
+/// Whether `ak` is written by the engine's flows alone, never by an app's op: a role-class aspect,
+/// the addenda, the creation record or a card aspect (`put_card`), each decoded whole and judged by
+/// its own rule.
+pub fn engine_written(ak: &str) -> bool {
+    is_role_class(ak) || is_addenda(ak) || ak == "created.0" || card_of(ak).is_some()
+}
+
 /// Whether `ak` is a thing's content: what a delete removes, an undone creation resets and a read
 /// of the thing counts: no creation record, no rights, no retention rule (spec/commits.md §5)
 /// and no addenda.
@@ -44,10 +51,9 @@ pub fn counts_as_content(ak: &str) -> bool {
     is_content(ak) && ak != "purge.0"
 }
 
-/// Whether `ak` is a core schema key by its form: one name segment (spec/data-model.md §2; with a
-/// tid segment only a card aspect), declared there or not.
+/// Whether `ak` is a core schema key by its form (`Ak::core`).
 pub fn is_core_key(ak: &str) -> bool {
-    osis_base::Ak::new(ak).is_ok_and(|a| a.segments().count() == 1)
+    osis_base::Ak::new(ak).is_ok_and(|a| a.core())
 }
 
 /// The name of a card aspect (spec/data-model.md §9), after its tid segment.

@@ -17,7 +17,6 @@ use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
 use osis_engine::Mutation;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
-use osis_schema::core_types::is_role_class;
 use osis_schema::{RawKey, Codec, Path, PathError, PurgeBy, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
 use std::collections::BTreeMap;
@@ -120,14 +119,11 @@ impl Osis {
     }
 }
 
-/// Synthetic aspects and `created.0`: never written by ops.
-fn read_only(ak: &str) -> bool {
-    matches!(ak, "aspects.0" | "created.0")
-}
-
-/// Why no op may name `ak`: the engine's or the sharing calls'.
+/// Why no op may name `ak`: a synthetic aspect (the core schema's `synthetic`) or one the engine and
+/// the sharing calls write (`engine_written`).
 fn not_writable(ak: &str) -> Option<String> {
-    (read_only(ak) || is_role_class(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
+    let synthetic = osis_schema::core_schema().aspects.get(ak).is_some_and(|a| a.flags.contains(&osis_schema::Flag::Synthetic));
+    (synthetic || osis_schema::core_types::engine_written(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
 }
 
 pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
@@ -805,8 +801,7 @@ impl<K: ValueKey> PathWrite<'_, '_, '_, K> {
 
     /// `Invalid` where the key's schema says a list: its items are no text.
     fn not_a_list(&self) -> Result<()> {
-        let (Some(s), Some(t)) = (self.a.key.schema(), self.position_type()?) else { return Ok(()) };
-        if matches!(s.expand(&t).as_deref(), Ok(osis_schema::Type::List(_))) {
+        if matches!(self.position_type()?, Some(osis_schema::Type::List(_))) {
             return Err(Error::Invalid("a list takes a slice of items, not a string".into()));
         }
         Ok(())

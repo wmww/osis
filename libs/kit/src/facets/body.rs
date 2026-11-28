@@ -28,7 +28,7 @@ impl Facet for BodyFacet {
         "body"
     }
     fn claims(&self, ak: &str) -> bool {
-        ak == "body.0"
+        BODY.name().as_str() == ak
     }
     fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         let body = cx.db.at(t, BODY).get()?.unwrap_or_default();
@@ -44,7 +44,7 @@ impl Facet for BodyFacet {
         if cx.config().flag("read_only") {
             return Ok(Section::of(vec![Block::Line(cx.db.at(t, BODY).get()?.unwrap_or_default())]));
         }
-        Ok(Section::of(vec![Block::Editor { thing: t, ak: "body.0".into(), key: None, placeholder: "Write something…".into(), role: TextRole::Body, multiline: true, lead: None }]))
+        Ok(Section::of(vec![Block::Editor { thing: t, ak: BODY.name().as_str().into(), key: None, placeholder: "Write something…".into(), role: TextRole::Body, multiline: true, lead: None }]))
     }
     fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
         Ok(cx.db.at(t, BODY).get()?.into_iter().collect())
@@ -52,7 +52,7 @@ impl Facet for BodyFacet {
     fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
             None => vec![Offer { id: "note", label: "Note", icon: Icon::Note, set: note }],
-            Some(t) if cx.has(t, "body.0")? => Vec::new(),
+            Some(t) if cx.has(t, BODY.name().as_str())? => Vec::new(),
             Some(_) => vec![Offer { id: "text", label: "Text", icon: Icon::Note, set: start }],
         })
     }

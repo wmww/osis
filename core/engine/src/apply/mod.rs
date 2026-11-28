@@ -246,12 +246,6 @@ fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool
     fits_class(&a.ak, memory) && !(a.ak.signal() && snapshot) && (a.replaces.is_none() || (!memory && !snapshot && crate::engine::edits::durable_signal(&a.ak)))
 }
 
-/// Whether a part of aspect `ak` is decoded whole (`Parts`): a card aspect's part is judged by its body
-/// (`validity::note_cards`).
-fn whole_part(ak: &str) -> bool {
-    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED || osis_schema::core_types::card_of(ak).is_some()
-}
-
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
 fn raw_id(bytes: &[u8]) -> Result<CommitId> {
     let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, bytes.len());
@@ -926,9 +920,9 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot;
     let mut late = false;
     #[cfg(test)]
-    let whole = whole_part(a.ak.as_str()) || tx.core.whole_apply;
+    let whole = osis_schema::core_types::engine_written(a.ak.as_str()) || tx.core.whole_apply;
     #[cfg(not(test))]
-    let whole = whole_part(a.ak.as_str());
+    let whole = osis_schema::core_types::engine_written(a.ak.as_str());
     let r = if whole {
         verify_part(h, id, p, dedup, interner, Some(reader)).map(|d| {
             late = carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);

@@ -1,7 +1,7 @@
 //! A set of things: from `ui:collection.0`, a `tag.0` thing, or a thing whose `holds.0` holds some.
 
 use crate::store::Reader;
-use crate::schema::{Arrange, CREATING, WEEK};
+use crate::schema::{Arrange, COLLECTION, CREATING, WEEK};
 use crate::store::Data;
 use crate::view::source::of;
 use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Section, Summary, Toggle, arrange};
@@ -51,7 +51,7 @@ impl Facet for HoldsFacet {
         "holds"
     }
     fn claims(&self, ak: &str) -> bool {
-        ak == "ui:collection.0" || ak == "tag.0"
+        [COLLECTION.name(), TAG.name()].iter().any(|k| k.as_str() == ak)
     }
     /// `collection.0` or `tag.0`, or a thing that holds something.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
@@ -59,7 +59,7 @@ impl Facet for HoldsFacet {
     }
     fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         let view = cx.collection(t)?;
-        let is_tag = cx.has(t, "tag.0")?;
+        let is_tag = cx.has(t, TAG.name().as_str())?;
         s.words.insert(0, if is_tag && view.is_none() { "Tag" } else { "Collection" }.into());
         let v = of(cx, t)?;
         s.mark = Mark::Icon(match (view.is_some(), &v.arrange) {
@@ -112,7 +112,7 @@ impl Facet for HoldsFacet {
     }
     fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
-            Some(t) if cx.has(t, "tag.0")? => Vec::new(),
+            Some(t) if cx.has(t, TAG.name().as_str())? => Vec::new(),
             _ => vec![Offer { id: "tag", label: "Tag", icon: Icon::Tag, set: start }],
         })
     }

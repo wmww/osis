@@ -55,6 +55,21 @@ fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
     db.at(t, example::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect()
 }
 
+// spec/data-model.md §9: no op writes what the engine alone writes (core's `engine_written`: grants,
+// rotations, addenda, the creation record, cards) nor a synthetic aspect: each is refused at the
+// op, as `Invalid` naming it, before anything is written.
+#[test]
+fn ops_never_write_engine_aspects_spec_data_model_9() {
+    let db = common::db(0);
+    let t = db.commit_with(|w| w.create_held()).unwrap();
+    let card = format!(":{}:card.0", db.author());
+    for ak in ["roles.0", "keys.0", "addenda.0", "created.0", "aspects.0", card.as_str()] {
+        let mut w = db.write();
+        let r = w.at(t, osis::DynamicAspectKey::untyped(osis::Ak::new(ak).unwrap())).set(&Value::Int(1));
+        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("written only by the engine")), "{ak}: {r:?}");
+    }
+}
+
 // notes/api.md Writes: whole-value ops and every path op.
 // spec: none (API surface, notes/api.md)
 #[test]

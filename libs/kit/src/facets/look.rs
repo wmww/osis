@@ -1,7 +1,7 @@
 //! `ui:theme.0` and `ui:mode.0`: how the app looks, a section of home's page.
 
 use crate::store::Reader;
-use crate::schema::Mode;
+use crate::schema::{MODE, Mode, THEME};
 use crate::view::{Act, Action, Block, Cx, Do, Facet, Icon, Input, Mark, Pick, Section, Summary};
 use osis::{Result, Tid};
 use crate::theme::Theme;
@@ -35,7 +35,7 @@ impl Facet for LookFacet {
         "look"
     }
     fn claims(&self, ak: &str) -> bool {
-        ak == "ui:theme.0" || ak == "ui:mode.0"
+        [THEME.name(), MODE.name()].iter().any(|k| k.as_str() == ak)
     }
     /// Home always can choose its look, chosen or not.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {

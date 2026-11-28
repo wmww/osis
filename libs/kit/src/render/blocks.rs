@@ -508,7 +508,7 @@ impl Builder<'_> {
         let hints = TextInputHints { suggest: true, enter: EnterKey::Done, ..Default::default() };
         let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline, hints);
         self.hook(id).editor = Some(key);
-        if self.built.typing.is_none() && self.window.graph.peek(TYPE_IN).is_some_and(|(t, a)| t == thing && a == ak) {
+        if self.built.typing.is_none() && self.window.graph.peek(TYPE_IN).is_some_and(|(t, a)| t == thing && a.as_str() == ak) {
             self.built.typing = Some(id);
         }
         if let Some((m, c)) = lead {

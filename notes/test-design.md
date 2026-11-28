@@ -37,6 +37,5 @@ osis-sync's module reviews (about 50 product bugs) split the same way. Reading a
 **Paged property cost**: `paged_apply_matches_whole_plain` seeds take 90-200 CPU-s each (ingest with its purge-on-replace snapshots about 30%, stored-state reloads after every step about 20%); the goal is the slowest large seed under a minute.
 
 **Small items**:
-- `osis` wrappers that copy a core rule's fields by hand (as `RetentionSetting::enable_inbox_signals` copied `take_inbox_signals` and dropped one, which no sync test could see): find each, make it delegate to the core rule, so there is one source.
 - Judgment vectors still missing: linked header lists (an aspect list past `CHUNK_THRESHOLD`) and the secrets-side rotation scenarios (core/test/vectors/README.md).
 - held-model's comparison leaves out every aspect when a role commit carries parts outside the model (notes/test-properties.md, held-model comparison): a carve-out to close by modelling those role commits.

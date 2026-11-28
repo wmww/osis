@@ -111,23 +111,27 @@ impl RetentionSetting {
     /// signal. Its history holds its targets, so a held grant signal holds its thing's stub
     /// (spec/sync-inbox.md §1, §5). An entry already here stays as it is.
     pub fn enable_inbox_signals(&mut self) {
-        let mut x = osis_schema::core_types::RetentionSetting::default();
+        let mut x = self.core();
         x.take_inbox_signals();
-        for (k, e) in &x.rules {
-            self.rules.entry(k.clone()).or_insert(e.into());
-        }
-        self.history_holds_targets = x.history_holds_targets;
+        *self = RetentionSetting::of_core(&x);
+    }
+
+    fn core(&self) -> osis_schema::core_types::RetentionSetting {
+        let rules = self.rules.iter().map(|(k, r)| (k.clone(), (*r).into())).collect();
+        osis_schema::core_types::RetentionSetting { rules, retain: self.retain_copies, default: self.default.map(Into::into), history_holds_targets: self.history_holds_targets }
+    }
+
+    fn of_core(r: &osis_schema::core_types::RetentionSetting) -> RetentionSetting {
+        let rules = r.rules.iter().map(|(k, x)| (k.clone(), x.into())).collect();
+        RetentionSetting { rules, default: r.default.as_ref().map(Into::into), retain_copies: r.retain, history_holds_targets: r.history_holds_targets }
     }
 }
 
 impl Codec for RetentionSetting {
     fn to_value(&self) -> Value {
-        let rules = self.rules.iter().map(|(k, r)| (k.clone(), (*r).into())).collect();
-        osis_schema::core_types::RetentionSetting { rules, retain: self.retain_copies, default: self.default.map(Into::into), history_holds_targets: self.history_holds_targets }.to_value()
+        self.core().to_value()
     }
     fn from_value(v: &Value) -> Result<RetentionSetting, PathError> {
-        let r = osis_schema::core_types::RetentionSetting::from_value(v)?;
-        let rules = r.rules.iter().map(|(k, x)| (k.clone(), x.into())).collect();
-        Ok(RetentionSetting { rules, default: r.default.as_ref().map(Into::into), retain_copies: r.retain, history_holds_targets: r.history_holds_targets })
+        osis_schema::core_types::RetentionSetting::from_value(v).map(|r| RetentionSetting::of_core(&r))
     }
 }

@@ -52,6 +52,24 @@ fn kit_alone_opens_things() {
     assert_eq!(view_type(&d, u), "raw");
 }
 
+/// A card on a thing (`put_card`, spec/data-model.md §9) is a core aspect, the system's as core
+/// counts it (`Ak::core`): the thing lists its name, not the card.
+#[test]
+fn a_card_is_not_content() {
+    let d = data();
+    let home = d.home().unwrap();
+    let mut w = d.db.write();
+    let of = w.create_with_keys(home).unwrap();
+    let on = w.create(of, None).unwrap();
+    w.hold(home, on).unwrap();
+    w.hold(home, of).unwrap();
+    w.at(on, NAME).set(&"T".to_string()).unwrap();
+    w.commit().unwrap();
+    d.db.put_card(on, of).unwrap();
+    assert!(d.db.aspects(on).unwrap().iter().any(|a| a.tid() == Some(of)), "the card is there");
+    assert_eq!(*d.aspects(on).unwrap(), vec![NAME.name().as_str().to_string()]);
+}
+
 /// The opener's chrome is a node of its own, separate from the content.
 #[test]
 fn chrome_is_not_content() {
@@ -82,13 +100,12 @@ fn undo_works_on_a_kit_created_thing() {
 /// names that, and the thing's page has the field.
 #[test]
 fn a_new_things_title_is_the_field_to_type_in() {
-    use osis_kit::facets::name::TITLE;
     use osis_kit::view::{Act, Action, Input, TYPE_IN, UseOffer};
     let d = data();
     let w = WindowState::default();
     UseOffer("note", None).run(&Act::new(&d, &w), &Input::Press).unwrap();
     let t = d.opened().unwrap().unwrap();
-    assert_eq!(w.graph.peek(TYPE_IN), Some((t, TITLE)));
+    assert_eq!(w.graph.peek(TYPE_IN), Some((t, NAME.name())));
     let n = page(&Cx::new(&d, &w, false), t).unwrap();
-    assert!(n.blocks().iter().any(|b| matches!(b, Block::Editor { thing, ak, .. } if *thing == t && ak == TITLE)));
+    assert!(n.blocks().iter().any(|b| matches!(b, Block::Editor { thing, ak, .. } if *thing == t && ak == NAME.name().as_str())));
 }

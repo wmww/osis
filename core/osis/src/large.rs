@@ -196,18 +196,16 @@ impl<K: ValueKey> PathWrite<'_, '_, '_, K> {
     pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
         let mut b = Vec::new();
         r.read_to_end(&mut b).map_err(|e| Error::Invalid(format!("reading the value: {e}")))?;
-        let text = match self.position_type()? {
-            Some(Type::String | Type::Text) => true,
-            Some(Type::Named(n, _)) if n == "markdown" => true,
-            _ => false,
-        };
+        let text = matches!(self.position_type()?, Some(Type::String | Type::Text));
         let v = if text { Value::Str(String::from_utf8(b).map_err(|_| Error::Invalid("not UTF-8".into()))?) } else { Value::Bytes(b) };
         self.set_value(v)
     }
 }
 
-/// The schema type at a path of a key, if typed.
+/// The schema type at a path of a key, if typed, its names expanded to a structure
+/// (`Schema::expand`: `markdown` is `text`); one that does not expand as it is, for the write to refuse.
 pub(crate) fn type_of<K: AspectKey>(key: &K, path: &Path) -> Result<Option<Type>> {
     let (Some(s), Some(ty)) = (key.schema(), key.ty()) else { return Ok(None) };
-    Ok(Some(type_at(s, ty, path)?.0))
+    let t = type_at(s, ty, path)?.0;
+    Ok(Some(s.expand(&t).map_or(t.clone(), std::borrow::Cow::into_owned)))
 }

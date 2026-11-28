@@ -550,14 +550,16 @@ pub enum LinkCmd {
 pub enum ChatCmd {
     /// A new chat, this account its admin: prints its tid
     Create {
-        #[arg(long, default_value = "")]
-        name: String,
-        /// Who deletes besides admins: author_or_admin, admin (admins only), writer (anyone in it)
-        #[arg(long, value_name = "BY", default_value = "author_or_admin")]
-        purge_by: String,
-        /// What an edit does to the old text: purge, keep, off
-        #[arg(long, default_value = "purge")]
-        edit: String,
+        /// Its name (default: none)
+        #[arg(long)]
+        name: Option<String>,
+        /// Who deletes besides admins: author_or_admin, admin (admins only), writer (anyone in it);
+        /// default: a chat's (osis-chat `Options`)
+        #[arg(long, value_name = "BY")]
+        purge_by: Option<String>,
+        /// What an edit does to the old text: purge, keep, off; default: a chat's
+        #[arg(long)]
+        edit: Option<String>,
         /// Messages disappear after DUR
         #[arg(long, value_name = "DUR")]
         disappear: Option<String>,

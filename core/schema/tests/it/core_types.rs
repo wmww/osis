@@ -62,5 +62,10 @@ fn key_defaults_and_identity_spec_commits_5() {
     assert_eq!(untyped.defaults(), AspectDefaults::default());
     assert_eq!(RawKey::decode(&untyped, &Value::Int(3)).unwrap(), Value::Int(3));
     assert!(core_schema().aspects["aspects.0"].flags.contains(&Flag::Synthetic));
+    // a role's name is its case's in the core schema's `role` enum
+    let Type::Enum(roles) = &core_schema().types["role"].body else { panic!("role is an enum") };
+    for r in Role::ALL {
+        assert_eq!(roles.cases[&u64::from(r.id())].name, r.name());
+    }
     assert!(core_schema().aspects["created.0"].flags.contains(&Flag::Guaranteed));
 }

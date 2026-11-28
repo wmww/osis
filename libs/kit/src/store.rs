@@ -16,7 +16,7 @@ use crate::view::graph::{Graph, Local, Scope};
 use crate::view::{Summary, TICK};
 use osis::ReadSet;
 use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
-use osis::core::{HOLDS, NAME, TAG};
+use osis::core::{BODY, HOLDS, NAME, TAG};
 use osis::{BacklinkQuery, Config, Address, Osis, ReadOnly, Ref, Result, Runtime, Store, Strong, Tid, Weak, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -36,11 +36,11 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
     Ok(db)
 }
 
-/// Whether aspect `ak` is the system's, not the user's: a core aspect but the content ones (`name.0`,
-/// `body.0`, `tag.0`). No view accounts for one, raw hides them, and a thing carrying nothing else
-/// (an account's inbox, a link's thing) is no thing of the user's.
+/// Whether aspect `ak` is the system's, not the user's: a core aspect (`Ak::core`, a card among
+/// them) but the content ones (`NAME`, `BODY`, `TAG`). No view accounts for one, raw hides them,
+/// and a thing carrying nothing else (an account's inbox, a link's thing) is no thing of the user's.
 pub fn system(ak: &str) -> bool {
-    !ak.contains(':') && !matches!(ak, "name.0" | "body.0" | "tag.0")
+    osis::Ak::new(ak).is_ok_and(|a| a.core() && ![NAME.name(), BODY.name(), TAG.name()].contains(&a))
 }
 
 /// The registry of what a Data knows: its facets and view types.

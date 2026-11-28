@@ -416,22 +416,6 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
     Ok(out)
 }
 
-/// The type at a path (for parsing the value written there), if the schema knows it.
-pub fn type_at_path(root: ValueType, path: &[Step]) -> Option<ValueType> {
-    let mut cur = root;
-    for st in path {
-        cur = match (kind(&cur), st) {
-            (Kind::Struct(t), Step::Field(id)) => field(&t, *id)?.ty.get(),
-            (Kind::Enum(e), Step::Case(id)) => case(&e, *id)?.value.as_ref()?.get(),
-            (Kind::List(t), Step::Index(_)) => t.get(),
-            (Kind::Map(_, v), Step::Key(_)) => v.get(),
-            (Kind::Set(t), Step::Elem(_)) => t.get(),
-            _ => return None,
-        };
-    }
-    Some(cur)
-}
-
 /// The element type of a list or set (for op arguments).
 pub fn element_type(t: &ValueType) -> Option<ValueType> {
     match kind(t) {

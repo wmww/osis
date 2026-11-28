@@ -109,7 +109,7 @@ fn report(e: &anyhow::Error, json: bool, err: &mut dyn Write) -> i32 {
         let (c, k) = category(a);
         let (tid, needs) = match a {
             Error::UnknownThing { tid } | Error::UnknownKeys { tid } | Error::NotEnabled { tid, .. } | Error::LeavesNoAdmin { tid } => (Some(*tid), None),
-            Error::Permission { tid, needs } => (Some(*tid), Some(cmd::role_text(*needs))),
+            Error::Permission { tid, needs } => (Some(*tid), Some(needs.name())),
             _ => (None, None),
         };
         (c, k, format!("{e:#}"), tid, needs)

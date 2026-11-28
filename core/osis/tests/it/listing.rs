@@ -370,6 +370,28 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, author: Some(db.author()) }), "{got:?}");
 }
 
+// spec/sync-inbox.md §1, §5: the API's `enable_inbox_signals` is core's inbox rule, whatever the
+// setting held before: written and read back under the engine's key, it is what core's
+// `take_inbox_signals` makes of the same setting.
+#[test]
+fn enabling_inbox_signals_is_cores_inbox_rule_spec_sync_inbox_1() {
+    use osis::internals::schema::core_types as ct;
+    let db = db_at(1);
+    let ak = |s: &str| osis::Ak::new(s).unwrap();
+    let mine = osis::core::RetentionEntry { history: None, expires: Some(Duration::from_secs(5)), refuse_replace: true };
+    let before = [osis::core::RetentionSetting::default(), osis::core::RetentionSetting { rules: [(ak("app:a.0"), mine), (ak("grant@~0"), mine)].into(), retain_copies: true, ..Default::default() }];
+    for api in before {
+        let t = thing(&db);
+        db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&api)).unwrap();
+        let mut core = db.at(t, ct::RETENTION).get().unwrap().unwrap();
+        core.take_inbox_signals();
+        let mut enabled = api.clone();
+        enabled.enable_inbox_signals();
+        db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&enabled)).unwrap();
+        assert_eq!(db.at(t, ct::RETENTION).get().unwrap(), Some(core), "from {api:?}");
+    }
+}
+
 // spec: none (API surface); notes/api.md (the setting): `core::RETENTION` and the engine's `ct::RETENTION` are
 // one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
 // is refused, not stored as something else; `History::FOREVER` stands; a `Keep` keeping nothing

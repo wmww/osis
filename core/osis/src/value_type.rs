@@ -112,6 +112,13 @@ impl NestedType {
     pub fn name(&self) -> String {
         type_name(&self.ty)
     }
+
+    /// The type at `path` inside it, as a write there is checked (`Any` within an untyped
+    /// position); `None` where it has no such position.
+    pub fn at(&self, path: &osis_schema::Path) -> Option<NestedType> {
+        let (ty, _) = osis_schema::type_at(&self.schema, &self.ty, path).ok()?;
+        Some(NestedType { schema: self.schema.clone(), ty })
+    }
 }
 
 /// The description of `ty` in `schema`.

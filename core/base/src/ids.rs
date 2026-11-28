@@ -439,6 +439,11 @@ impl Ak {
         }
         self.0.get(1..=TID_TEXT_LEN).and_then(|t| Tid::parse(t).ok())
     }
+    /// A core schema key by its form: one name segment (spec/data-model.md §2; with a tid segment
+    /// only a card aspect), declared there or not.
+    pub fn core(&self) -> bool {
+        self.segments().count() == 1
+    }
     /// The `+` marker: its writes are held in memory, never in durable commits.
     pub fn ephemeral(&self) -> bool {
         self.parsed().markers.ephemeral
@@ -656,6 +661,15 @@ impl Role {
     }
     pub fn from_id(id: u64) -> Option<Role> {
         Role::ALL.into_iter().find(|r| u64::from(r.id()) == id)
+    }
+    /// Its name in a schema (the core schema's `role` enum): `sync`, `read`, `write`, `admin`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Sync => "sync",
+            Role::Read => "read",
+            Role::Write => "write",
+            Role::Admin => "admin",
+        }
     }
 }
 

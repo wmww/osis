@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-const ROLES: [(&str, Role); 4] = [("sync", Role::Sync), ("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)];
 const SIDES: [(&str, osis::Side); 2] = [("author", osis::Side::Author), ("holder", osis::Side::Holder)];
 const KINDS: [(&str, CommitKind); 4] = [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
 
@@ -32,12 +31,8 @@ pub(crate) fn parse_in<T: Clone>(table: &[(&str, T)], what: &str, s: &str) -> an
     table.iter().find(|x| x.0 == s).map(|x| x.1.clone()).ok_or_else(|| usage(format!("{what}: one of {} (got {s:?})", table.iter().map(|x| x.0).collect::<Vec<_>>().join(", "))))
 }
 
-pub fn role_text(r: Role) -> &'static str {
-    name_in(&ROLES, r)
-}
-
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
-    parse_in(&ROLES, "role", s)
+    parse_in(&Role::ALL.map(|r| (r.name(), r)), "role", s)
 }
 
 fn parse_reads(s: Option<&str>) -> anyhow::Result<osis::Reads> {
@@ -135,7 +130,7 @@ pub(crate) fn delivered(ctx: &Ctx<'_>, things: &[Tid]) -> anyhow::Result<()> {
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
-    J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("until", J::opt(l.until.map(|u| J::int(u.0)))), ("single_use", J::Bool(l.single_use))])).collect())
+    J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(l.role.name().to_string())), ("until", J::opt(l.until.map(|u| J::int(u.0)))), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
@@ -339,7 +334,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Node(NodeCmd::Ls) => {
             let ds = ctx.account()?.nodes(&db)?;
-            ctx.emit(&ds.iter().map(|d| format!("{} {}", d.node.to_uri(), role_text(d.role))).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node)), ("role", J::str(role_text(d.role)))])).collect()))
+            ctx.emit(&ds.iter().map(|d| format!("{} {}", d.node.to_uri(), d.role.name())).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node)), ("role", J::str(d.role.name()))])).collect()))
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
@@ -464,9 +459,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let raw = ctx.g.raw;
             let lines: Vec<String> = hs.iter().map(|h| {
                 let via = if h.through.is_empty() { String::new() } else { format!(" via {}", h.through.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
-                format!("{} {:?} {} {}{via}", h.thing.to_uri(), h.kind, role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
+                format!("{} {:?} {} {}{via}", h.thing.to_uri(), h.kind, h.role.name(), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
             }).collect();
-            let j = J::Arr(hs.iter().map(|h| J::obj([("thing", J::tid(h.thing)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::tids(&h.through))])).collect());
+            let j = J::Arr(hs.iter().map(|h| J::obj([("thing", J::tid(h.thing)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(h.role.name())), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::tids(&h.through))])).collect());
             ctx.emit(&lines, j)
         }
         Cmd::Now => {
@@ -475,7 +470,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Role { t } => {
             let r = db.role_on(ctx.tid(&t)?)?;
-            ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
+            ctx.emit(&[r.map_or("none", Role::name).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(r.name()))))]))
         }
         Cmd::Grant { t, holder, role, until, may_grant, reads, leave_adminless } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
@@ -518,7 +513,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 ls.retain(|l| l.target == t);
             }
             let raw = ctx.g.raw;
-            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {} {}", l.id, role_text(l.role), l.until.map_or("-".into(), |u| ts_text(raw, u.0)), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
+            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {} {}", l.id, l.role.name(), l.until.map_or("-".into(), |u| ts_text(raw, u.0)), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
         Cmd::Link(LinkCmd::Revoke { id }) => {
@@ -664,7 +659,7 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
         None | Some("") => (db.at(t, key.clone()).get()?, key.value_type().map(|t| t.get())),
         Some(p) => {
             let p = write::path(ctx, t, &key, p, false)?;
-            let pty = key.value_type().map(|t| t.get()).and_then(|t| text::type_at_path(t, &p.0));
+            let pty = key.value_type().and_then(|t| t.at(&p)).map(|t| t.get());
             (db.at(t, key.clone()).path(p).get::<osis::Value>()?, pty)
         }
     };
@@ -804,7 +799,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     }
     let role = db.role_on(t)?;
     lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
-    lines.push(format!("role\t{}", role.map_or("none", role_text)));
+    lines.push(format!("role\t{}", role.map_or("none", Role::name)));
     let changed = db.changed(t)?;
     let stamp = |c: Option<osis::Stamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.author.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
@@ -813,7 +808,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
         ("empty", J::Bool(!known)),
-        ("role", J::opt(role.map(|r| J::str(role_text(r))))),
+        ("role", J::opt(role.map(|r| J::str(r.name())))),
         ("created", J::opt(created.map(stamp_json))),
         ("changed", J::opt(changed.map(stamp_json))),
     ]);
@@ -930,7 +925,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, path: Option<&str>, count
                 }
                 Some(p) => {
                     let p = write::path(ctx, t, &key, p, false)?;
-                    pty = key.value_type().map(|t| t.get()).and_then(|t| text::type_at_path(t, &p.0));
+                    pty = key.value_type().and_then(|t| t.at(&p)).map(|t| t.get());
                     db.at(t, key).path(p).on_change::<Value>(f)?
                 }
             }
@@ -1053,9 +1048,9 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
 fn grants_out(r: &osis::Grants, raw: bool) -> (Vec<String>, J) {
     let lines = r.iter().map(|(m, e)| {
         let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-        format!("{} {} {}{}{}", m.to_uri(), role_text(e.role), until, if e.may_grant { " may-grant" } else { "" }, if e.from_now { " from-now" } else { "" })
+        format!("{} {} {}{}{}", m.to_uri(), e.role.name(), until, if e.may_grant { " may-grant" } else { "" }, if e.from_now { " from-now" } else { "" })
     });
-    let j = r.iter().map(|(m, e)| J::obj([("holder", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::Bool(e.may_grant)), ("from_now", J::Bool(e.from_now))]));
+    let j = r.iter().map(|(m, e)| J::obj([("holder", J::tid(*m)), ("role", J::str(e.role.name())), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::Bool(e.may_grant)), ("from_now", J::Bool(e.from_now))]));
     (lines.collect(), J::Arr(j.collect()))
 }
 
@@ -1179,7 +1174,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     match i {
         InspectCmd::Thing { t } => {
             let t = ctx.tid(&t)?;
-            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.has_content(t)?, db.role_on(t)?.map_or("none", role_text)));
+            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.has_content(t)?, db.role_on(t)?.map_or("none", Role::name)));
             let aks = db.aspects(t)?;
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
