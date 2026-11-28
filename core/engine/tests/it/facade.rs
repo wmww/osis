@@ -300,6 +300,46 @@ fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     e.proving().unwrap().provers.iter().map(|p| p.record.tid()).filter(|t| *t != me).collect()
 }
 
+// spec/permissions.md §2 (`until` 0 for nothing else): a grant, or a demotion to a grant, with
+// `until` 0 is refused: it says retain, which only a removal says; nothing is written.
+#[test]
+fn until_zero_is_only_a_removals_spec_permissions_2() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let e = &mut lp.peers[0].engine;
+    let zero = ct::Grant { until: Some(osis_base::Time(0)), ..grant_of(Role::Read) };
+    assert!(matches!(e.grant(&t, &ps[1], &zero), Err(osis_engine::Error::Misuse(_))));
+    assert!(!e.roster(&t).contains_key(&ps[1]));
+    e.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
+    assert!(matches!(e.demote(&t, &Demotion { holder: ps[1], new: Some(zero), retain: None }), Err(osis_engine::Error::Misuse(_))));
+    assert_eq!(e.roster(&t).get(&ps[1]).map(|g| g.role), Some(Role::Write));
+}
+
+// spec/permissions.md §7 (link): a link with an `until` writes the target's `retain`
+// default then in force into L's grant on K, and K's setting says so; with no default, or no
+// `until`, neither retains.
+#[test]
+fn a_link_takes_its_targets_retain_default_spec_permissions_7() {
+    let retention = Ak::new("retention^.0").unwrap();
+    for (default, until) in [(true, true), (false, true), (true, false)] {
+        let (mut lp, ps) = people(1);
+        let target = thing_of(&mut lp, 0, ps[0]);
+        let e = &mut lp.peers[0].engine;
+        if default {
+            let mut m = Mutation::new();
+            m.set(target, &ct::RETENTION, &ct::RetentionSetting { retain: true, ..Default::default() }).unwrap();
+            e.commit(m).unwrap();
+        }
+        let until = until.then(|| osis_base::Time(e.now().0 + 3_600_000));
+        let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until, peers: Vec::new(), single_use: false };
+        let a = e.create_link(&ps[0], &spec).unwrap().0;
+        let l = osis_engine::identity::link_key_tid(&a.seed, a.k);
+        let retains = until.is_some() && default;
+        assert_eq!(e.roster(&a.k).get(&l).map(|g| g.retain), Some(retains), "default {default}, until {until:?}");
+        assert_eq!(e.get(&a.k, &retention).unwrap().is_some(), default, "K's setting");
+    }
+}
+
 // spec/permissions.md §7 (First contact: the redeemer proves L until its join is held, then keeps
 // the link's peers, not the seed): a link key is held exactly while its followed link names it,
 // across a reload; it goes with the link. A key held by `hold_link_key` stays when the link

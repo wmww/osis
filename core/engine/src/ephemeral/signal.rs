@@ -195,3 +195,75 @@ fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, node: Tid, purge_author: 
     let row = CommitRow { id, kind: Kind::Content, undoes: None, purge_author, node, ts, received, parts };
     row.parts.iter().map(|p| CommitChange { tid: p.tid, ak: p.ak.clone(), id, fired: Some(row.clone()) }).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use osis_base::Time;
+    use osis_schema::core_types as ct;
+
+    /// Peer 0 administers a thing peer 1 holds with write; `fire` is a relay-only commit of
+    /// peer 0's firing `x:ring+~0` on it now.
+    fn world() -> (LocalPeer, Tid) {
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
+        lp.peers[0].engine.grant(&t, &b, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.sync_all().unwrap();
+        (lp, t)
+    }
+
+    fn fire(lp: &mut LocalPeer, t: Tid, v: i64) -> CommitBlob {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("x:ring+~0").unwrap(), &Value::Int(v)).unwrap();
+        lp.peers[0].engine.write(m).unwrap().unwrap();
+        lp.peers[0].engine.take_signals().pop().unwrap().blob
+    }
+
+    // spec/sync-compaction.md §2 (Relay-only commits; Dropped unopened; Replay): a relay-only commit is delivered once; one
+    // at or below its author's floor, or more than `MAX_DRIFT` from now, is dropped unopened.
+    #[test]
+    fn a_relay_only_commit_is_delivered_once_in_its_window_spec_sync_compaction_2() {
+        let (mut lp, t) = world();
+        let a = lp.peers[0].engine.tid();
+        let first = fire(&mut lp, t, 1);
+        let e = &mut lp.peers[1].engine;
+        assert!(e.ingest_relay_blob(first.clone()).unwrap(), "new");
+        assert!(!e.ingest_relay_blob(first).unwrap(), "delivered before");
+        let second = fire(&mut lp, t, 2);
+        let e = &mut lp.peers[1].engine;
+        e.eph.relays.floor.insert(a, second.header.ts.wall_ms().0);
+        assert!(!e.ingest_relay_blob(second.clone()).unwrap(), "at its author's floor");
+        e.eph.relays.floor.clear();
+        assert!(e.ingest_relay_blob(second).unwrap());
+        let old = fire(&mut lp, t, 3);
+        lp.advance(MAX_DRIFT_MS + 1);
+        assert!(!lp.peers[1].engine.ingest_relay_blob(old).unwrap(), "past its window");
+    }
+
+    // spec/sync-compaction.md §2 (Replay), notes/ephemeral.md Bounds: past `MAX_DELIVERED` remembered the
+    // oldest is forgotten and its `ts` becomes its author's floor.
+    #[test]
+    fn past_max_delivered_the_oldest_becomes_its_authors_floor_spec_sync_compaction_2() {
+        let (mut lp, t) = world();
+        let blob = fire(&mut lp, t, 1);
+        let e = &mut lp.peers[1].engine;
+        let now = e.now().0;
+        let x = Tid::from_bytes([9; 15]);
+        for i in 0..MAX_DELIVERED as u64 {
+            let mut c = [0; 32];
+            c[..8].copy_from_slice(&i.to_be_bytes());
+            e.eph.relays.order.push_back((CommitId(c), now - 1000 + i % 2, x));
+        }
+        assert!(e.ingest_relay_blob(blob).unwrap());
+        let r = &e.eph.relays;
+        assert_eq!(r.order.len(), MAX_DELIVERED);
+        assert_eq!(r.floor.get(&x), Some(&(now - 1000)));
+    }
+}

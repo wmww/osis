@@ -743,6 +743,29 @@ fn root_tables_page_and_the_root_stays_bounded_spec_8() {
     assert_eq!(head(none), (s.frontiers.clone(), s.absorbed.clone(), s.facts.clone()), "read at no position");
 }
 
+/// §8 Absorbed: sorted by commit ID, each once: a table out of order, or naming one twice, is bad
+/// input, decoded or streamed.
+#[test]
+fn absorbed_sorted_each_once_spec_8() {
+    let root = encode_snapshot(&many_commits(2), &scx(), None).unwrap();
+    let Value::List(items) = osis_base::decode(&root, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    let Value::List(absorbed) = &items[5] else { panic!() };
+    assert_eq!(absorbed.len(), 2);
+    let with = |a: Vec<Value>| {
+        let mut x = items.clone();
+        x[5] = Value::List(a);
+        osis_base::encode(&Value::List(x))
+    };
+    let reversed = with(absorbed.iter().rev().cloned().collect());
+    let twice = with([absorbed.clone(), vec![absorbed[1].clone()]].concat());
+    for (bytes, why) in [(reversed, "not canonical"), (twice, "absorbed commit repeated")] {
+        let e = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap_err();
+        assert!(e.to_string().contains(why), "{e}");
+        let e = crate::stream_snapshot(&bytes, &scx(), &mut Interner::new(), None, &mut |_| Ok(())).unwrap_err();
+        assert!(e.to_string().contains(why), "streamed: {e}");
+    }
+}
+
 /// §8, spec/wire.md §6: a root table pages by the rule element arrays do: one paged below the
 /// target, or one of its pages linked again by another table, is bad input.
 #[test]

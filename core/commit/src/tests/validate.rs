@@ -321,6 +321,38 @@ fn ephemeral_purge_by_writer_spec_commits_2() {
     assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
 }
 
+// spec/commits.md §2 (ephemeral): an ephemeral commit carries no purge request and no list by
+// link, and is a content commit or a content snapshot.
+#[test]
+fn ephemeral_shape_spec_commits_2() {
+    let mut h = sample_header();
+    h.undoes = None;
+    h.ephemeral = Some(EphClass::Plain);
+    h.keys.push(dkey(3, 3));
+    h.aspects[0].keys = vec![0, 1, 2];
+    h.aspects[0].purge_by = crate::retention::EPHEMERAL_PURGE_BY;
+    h.validate().unwrap();
+    let mut x = h.clone();
+    x.purge.push(PurgeItem::Aspect { tid: t(9), ak: Ak::new("app:title.0").unwrap() });
+    assert!(invalid(&x).to_string().contains("purge or linked"), "{}", invalid(&x));
+    let mut x = h.clone();
+    x.links.aspects = Some(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([2; 32]), suite: 1, key: [7; 32], salt: [0; 16], del: osis_base::Del::NONE });
+    assert!(invalid(&x).to_string().contains("purge or linked"), "{}", invalid(&x));
+    // a role snapshot (of `keys.0`, as a durable one would be) is neither
+    let mut x = h.clone();
+    x.kind = Kind::RoleSnapshot;
+    x.form = Form::Commit;
+    x.expires = None;
+    x.aspects[0].ak = Ak::new("keys.0").unwrap();
+    (x.aspects[0].lo, x.aspects[0].hi) = (0, 0);
+    x.aspects[0].purge_by = crate::retention::ROLE_PURGE_BY;
+    x.aspects[0].keys = vec![0];
+    x.keys.truncate(1);
+    assert!(invalid(&x).to_string().contains("neither a content commit"), "{}", invalid(&x));
+    x.ephemeral = None;
+    x.validate().unwrap();
+}
+
 // spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips; the
 // form rule is one for durable and ephemeral commits: an ephemeral content commit may be in
 // commit form (a shared link key's) and a snapshot in session form is bad input either way.

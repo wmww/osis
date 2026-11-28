@@ -100,6 +100,25 @@ fn build_role_commit_and_refusals() {
     assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::ROLE_KEEP_MS));
 }
 
+// spec/wire.md §4 (Inline or link): the aspect list of a commit carrying its signer's own
+// `created.0` is inline, whatever its size (a reader resolves a linked list by that record): too
+// large to be inline, it is refused; another thing's creation goes by link as any.
+#[test]
+fn a_signers_creation_keeps_its_aspect_list_inline_spec_wire_4() {
+    for (on, refused) in [(t(1), true), (t(9), false)] {
+        let mut b = content(2000);
+        let mut a = AspectWrite::new(on, Ak::new("created.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "r"));
+        a.purge_by = PurgeBy::Admin;
+        b.aspects.push(a);
+        let r = build(b, &mut MemoryBlobs::default());
+        if refused {
+            assert!(matches!(r, Err(Error::TooLarge(m)) if m.contains("creation")));
+        } else {
+            assert!(r.unwrap().commit.header.links.aspects.is_some());
+        }
+    }
+}
+
 // spec/wire.md §4, §6: a list above CHUNK_THRESHOLD goes by link to a chunk tree keyed by the
 // signer's dedup secret; a decoder resolves it and gets the same header and commit ID.
 #[test]

@@ -301,19 +301,36 @@ fn position_write_sibling_keys_spec_3_3() {
 /// Snapshot by node 2 at ts 9·2^16 of node 1's commit at ts 5·2^16 (base 3), plus `more`
 /// sources and commit entries.
 fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, DeltaCtx) {
+    snap_facts(more_src, more_commits, f, None)
+}
+
+/// `snap` with its `Facts` given (`None`: the narrowest for each commit entry).
+fn snap_facts(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value, facts: Option<Value>) -> (Vec<u8>, DeltaCtx) {
     let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let srcs = [vec![sess_value(tid(1))], more_src].concat();
     let commits = [vec![l(vec![i(1), i(5), i(0), i(3)])], more_commits].concat();
     // one frontier entry per session source of the table (§8), claiming nothing
     let fr: Vec<Value> = srcs.iter().enumerate().filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 15 || b.len() == 31)).map(|(k, _)| l(vec![i(k as i64 + 1), i(0)])).collect();
     let commits = l(commits);
-    let facts = crate::testutil::narrowest_facts(&commits);
+    let facts = facts.unwrap_or_else(|| crate::testutil::narrowest_facts(&commits));
     let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), commits, f, l(fr), l(vec![]), facts]));
     (b, scx)
 }
 
 fn snap_ok(b: &[u8], cx: &DeltaCtx) -> bool {
     decode_snapshot(b, cx, &mut Interner::new(), None).is_ok()
+}
+
+/// §8 Facts: a fact's purge author is never its commit's signer (node 1's session here); another
+/// tid is one.
+#[test]
+fn a_fact_naming_its_signer_as_purge_author_is_bad_input_spec_8() {
+    let reg = l(vec![i(0), l(vec![i(1)]), i(1), i(7)]);
+    let fact = |a: Tid| Some(l(vec![l(vec![i(1), Value::Bytes(a.as_bytes().to_vec())])]));
+    let (b, cx) = snap_facts(vec![], vec![], reg.clone(), fact(tid(7)));
+    assert!(snap_ok(&b, &cx));
+    let (b, cx) = snap_facts(vec![], vec![], reg, fact(tid(1)));
+    assert!(matches!(decode_snapshot(&b, &cx, &mut Interner::new(), None), Err(crate::Error::Malformed(m)) if m.contains("signer")));
 }
 
 /// §3.3 rules 5, 7, §4.2, §5.1: a delta carries no write its own resets prune: a register's reset
