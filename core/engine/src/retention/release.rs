@@ -23,10 +23,23 @@ impl Engine {
     /// thing outside its node closure (`retention::needed::Holding`): its content goes as never
     /// received, its certificates stay while a held thing needs them, and the store's own
     /// entries of the commits it deleted whole go (`sync::bodies::forget`).
+    /// A lost read access to one of them whose drop is due (`lost_due`) is carried out first, so
+    /// what it retains stays (spec/sync-set.md §3: a retained copy is excepted): the pass the
+    /// release waited on began after the loss was first judged, as the drop's does.
     pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds(t)).copied().collect();
         if out.is_empty() {
             return Ok(());
+        }
+        let actors: BTreeSet<Tid> = out.iter().filter_map(|t| self.core.secret_actor(t)).filter(|a| self.core.ix.secrets.contains_key(a)).collect();
+        let mut due = Vec::new();
+        for a in actors {
+            if self.lost_due(&a)? {
+                due.push(a);
+            }
+        }
+        if !due.is_empty() {
+            self.forget_lost(crate::rotation::LostScope::Only(&due))?;
         }
         self.run(|tx| {
             for t in &out {

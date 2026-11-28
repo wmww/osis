@@ -932,7 +932,6 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 // his own, the grant with key access) and Alice read on T1 only; she holds both. Bob removes her from T1
 // saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
 #[test]
-#[ignore = "issues/kept-copy-reads-nothing.md"]
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1037,7 +1036,6 @@ fn a_reader_takes_a_concurrent_promotions_grant_through_a_rotation_spec_sync_ids
 // keeps): Bob grants T1 read on T0 (both his own, the grant with key access) and Alice read on T1 only; she
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.
 #[test]
-#[ignore = "issues/kept-copy-reads-nothing.md"]
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1053,7 +1051,6 @@ fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
 // reads as before): Bob grants Alice read on T, which she holds; Bob removes her saying retain. She
 // keeps a copy of T and reads its value (chat's kick: the kicked keeps the messages).
 #[test]
-#[ignore = "issues/kept-copy-reads-nothing.md"]
 fn a_direct_removal_saying_retain_keeps_a_copy_that_reads_spec_permissions_3() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
