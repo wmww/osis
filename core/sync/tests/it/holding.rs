@@ -552,8 +552,6 @@ fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
         e.commit(m).unwrap().unwrap();
     });
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
-    w.run();
     assert_eq!(of_y(&mut w), 0, "Alice holds a state of Y after its purge");
     assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x2".into())), "Alice still reads X");
 }
@@ -683,8 +681,6 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_grant_goes_spec_sy
         let (mut w, (alice, _, t0)) = alice_reads_t0();
         let t2 = unlinked_t2(&mut w, t0, alice);
         w.run();
-        w.advance(osis_proto::limits::PASS_WAIT_MS);
-        w.run();
         let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
         for refiled in [false, true] {
             for i in [0, 1, 2] {
@@ -695,8 +691,6 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_grant_goes_spec_sy
             for to in [0, 1] {
                 refile(&mut w, 2, to, &s0, back);
             }
-            w.advance(osis_proto::limits::PASS_WAIT_MS);
-            w.run();
         }
     }
 }
@@ -719,11 +713,7 @@ fn a_mint_admins_later_reader_reads_nothing_its_record_grant_no_longer_gives_spe
         w.write(2, |e| e.grant(&t2, &alice, &grant(Role::Sync))).unwrap();
         lower_record_grant(&mut w, 2, t2, t0, to);
         w.run();
-        w.advance(osis_proto::limits::PASS_WAIT_MS);
-        w.run();
         strong(&mut w, 0, None, t0, true);
-        w.run();
-        w.advance(osis_proto::limits::PASS_WAIT_MS);
         w.run();
         assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "to {to:?}: Alice reads T0");
         assert_eq!(value(&mut w, 0, &t2), None, "to {to:?}: Alice reads T2 no more");
@@ -745,17 +735,11 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
     w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
     refile(&mut w, 2, 0, &s0, false);
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
     assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
     w.write(2, |e| told(e, &t2, &t0, &grant(Role::Read))).unwrap();
-    w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 again");
 }
@@ -797,8 +781,6 @@ fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
     let t2 = make_in(&mut w, 1, t1, "t2");
     w.write(1, |e| told(e, &t2, &bob, &grant(Role::Admin))).unwrap();
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     (w, (t0, t1, t2))
 }
 
@@ -832,14 +814,10 @@ fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permission
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())));
     lower_record_grant(&mut w, 1, t2, t1, Some(Role::Sync));
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     for t in [t0, t1] {
         let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
         refile(&mut w, 1, 0, &s, false);
     }
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
     assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
     assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
@@ -865,8 +843,6 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
     w.power_off(1);
     w.power_on(1);
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread));
     assert!(!holds_value(&mut w, 1, &t), "restarted: holds T's value");
     assert_eq!(value(&mut w, 1, &t), None);
@@ -888,12 +864,8 @@ fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
     w.write(1, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
     w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
     refile(&mut w, 1, 0, &s0, false);
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
     assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2 no more");
     assert_eq!(holding(&mut w, 0, &t2), Some(Holding::Unread), "kept unread by her sync grant");
     assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
