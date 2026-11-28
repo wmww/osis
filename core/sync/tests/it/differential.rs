@@ -712,7 +712,7 @@ fn a_pass_begun_while_quiet_waits_one_out_is_waited_out_spec_sync_status_1() {
 #[test]
 fn a_removed_reader_given_sync_again_keeps_the_epoch_its_claim_gave_spec_permissions_3() {
     use crate::harness::script::*;
-    let script = [New(0), Give(0, 0, Holder::Node(1), Syncs), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Reads), Revoke(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)];
+    let script = [New(0), Give(0, 0, Holder::Node(1), Syncs), RemoveHolder(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Reads), RemoveHolder(0, 0, Holder::Node(1)), Give(0, 0, Holder::Node(1), Syncs), Strong(1, None, 0)];
     let mut w = holds_on(0, 3, 4, &script, String::new(), false);
     let t = w.history.things[0].0;
     let held: Vec<_> = w.engine(1).sync_set().unwrap().ids.values().filter(|(ts, _)| ts.contains(&t)).map(|(_, h)| *h).collect();
