@@ -232,7 +232,7 @@ impl Node {
     }
 
     /// Debug builds: traces this node from now on (notes/sync-test-harness.md, Trace), each step's
-    /// lines that `only` keeps handed to `sink` as the step ends (`d<step> +<ms>ms <line>`). Turns
+    /// lines that `only` keeps handed to `sink` as the step ends (`d<step> +<ms>ms <took>ms <line>`). Turns
     /// `osis_base::trace`'s sink on for each thread that steps the node.
     #[cfg(debug_assertions)]
     pub fn trace(&mut self, only: crate::trace::Only, sink: Box<dyn FnMut(&str) + Send>) {
@@ -252,7 +252,7 @@ impl Node {
             let entries = store.held_ids().unwrap_or_default().into_iter().flat_map(|s| store.entries(&s).unwrap_or_default().into_iter().map(move |e| (s, e.blob))).collect();
             (entries, engine.commit_ids().into_iter().collect())
         };
-        t.stepped(input, out, held, self.mono, self.driver.restarts);
+        t.stepped(input, out, held, (self.mono, engine.mono()), self.driver.restarts);
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.

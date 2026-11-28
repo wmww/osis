@@ -1,7 +1,7 @@
 //! One node's trace (notes/sync-test-harness.md, Trace), the lines both the
 //! harness's `OSIS_SYNC_TRACE` and, in debug builds, a node's own trace (`Node::trace`, the
 //! CLI's `OSIS_NODE_TRACE`) print: for each step, what the node received and sent (each message
-//! decoded; Hello, up, closed, dial, close), what the step applied (store entries and engine
+//! decoded; Hello, up, closed, down with its error, dial with its URL, close), what the step applied (store entries and engine
 //! commits gained or lost against its last traced step), and what the engine and node noted to
 //! `osis_base::trace` (a body's verdict moving, lost access firing, a transaction refused, a
 //! record-blob judgement changing). Lines carry no node name: the caller heads them.
@@ -44,7 +44,7 @@ impl Trace {
             Input::Up { conn, rank, dialed, .. } => format!("up{from} {} rank {rank}{}", conn_name(*conn), if *dialed { " dialed" } else { "" }),
             Input::Taken { .. } => return,
             Input::Closed { conn } => format!("closed{from} {}", conn_name(*conn)),
-            Input::Down { conn, .. } => format!("down {}", conn_name(*conn)),
+            Input::Down { conn, error } => format!("down {}: {error}", conn_name(*conn)),
             Input::Tick => "tick".to_string(),
             Input::Wrote => "wrote".to_string(),
             Input::Discovered { addr } => format!("discovered {}", hex(&addr.key)),
@@ -62,7 +62,7 @@ impl Trace {
                         self.lines.push(format!("->{to} {}: {m}", conn_name(*conn)));
                     }
                 }
-                Out::Dial(conn, to) => self.lines.push(format!("dial {} {}", conn_name(*conn), hex(&to.key))),
+                Out::Dial(conn, to) => self.lines.push(format!("dial {} {} {}", conn_name(*conn), hex(&to.key), to.url)),
                 Out::Close(conn) => {
                     self.frames.retain(|(c, _), _| c != conn);
                     self.asked.retain(|(c, ..), _| c != conn);
@@ -235,9 +235,10 @@ pub fn brief(s: &str) -> String {
     out
 }
 
-/// A node's own trace (`Node::trace`): its lines printed to stderr as each step ends, headed
-/// `d<step> +<ms>ms` (ms on the node's monotonic clock since the trace began), peers named by
-/// their keys' first bytes.
+/// A node's own trace (`Node::trace`): its lines handed to its sink as each step ends, headed
+/// `d<step> +<ms>ms <took>ms` (when the step began, on the node's monotonic clock since the trace
+/// began, and how long it ran, the trace's own scan included), peers named by their keys' first
+/// bytes.
 #[cfg(debug_assertions)]
 pub(crate) struct Own {
     pub trace: Trace,
@@ -254,7 +255,7 @@ pub(crate) struct Own {
 impl Own {
     /// What a step took and gave, and what it applied; `input` none for outputs made outside a
     /// step.
-    pub fn stepped(&mut self, input: Option<&Input>, out: &[Out], held: impl FnOnce() -> (BTreeSet<(SyncId, BlobId)>, BTreeSet<CommitId>), now: osis_base::Mono, restarts: u64) {
+    pub fn stepped(&mut self, input: Option<&Input>, out: &[Out], held: impl FnOnce() -> (BTreeSet<(SyncId, BlobId)>, BTreeSet<CommitId>), (began, ended): (osis_base::Mono, osis_base::Mono), restarts: u64) {
         // engine and node lines noted on this thread outside a step come first
         let before = osis_base::trace::take();
         self.trace.noted(before);
@@ -283,10 +284,10 @@ impl Own {
             self.trace.applied(entries, commits);
         }
         self.steps += 1;
-        let ms = now.0.saturating_sub(self.since.0);
+        let (at, took) = (began.0.saturating_sub(self.since.0), ended.0.saturating_sub(began.0));
         for l in self.trace.take() {
             if self.only.keeps(&l, |_| false, &[]) {
-                (self.sink)(&format!("d{} +{ms}ms {l}", self.steps));
+                (self.sink)(&format!("d{} +{at}ms {took}ms {l}", self.steps));
             }
         }
     }

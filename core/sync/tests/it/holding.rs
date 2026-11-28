@@ -932,7 +932,7 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 // his own, the grant with key access) and Alice read on T1 only; she holds both. Bob removes her from T1
 // saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
 #[test]
-#[ignore = "issues/kept-copy-through-a-holder.md"]
+#[ignore = "issues/kept-copy-reads-nothing.md"]
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1037,7 +1037,7 @@ fn a_reader_takes_a_concurrent_promotions_grant_through_a_rotation_spec_sync_ids
 // keeps): Bob grants T1 read on T0 (both his own, the grant with key access) and Alice read on T1 only; she
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.
 #[test]
-#[ignore = "issues/kept-copy-through-a-holder.md"]
+#[ignore = "issues/kept-copy-reads-nothing.md"]
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1047,6 +1047,25 @@ fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "the copy of T0 reads");
     assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+}
+
+// spec/permissions.md §3 (Retain: a direct grant ended saying retain keeps a read-only copy that
+// reads as before): Bob grants Alice read on T, which she holds; Bob removes her saying retain. She
+// keeps a copy of T and reads its value (chat's kick: the kicked keeps the messages).
+#[test]
+#[ignore = "issues/kept-copy-reads-nothing.md"]
+fn a_direct_removal_saying_retain_keeps_a_copy_that_reads_spec_permissions_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t = make(&mut w, 1, None, "bob");
+    w.write(1, |e| told(e, &t, &alice, &grant(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "Alice reads T");
+    w.write(1, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: alice, new: None, retain: Some(true) })).unwrap();
+    w.run();
+    assert_eq!(w.engine(0).kept_copies(), vec![t], "a copy of T kept: {}", w.why_role(0, &t));
+    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "the copy reads: {}", w.why_role(0, &t));
 }
 
 // spec/sync-set.md §3 (Release: the node's own writes are served in the pass in flight before

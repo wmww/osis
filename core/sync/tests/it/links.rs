@@ -412,3 +412,38 @@ fn a_card_importer_holds_the_accounts_keys_spec_sync_inbox_5() {
     assert_eq!(w.redeem(1, &card), Waiting::Done);
     let _ = a0;
 }
+
+// spec/permissions.md §7 (Redeem: at any node holding K's sync ID), spec/sync-set.md §2 (the node's
+// role: its own things' effective role, through the holders on the way): node 0 makes T and a link
+// to it; node 1's account is granted sync on T and on K, and node 1 holds K from its node root (as
+// `chat relay` and its host's `osis hold`), so it keeps K unread; node 2 redeems while it reaches
+// node 1 only, and reads T.
+#[test]
+#[ignore = "issues/node-root-hold-of-account-sync.md"]
+fn a_link_is_redeemed_at_a_node_keeping_t_and_k_unread_spec_permissions_7() {
+    use crate::harness::history::{Gives, world_of, value_ak};
+    use osis_crdt::{Op, PathOp};
+    use crate::harness::script::*;
+    use osis_engine::Mutation;
+    use osis_schema::core_types as ct;
+    let mut w = world_of(0, 3, 3);
+    let _ = crate::harness::play(&mut w, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Syncs), Run], String::new());
+    let t = w.history.things[0].0;
+    let link = w.make_link(0, t, Role::Read);
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| crate::harness::told(e, &link.k, &a1, &grant(Role::Sync))).unwrap();
+    let root1 = w.engine(1).node_root().unwrap();
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.op(root1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(osis_base::Value::Strong(link.k)) }).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(w.engine(1).get(&t, &value_ak()).unwrap().is_none(), "node 1 keeps T unread");
+    w.partition(0, 2);
+    assert_eq!(w.redeem(2, &link), Waiting::Pending);
+    w.run();
+    let want = w.engine(0).get(&t, &value_ak()).unwrap();
+    assert!(want.is_some());
+    assert_eq!(w.engine(2).get(&t, &value_ak()).unwrap(), want, "node 2 reads T through node 1");
+}
