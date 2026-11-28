@@ -47,7 +47,7 @@ fn f9_the_creation_a_reset_names_is_evidence_spec_permissions_2() {
     assert_agrees("f9", &w);
     let req = reader_of(&w, D);
     assert!(req.contains_key(&(c[0], A)), "{req:?}");
-    assert_eq!(req.get(&(gq, A)), Some(&Reason::Edge((Q, A))), "{req:?}");
+    assert_eq!(req.get(&(gq, A)), Some(&Reason::Grant((Q, A))), "{req:?}");
 }
 
 const M1: Thing = 30;
@@ -68,7 +68,7 @@ fn f11_an_unjoined_path_still_brings_its_grants_writes_spec_permissions_4() {
     w.write(k, |p| p.content(K, 2, &[M1, M2, A], D));
     assert_agrees("f11", &w);
     let (d, _) = at_end(&w, |st| st.held[u].clone());
-    assert_eq!(d.ev.required(&D).unwrap().get(&(gm, M2)), Some(&Reason::Edge((M1, M2))));
+    assert_eq!(d.ev.required(&D).unwrap().get(&(gm, M2)), Some(&Reason::Grant((M1, M2))));
 }
 
 /// Q writes D through [A] where (Q, A) holds only K's junk grant: the junk is a copy (finding 11,
@@ -299,7 +299,7 @@ fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
     assert_eq!(req32(&ev), Copies32::new());
     ev.open_path(&(5, D), 0, vec![(K, A), (A, D)]);
     assert_eq!(req32(&ev), Copies32::from([(2, A)]));
-    assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Edge((K, A))));
+    assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Grant((K, A))));
     // a write on the grant ordered after the body is taken too, and a forgotten member leaves
     ev.add((7, A), vec![Part::new(write(K), Some(vec![(X, A)]))]);
     assert_eq!(req32(&ev), Copies32::from([(2, A), (7, A)]));
@@ -318,7 +318,7 @@ fn a_member_brings_the_writes_on_the_grants_it_writes_spec_permissions_4() {
     assert_eq!(req32(&ev), Copies32::from([(5, A)]));
     ev.add((1, A), vec![Part::new(write(Q), Some(vec![(X, A)]))]);
     assert_eq!(req32(&ev), Copies32::from([(1, A), (5, A)]));
-    assert_eq!(ev.required(&D).unwrap().get(&(1, A)), Some(&Reason::Edge((Q, A))));
+    assert_eq!(ev.required(&D).unwrap().get(&(1, A)), Some(&Reason::Grant((Q, A))));
 }
 
 /// A removal reaches a far thing only with a write it judges there: X removes K on A while A writes

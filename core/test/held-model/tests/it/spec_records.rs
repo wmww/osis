@@ -166,7 +166,7 @@ fn things_a_destroyed_thing_created_live_on_spec_permissions_1() {
 }
 
 // notes/expiry-creation-design.md §3 (Destruction: purge is per part): purging one creation of a
-// commit making two things destroys that thing alone
+// commit minting two things destroys that thing alone
 #[test]
 fn purging_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
     const OTHER: ThingId = 14;

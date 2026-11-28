@@ -1095,8 +1095,8 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
-        // an ephemeral commit past a blob is refused (spec/sync-compaction.md §2): its values are inline, so
-        // one past a page makes its delta's root too large (issues/eph-parity.md Large values)
+        // an ephemeral commit that still does not fit a blob, chunked and paged, is refused at the
+        // writer (spec/sync-compaction.md §2), as `Misuse` (notes/ephemeral.md)
         Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
         b => b?,
     };

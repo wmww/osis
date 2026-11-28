@@ -517,9 +517,11 @@ DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "admin edge": r"(?i)\badmin[ _-]edges?\b",
     "direct edge": r"(?i)\bdirect[ _-]edges?\b",
     "EdgeWrite": r"\bEdge(Write|Op|Log)\b",
+    "Reason::Edge": r"\bReason::Edge\b",
 }.items()}
 
-# Words of key parts (notes/stub-rewrite.md), refused in every tracked file.
+# Words of what the stub design replaced (notes/stubs.md; issues/deprecated-terms.md, Gone): refused
+# as DEAD_WORDS are, but Entry.tla, the checked rejected alternative, keeps them.
 STUB_DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "edge piece": r"(?i)\bedge[ _-]?pieces?\b",
     "key part": r"(?i)\bkey[ _-]parts?\b|\bkey_part\w*",
@@ -551,10 +553,9 @@ STUB_DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "EntryKeys": r"\bEntryKeys\b",
     "WallMs": r"\bWallMs\b",
     "minter": r"(?i)\bminters?\b",
-    "making commit": r"(?i)\bmaking[ _-]commits?\b",
+    "making commit": r"(?i)(\b|_)making[ _-]commits?(\b|_)",
     "way in": r"(?i)\bways? in\b(?=\s*([.,;:()]|$|\b(from|is|are|at|to|for|it|they|of)\b))",
 }.items()}
-# Entry.tla is the checked rejected alternative notes/stubs.md cites: it keeps its own words.
 STUB_DEAD_WORDS_OK = ("core/test/tla/rotation/Entry.tla",)
 
 

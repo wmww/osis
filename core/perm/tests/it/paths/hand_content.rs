@@ -443,14 +443,14 @@ fn signed(id: u64, ts: u64, key: SignKey, signer: u32, parts: Vec<Part>) -> Comm
     Commit { key, ..commit(id, ms(ts), signer, parts) }
 }
 
-// spec/permissions.md §1, §2: the key hop is a grant like any (Keys K1 to K5 of
+// spec/permissions.md §1, §2: a key hop's grant is a grant like any (Keys K1 to K5 of
 // notes/write-path-design.md). A thing acting as itself writes its own roster and key grants by
 // its key hop alone, as any admin of it: KX's
 // record key grants KB admin on KX and a second key write; the second key signs content as KX
 // (write) but grants nothing (explicit, needs admin); the record key lowering its own grant, acting
 // as KX, is its self-removal (no hop), after which it signs nothing as KX.
 #[test]
-fn a_key_hop_is_an_grant_like_any() {
+fn a_key_hops_grant_is_a_grant_like_any() {
     let k2 = SignKey([7; 32]);
     let rk = super::own(t(KX));
     let commits = [

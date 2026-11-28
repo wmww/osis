@@ -444,7 +444,7 @@ fn unlinked_t2(w: &mut World, t0: Tid, alice: Tid) -> Tid {
 }
 
 // spec/permissions.md §3 (Lost access: a node drops every local unit it can no longer read),
-// spec/sync.md §3: Bob's node 2 makes T0 and grants Alice read; his node 1 mints T1 with admin T0;
+// spec/sync.md §3: Bob's node 2 mints T0 and grants Alice read; his node 1 mints T1 with admin T0;
 // Alice holds both. Node 1 removes Alice from T0 while node 2, not yet knowing, grants her sync
 // on T1 (T1 made independent). Alice holds only sync on T1 and nothing on T0: she reads neither.
 #[test]

@@ -774,8 +774,8 @@ impl Osis {
     /// here; it waits for the link's node meanwhile, for about an hour from the first call (this
     /// node's policy), then fails with `Network` and keeps nothing: redeem it again to try again. A
     /// link to a thing this node already reaches joins nothing. What a share link holds is kept
-    /// until the join is held elsewhere or the node gives up, a dropped call included. A public
-    /// link joins nothing: `joiner` holds the thing by its strong, written once the thing is
+    /// until the join is held elsewhere or the node gives up, a dropped call included. A locator
+    /// joins nothing: `joiner` holds the thing by its strong, written once the thing is
     /// found public or this node is found to hold a role on it.
     pub async fn redeem(&self, link: &Link, joiner: Tid) -> Result<Tid> {
         if let Some(at) = self.process_at("redeem")? {

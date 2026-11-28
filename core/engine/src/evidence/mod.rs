@@ -123,7 +123,7 @@ impl<T, S, H> Part<T, S, H> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reason<T, S, H = T> {
     /// A grant write on an edge the set uses.
-    Edge(Edge<T, H>),
+    Grant(Edge<T, H>),
     /// It records this step of the base's sync ID, on the path placing a listed delete key.
     Step(T, S),
 }
@@ -562,7 +562,7 @@ where
             self.ix.wrote(Row::Edge(&e));
             self.ix.on_edge.entry(e).or_default().insert(c);
             for sid in self.edge_sids.get(&e).cloned().unwrap_or_default() {
-                todo.push(&sid, Item::Copy(c, Reason::Edge(e)));
+                todo.push(&sid, Item::Copy(c, Reason::Grant(e)));
             }
         }
         self.ix.copies.insert(c, parts);
@@ -803,7 +803,7 @@ where
                 counts.edges += 1;
                 added.edges.push(e);
                 ix.read(Row::Edge(&e));
-                work.extend(ix.on_edge.get(&e).into_iter().flatten().map(|c| Item::Copy(*c, Reason::Edge(e))));
+                work.extend(ix.on_edge.get(&e).into_iter().flatten().map(|c| Item::Copy(*c, Reason::Grant(e))));
             }
             Item::Del(d) => {
                 if !cl.dels.insert(d) {

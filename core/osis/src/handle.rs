@@ -839,10 +839,11 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a `*.osis` schema source, here and at any connected node: `aspect_key` then types its
-    /// aspects, and undo and large values follow the schema. `name` appears in its errors
-    /// (name:line:col). Generated keys carry their schema and need no registration. The newest
-    /// registration of an aspect types `aspect_key` for this session; the store keeps the highest version.
+    /// Registers a `*.osis` schema source in this process (it reaches no node this process is a
+    /// client of): `aspect_key` then types its aspects, and undo and large values follow the
+    /// schema. `name` appears in its errors (name:line:col). Generated keys carry their schema and
+    /// need no registration. The newest registration of an aspect types `aspect_key` for this
+    /// session; the store keeps the highest revision.
     /// A schema of an app declares no core aspect.
     pub fn register_schema(&self, name: &str, source: &str) -> Result<()> {
         let s = osis_schema::parse(name, source).map_err(|e| Error::Invalid(e.to_string()))?;

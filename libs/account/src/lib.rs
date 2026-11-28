@@ -10,8 +10,8 @@
 //! Pairing a new node is transport-agnostic: the app carries three texts between the nodes (a QR
 //! code, the clipboard, a local socket), the pairing channel of spec/permissions.md §8: the offer
 //! (the account, its profile and a one-time secret), the new node's request (its node thing's
-//! public key record) and the existing node's reply (the account's offer, with its trust records
-//! and where to reach the offering node), the last two authenticated by the offer's secret.
+//! public key record) and the existing node's reply (the account's locator: the account, its
+//! sync ID and where to reach the offering node), the last two authenticated by the offer's secret.
 
 #![forbid(unsafe_code)]
 

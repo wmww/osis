@@ -702,7 +702,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
 }
 
 // spec/sync-judgement.md §2 (Loggable; Per blob: the rewrite is the rest of the body, a fresh
-// encryption where no held blob is it): node 1 makes a thing (its record, a value under purge on
+// encryption where no held blob is it): node 1 mints a thing (its record, a value under purge on
 // replace, the strong from its account in the same commit) and replaces the value while cut
 // off from its sibling, node 2. Node 1 strips the value from the minting commit and drops the
 // account's `holds.0` part as covered, which strips nothing. The rest is still must-hold and
@@ -710,7 +710,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
 // Rejoined, node 2 receives the minting commit, so the thing's record. Fails if a part dropped
 // here that strips nothing makes the rest unloggable.
 #[test]
-fn a_making_commit_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_sync_judgement_2() {
+fn a_minting_stripped_before_a_siblings_fetch_reaches_the_sibling_spec_sync_judgement_2() {
     let mut w = crate::harness::siblings();
     w.partition(1, 2);
     let d = w.node(1).account.unwrap();

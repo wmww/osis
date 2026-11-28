@@ -64,7 +64,7 @@ pub(crate) fn shape(mint: &BTreeMap<Tid, Holder>, key: SignKey, signer: Tid, pat
     well &= (members.len() - 1..PathMarks::BITS as usize).all(|j| !marked(j));
     // Invariant: every part but a key's lowering of its own grant rests on its key hop first, so
     // a key holding no grant on S (a stranger's, one removed, one never granted) gives nothing as
-    // S whatever path it states (`hand_content::a_key_hop_is_an_grant_like_any`). The key is the
+    // S whatever path it states (`hand_content::a_key_hops_grant_is_a_grant_like_any`). The key is the
     // one that signed: the caller hands the key the commit's signature was checked against.
     let mut hops = vec![(Holder::Key(key), signer)];
     for (j, pair) in members.windows(2).enumerate() {

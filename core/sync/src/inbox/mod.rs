@@ -291,7 +291,7 @@ impl Inbox {
         self.links.redeeming(k)
     }
 
-    /// Dial hints from links being redeemed and offers taken: dial candidates
+    /// Dial hints from links and locators being redeemed: dial candidates
     /// (spec/sync-opens.md §1), for dialing only. Stamped reads: the driver follows them in an
     /// `Effects` key, read again only as they move.
     pub fn dial_hints(&self) -> BTreeSet<DialHint> {
