@@ -392,7 +392,7 @@ fn the_publics_grant_round_trip_spec_permissions_1() {
 
 // spec/sync-inbox.md §1 (Card): putting a thing's card needs its keys here and write on the host
 // through it; a stranger reading the host then holds its keys and grants it a role. Removing a
-// card needs write on the host; naming a thing's inbox, admin on it.
+// card needs write on the host; naming a thing's inbox, admin on it, as the node itself.
 #[test]
 fn put_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     use osis::{GrantOpts, Tid};
@@ -416,7 +416,7 @@ fn put_card_needs_keys_and_a_path_through_the_thing_spec_sync_inbox_1() {
     let as_client = osis::internals::Internals::acting_as(&a, client);
     let mut w = as_client.write();
     w.set_inbox(g, p).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a writer of g, acting through a node administering it");
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))), "a role commit acts for its signer: no acting client names an inbox");
     let mut w = a.write();
     w.set_inbox(elsewhere, g).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))), "elsewhere has no keys of its own");
