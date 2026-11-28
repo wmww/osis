@@ -1112,4 +1112,33 @@ mod keys_tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), secrets);
     }
+
+    // spec/permissions.md §3: a writer judges its own `keys.0` and `secrets.0` deltas by the
+    // role its receivers judge them by (`rotation_required`), refused before anything applies,
+    // naming that role
+    #[test]
+    fn writer_refuses_rotation_receivers_hold_invalid_spec_perm_3() {
+        let mut lp = LocalPeer::fresh(2, Time(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let t = thing(&mut lp, me);
+        let wt = lp.peers[1].engine.tid();
+        lp.peers[0].engine.grant(&t, &wt, &ct::Grant { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        lp.sync_all().unwrap();
+        let secrets = osis_base::Ak::new("secrets.0").unwrap();
+        let keys = osis_base::Ak::new("keys.0").unwrap();
+        let before = (lp.peers[1].engine.get(&t, &secrets).unwrap(), lp.peers[1].engine.get(&t, &keys).unwrap());
+        // a removal of the admin's box; a reset of `keys.0`'s box records (field 8)
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().to_value();
+        let unbox = PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(admin) };
+        let reset = PathOp { path: vec![osis_crdt::PathSeg::Field(crate::flows::SEALED)], op: osis_crdt::Op::Set(Value::Map(Default::default())) };
+        for (ak, op) in [(&secrets, unbox), (&keys, reset)] {
+            let mut m = Mutation::new();
+            m.op(t, ak, op).unwrap();
+            let r = lp.peers[1].engine.write(m);
+            assert!(matches!(r, Err(crate::Error::Permission { needs: Role::Admin, .. })), "{ak}: {r:?}");
+        }
+        assert_eq!((lp.peers[1].engine.get(&t, &secrets).unwrap(), lp.peers[1].engine.get(&t, &keys).unwrap()), before, "nothing applied");
+    }
 }

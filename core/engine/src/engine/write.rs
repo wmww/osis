@@ -277,13 +277,6 @@ pub(crate) fn required_role(ak: &str) -> Role {
     }
 }
 
-/// The role a local write of `ops` on `ak` needs: `required_role`, but admin for a `keys.0` op
-/// outside `flows::WRITER_FIELDS`, as its receivers judge it (`apply::validity::rotation_required`).
-pub(crate) fn ops_role(ak: &str, ops: &[PathOp]) -> Role {
-    let writers = |op: &PathOp| matches!(op.path.first(), Some(osis_crdt::PathSeg::Field(f)) if crate::flows::WRITER_FIELDS.contains(f));
-    if ak == "keys.0" && !ops.iter().all(writers) { Role::Admin } else { required_role(ak) }
-}
-
 /// The role a compaction snapshot of `ak` needs (spec/permissions.md §5.2): the strictest any
 /// write it carries could need, so admin for `keys.0` and `secrets.0` (admin keysets, inbox,
 /// deposit seed, admin boxes and tombstones), else the aspect's role.
@@ -1292,9 +1285,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         // a sealed fire's sender holds no setting of the thing and is bound by none: its
         // readers judge it (spec/sync-inbox.md §2)
         if !m.unchecked && !sealed {
-            // (tests: `skip_writer_rules` forges past the receivers' finer rule)
-            let need = if tx.core.skip_writer_rules { required_role(ak.as_str()) } else { ops_role(ak.as_str(), &am.ops) };
-            check_role(tx.core, node, &|t| base.creates.get(t), &tid, ak.as_str(), need, ts)?;
+            check_authority(tx.core, node, &|t| base.creates.get(t), &tid, ak.as_str(), ts)?;
         }
         // a content write is written under the setting: one known and not held yet is waited
         // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)
@@ -1478,6 +1469,14 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         };
         let out = if m.sweeps.contains(&(tid, ak.clone())) { sweep_of(tx, &tid, &ak, &w2.delta_stamp())?.map(|f| (f, w2.range())) } else { out };
         let Some((fragment, range)) = out else { continue };
+        // a `keys.0` or `secrets.0` delta needs the role its receivers judge it by (a role commit
+        // acts for its signer, so for a confined write too): one they hold invalid is refused here
+        // (tests: `skip_writer_rules` forges past it)
+        if !m.unchecked && !sealed && !tx.core.skip_writer_rules
+            && let Some(need) = crate::apply::validity::rotation_required(ak.as_str(), &fragment)
+        {
+            check_role(tx.core, node, &|t| plan.creates.get(t), &tid, ak.as_str(), need, ts)?;
+        }
         if form == Form::Commit {
             next_ctr = range.hi;
         }

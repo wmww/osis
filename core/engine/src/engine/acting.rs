@@ -51,8 +51,8 @@ impl Engine {
         let creates = &m.creates;
         let records: Records<'_> = &|t| creates.get(t);
         let created = "created.0";
-        for ((t, ak), a) in &m.aspects {
-            check_role(&self.core, *actor, records, t, ak.as_str(), super::write::ops_role(ak.as_str(), &a.ops), ts)?;
+        for (t, ak) in m.aspects.keys() {
+            check_authority(&self.core, *actor, records, t, ak.as_str(), ts)?;
         }
         for t in m.creates.keys() {
             check_authority(&self.core, *actor, records, t, created, ts)?;

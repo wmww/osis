@@ -676,7 +676,7 @@ pub(crate) fn resolved(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[
 /// rotates sync, read and write, only an admin the admin role; a box record needs the role its
 /// key names, as its box does, beside that role's keyset (else admin); at least write. A delta that is not a plain struct (a write or
 /// reset of the whole value) replaces every field: admin.
-fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
+pub(crate) fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     match ak {
         "secrets.0" => return Some(secrets_role(f)),
         "keys.0" => {}
