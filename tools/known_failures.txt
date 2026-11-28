@@ -13,4 +13,3 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-engine/apply::tests_paged::a_fill_goes_on_past_failed_writes_and_reloads_spec_commits_4 - issues/open-reads-paged-role-parts.md opened from the persisted index: \d+ blob reads
 osis-engine/order::held_set_decides_plain - issues/order-reader-syncs-nothing-outside-g.md held-model judged no list element reset
 sim-sweep:revoke_while_writing rate:0 issues/revoked-signal-stub-pending.md not quiescent after \d+ rounds
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=45,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: storm: past the cap
