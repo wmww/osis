@@ -212,7 +212,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a text element created at `(ts, Derived(d), i)` under an effective reset (§4.2; at a `Slots` position, its register write's stamp included) below `(ts, d)`: a copy of a register write's embedding carries the reset that write implies (§7), so it prunes what the register write supersedes.
    - **Writer's deltas**
      - in a writer's delta, runs with empty `Content` of more than `MAX_DELTA_BARE` elements in all, pages included.
-       - A delete or move of more elements is split across commits; `replace` and `remove_aspect` clear any length with one reset.
+       - A delete or move of more elements is refused: the writer splits it across commits; `replace` and `remove_aspect` clear any length with one reset.
      - in a writer's delta, a commit-level write (§2.3: register value, reset, `W`, case, element reset, `FlagW`) whose stamp is not the delta stamp;
      - foreign stamps other than sibling keys in a delta that is not a snapshot.
    - **Map entries**
@@ -374,7 +374,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - State: `R`, `written`, case register `(stamp, case_id)`, payloads `{case_id: fragment}`. Payload writes are filed under the case they were made for; the payload of a case that is not current stays in the state, hidden, until a reset prunes it: a case write stamped between the enum's reset and a payload write shows that write.
 - Join: case register by stamp; payloads per case; prune (payloads of a non-current case are pruned by `E` like any other fragment, so a case change, which is a reset, drops every older payload write of every case).
 - Read: `[case_id]` or `[case_id, read(payloads[case_id])]`. A payload fragment that is absent for a case that has a payload type is a typed-read error (missing payload), never a panic. If the case register is absent the enum is absent, whatever payloads exist.
-- Ops: `set_case(id, payload)` where id differs from the current case → `[5, [D], [], [[D, id]], {id: payload fragment}]` (reset, case write, payload). Same case with a changed payload → `[5, [], [], [], {id: diff-delta}]` (no case write). `option<T>`: `none` is a case without payload: `[5, [D], [], [[D, 0]], {}]`.
+- Ops: `set_case(id, payload)` where id differs from the current case → `[5, [D], [], [[D, id]], {id: payload fragment}]` (reset, case write, payload). Same case with a changed payload → `[5, [], [], [], {id: diff-delta}]` (no case write). `option<T>`: `none` is a case without payload: `[5, [D], [], [[D, 0]], {}]`. A path op into the payload of a case that is not current is refused.
 
 ### 5.5 Set (6)
 - State: `R`, `written`, elements `{dot: (R_elem, value register, removal)}`. The value register's first write has the element's creation stamp. A **value removal** `(stamp, v, parts)` is a write of its own naming a reference `v` (spec/data-model.md §8) and one or more counter ranges of sources (`Seen`, §3.2); a writer puts it on a fresh dot holding nothing else (a commit-level write: its stamp is `D`).

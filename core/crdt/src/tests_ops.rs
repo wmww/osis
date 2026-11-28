@@ -989,3 +989,17 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     assert_eq!(set(&s, true), [k.clone(), y.clone(), Value::Int(5)].into_iter().collect());
     assert_eq!(set(&s, false), [k, y].into_iter().collect());
 }
+
+/// spec/crdt.md §5.4 (payload of a case not current): a path op into the payload of a case other
+/// than the current one is refused at the writer; into the current case's it applies.
+#[test]
+fn a_path_into_a_case_not_current_is_refused_spec_crdt_5_4() {
+    let inner = || Ty::Struct([(1, Ty::Register)].into_iter().collect());
+    let view = TyView(Ty::Enum([(1, Some(inner())), (2, Some(inner()))].into_iter().collect()));
+    let payload = Value::Map([(Value::Int(1), Value::Str("p".into()))].into_iter().collect());
+    let s = create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &Value::Enum(1, Some(Box::new(payload)))).unwrap();
+    let into = |case| PathOp { path: vec![PathSeg::Case(case), PathSeg::Field(1)], op: Op::Set(Value::Str("q".into())) };
+    let mut b = DeltaBuilder::new(&s, Writer::new(ts(2 << 16), node(1), 2));
+    assert!(matches!(b.apply(&into(2), &view), Err(crate::Error::Mismatch("case is not current"))));
+    assert!(b.apply(&into(1), &view).is_ok());
+}
