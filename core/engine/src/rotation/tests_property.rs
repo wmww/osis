@@ -1,8 +1,8 @@
 //! The rotation property (spec/crypto.md §4, spec/permissions.md §2-§3), on one generator: no
 //! departed holder reads later content, and every holder ends reading everything. A history
 //! mixes forks (rotations on stale states, leaving holders out), departures (removals,
-//! demotions, `until`s finalized, self-removals forging what a writer can), vandals (a rotation
-//! boxing nobody), re-grants, invalid rotations (a rotator demoted unaware), compactions, holder
+//! lowerings, `until`s finalized, self-removals forging what a writer can), vandals (a rotation
+//! boxing nobody), re-grants, invalid rotations (a rotator lowered unaware), compactions, holder
 //! actors in cycles (a peer reading G only through them leaves the last), a rotator lacking a
 //! role's secret, and an admin acting while some departures are withheld from it. Forgers and
 //! vandals are hostile: their nodes act no more, and an honest admin removes them (and the
@@ -13,7 +13,7 @@
 #![allow(clippy::unwrap_used)]
 use super::tests::{Key, Rng, Via, grant, independent_thing, openable, opens_by, opens_from, opens_in, self_opened, synced};
 use super::tests_departs::{Forge, leave};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
 use osis_base::{CommitId, Role, Tid, Time};
@@ -516,16 +516,16 @@ fn rotation_history(seed: u64) -> Reached {
             // whether the action lowered a grant (a departure, or an `until` that ends one)
             let mut lowered = false;
             match kind {
-                // a removal or a demotion to read
+                // a removal or a lowering to read
                 0 | 1 if ri == Role::Admin && j != o && j != i => {
                     let new = (kind == 1 || run.rng.next(2) == 0).then_some(Role::Read);
-                    lowered = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) > new && run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: new.map(grant), retain: None }).is_ok();
+                    lowered = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) > new && run.lp.peers[i].engine.lower(&t, &Lowering { holder: run.tids[j], new: new.map(grant), retain: None }).is_ok();
                 }
                 // a self-removal, a writer forging as it can
                 2 if i != o => {
                     let how = if ri >= Role::Write { [Forge::None, Forge::Mark, Forge::Listed, Forge::Rotating, Forge::Backdated][run.rng.next(5) as usize] } else { Forge::None };
                     if let Forge::None = how {
-                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[i], new: None, retain: None }).is_ok();
+                        lowered = run.lp.peers[i].engine.lower(&t, &Lowering { holder: run.tids[i], new: None, retain: None }).is_ok();
                     } else if let Ok(made) = leave(&mut run.lp, i, t, how) {
                         run.log.push(format!("  peer {i} forges {how:?}: {:?}", made.iter().map(|(r, e)| (r, e.n(), e.nonce()[0])).collect::<Vec<_>>()));
                         // a forger is hostile from here on: its node acts no more
@@ -549,7 +549,7 @@ fn rotation_history(seed: u64) -> Reached {
                 5 if ri == Role::Admin && j != o && j != i => {
                     let until = Time(run.lp.peers[i].engine.core.now().0 + 1 + run.rng.next(500));
                     if let Some(r) = run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) {
-                        lowered = run.lp.peers[i].engine.demote(&t, &Demotion { holder: run.tids[j], new: Some(ct::Grant { role: r, until: Some(until), may_grant: false, retain: false, floor: None }), retain: None }).is_ok();
+                        lowered = run.lp.peers[i].engine.lower(&t, &Lowering { holder: run.tids[j], new: Some(ct::Grant { role: r, until: Some(until), may_grant: false, retain: false, floor: None }), retain: None }).is_ok();
                     }
                 }
                 // re-grants of every holder it sees, or one, at its role (re-writing their boxes)
@@ -596,7 +596,7 @@ fn rotation_history(seed: u64) -> Reached {
     if let Some(d) = deep.filter(|d| !run.hostile.contains(d)) {
         let (t, o) = run.actors[k - 1];
         let before = run.before(o);
-        if run.lp.peers[o].engine.demote(&t, &Demotion { holder: run.tids[d], new: None, retain: None }).is_ok() {
+        if run.lp.peers[o].engine.lower(&t, &Lowering { holder: run.tids[d], new: None, retain: None }).is_ok() {
             reached.departed = true;
             let now = super::tests::commit_ids(&mut run.lp, o);
             departing.extend(now.difference(&before.1).copied());
@@ -661,7 +661,7 @@ fn rotation_history(seed: u64) -> Reached {
         let gone: Vec<(String, Tid)> = peers.chain(groups).collect();
         for (h, ht) in gone {
             let before = run.before(a);
-            if run.lp.peers[a].engine.demote(&t, &Demotion { holder: ht, new: None, retain: None }).is_ok() {
+            if run.lp.peers[a].engine.lower(&t, &Lowering { holder: ht, new: None, retain: None }).is_ok() {
                 let now = super::tests::commit_ids(&mut run.lp, a);
                 departing.extend(now.difference(&before.1).copied());
                 reached.departed = true;
@@ -693,7 +693,7 @@ fn rotation_history(seed: u64) -> Reached {
     reached
 }
 
-/// Whether some rotation commit of the history is invalid (its rotator demoted unaware).
+/// Whether some rotation commit of the history is invalid (its rotator lowered unaware).
 fn invalid_rotations(run: &Run) -> bool {
     let core = &run.lp.peers[0].engine.core;
     let ak = osis_base::Ak::new("secrets.0").unwrap();
@@ -918,7 +918,7 @@ fn held_while_current(run: &Run, o: usize, d: usize, t: Tid, r: Role, e: &Epoch)
 }
 
 /// Whether peer `d` was first handed secret `k` by a grant that leaves it reading (spec/crypto.md
-/// §4, Boxes: an admin demoted to reader while granting X read leaves X reading, until that
+/// §4, Boxes: an admin lowered to reader while granting X read leaves X reading, until that
 /// role's next rotation): the grant's write applies nothing and does not count in peer `o`'s
 /// settled timeline of its target (its author held no write there just before it), its author
 /// still holds `k`'s role on `k`'s thing, so could hand `k` on anyway (a secret once shared cannot
@@ -998,7 +998,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
 }
 
 /// Peer `d`'s departure from role `r` of `t` in the settled timeline: the last applied write
-/// taking its grant from `r` or more to below it (for keys, `key_role`), or a later demotion whose
+/// taking its grant from `r` or more to below it (for keys, `key_role`), or a later lowering whose
 /// audit dropped a write giving it `r` or more. A write that never gave `r` (a sync grant, for
 /// read) departs nothing at `r`.
 fn departure(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<CommitId> {
@@ -1107,7 +1107,7 @@ fn step(run: &mut Run, i: usize, f: impl FnOnce(&mut Run)) {
 }
 
 // The checker's hand-on through a holder actor (spec/crypto.md §4, Boxes; seed 636429853021):
-// M admin of G, A (peer 1) admin of M, D (peer 2) admin of G. The owner demotes D to reader,
+// M admin of G, A (peer 1) admin of M, D (peer 2) admin of G. The owner lowers D to reader,
 // rotating G's admin to e1 boxed to M at keyset k, and removes A from M. A, having received
 // neither, grants D admin of M, boxing k; D, not yet holding A's removal, opens e1 through the
 // box to M at k. The grant settles invalid. A holds k, so opens that box though its node never
@@ -1126,14 +1126,14 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     let admin = |run: &Run| run.lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Admin).newest_held().map(|x| x.0)).unwrap();
     step(&mut run, 0, |run| {
         run.lp.peers[0].clock.advance(1_000);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
+        run.lp.peers[0].engine.lower(&g, &Lowering { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
     });
     let e1 = admin(&run);
     run.lp.sync(0, 2).unwrap();
     run.note();
     step(&mut run, 0, |run| {
         run.lp.peers[0].clock.advance(2_000);
-        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
+        run.lp.peers[0].engine.lower(&m, &Lowering { holder: a, new: None, retain: None }).unwrap();
         run.lp.peers[0].engine.ensure_rotated(&g).unwrap();
     });
     step(&mut run, 1, |run| {
@@ -1156,7 +1156,7 @@ fn removal_rotates_once(run: &mut Run, g: Tid, role: Role, holder: Tid, at: u64,
     let before = made(run);
     step(run, 0, |run| {
         run.lp.peers[0].clock.advance(at);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
+        run.lp.peers[0].engine.lower(&g, &Lowering { holder, new: None, retain: None }).unwrap();
     });
     let new: Vec<Epoch> = made(run).difference(&before).copied().collect();
     assert_eq!(new.len(), 1, "the removal's rotation alone");
@@ -1185,7 +1185,7 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
     let mut run = Run::new(lp, vec![(g, 0), (m, 1)], Rng(1));
     step(&mut run, 3, |run| {
         run.lp.peers[3].clock.advance(1_000);
-        run.lp.peers[3].engine.demote(&m, &Demotion { holder: d, new: None, retain: None }).unwrap();
+        run.lp.peers[3].engine.lower(&m, &Lowering { holder: d, new: None, retain: None }).unwrap();
     });
     step(&mut run, 1, |run| {
         run.lp.peers[1].clock.advance(2_000);
@@ -1224,7 +1224,7 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
     let mut run = Run::new(lp, vec![(g, 0), (h, 0), (y, 0)], Rng(1));
     step(&mut run, 2, |run| {
         run.lp.peers[2].clock.advance(1_000);
-        run.lp.peers[2].engine.demote(&h, &Demotion { holder: x, new: None, retain: None }).unwrap();
+        run.lp.peers[2].engine.lower(&h, &Lowering { holder: x, new: None, retain: None }).unwrap();
     });
     run.lp.sync(2, 0).unwrap();
     run.note();
@@ -1246,7 +1246,7 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     lp.peers[0].engine.grant(&g, &e, &grant(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &m, &grant(Role::Read)).unwrap();
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Grant { until: Some(until), ..grant(Role::Read) }), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: e, new: Some(ct::Grant { until: Some(until), ..grant(Role::Read) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0)], Rng(1));
     removal_rotates_once(&mut run, g, Role::Read, m, 2_000, 3);
@@ -1277,7 +1277,7 @@ fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
         let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
         step(&mut run, 0, |run| {
             run.lp.peers[0].clock.advance(1_000);
-            run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: None, retain: None }).unwrap();
+            run.lp.peers[0].engine.lower(&g, &Lowering { holder: d, new: None, retain: None }).unwrap();
         });
         run.lp.sync(0, 1).unwrap();
         run.note();
@@ -1301,7 +1301,7 @@ fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
         assert!(run.ever[2].contains(&(g, Role::Read, e2)), "after {after}: D opens e2 through M");
         step(&mut run, 0, |run| {
             run.lp.peers[0].clock.advance(3_000);
-            run.lp.peers[0].engine.demote(&m, &Demotion { holder: d, new: None, retain: None }).unwrap();
+            run.lp.peers[0].engine.lower(&m, &Lowering { holder: d, new: None, retain: None }).unwrap();
         });
         settle(&mut run, 1, true);
         assert!(!access(&run, 0, 2, g, Role::Read), "after {after}: D has left G");
@@ -1310,15 +1310,15 @@ fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
 }
 
 // A grant that leaves its grantee reading (spec/crypto.md §4, Boxes; seed 874943289279): M
-// (peer 0's) a read holder of G (peer 0's), A (peer 1) admin of M. Peer 0 demotes A to reader of
+// (peer 0's) a read holder of G (peer 0's), A (peer 1) admin of M. Peer 0 lowers A to reader of
 // M; A, unaware, grants X (peer 2) read of M after it, boxing M's read epoch. The grant applies
 // nothing and does not count, and A still reads M: nothing rotates M's read, so X reads M and,
 // through G's box to M, G's read epoch peer 0 encrypts under, until something else rotates M's
-// read: a demoted admin's void grant forces no rotation (notes/keys-coverage.md, A demoted
+// read: a lowered admin's void grant forces no rotation (notes/keys-coverage.md, A lowered
 // admin's void re-grant), so the oracle allows it (`left_reading`).
 #[test]
-fn a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4() {
-    let (mut run, g, m, x) = demoted_granter(false);
+fn a_grant_by_a_lowered_admin_leaves_its_grantee_reading_spec_crypto_4() {
+    let (mut run, g, m, x) = lowered_granter(false);
     let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
     assert_eq!(run.key_role(0, &m, 1), Some(Role::Read), "A still reads M");
     assert!(run.ever[2].contains(&(m, Role::Read, read(&run, m))), "X holds M's read epoch");
@@ -1326,25 +1326,25 @@ fn a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4() {
     check(&mut run, 1, true);
 }
 
-// The same with A's grant ordered before its demotion, which audits it: the grant counts, so is
+// The same with A's grant ordered before its lowering, which audits it: the grant counts, so is
 // named void, and M's read rotates; X opens no epoch of G peer 0 encrypts under.
 #[test]
-fn a_grant_audited_by_its_authors_demotion_rotates_spec_crypto_4() {
-    let (mut run, g, m, x) = demoted_granter(true);
+fn a_grant_audited_by_its_authors_lowering_rotates_spec_crypto_4() {
+    let (mut run, g, m, x) = lowered_granter(true);
     let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
     assert!(!run.ever[2].contains(&(m, Role::Read, read(&run, m))), "M's read rotated past X");
     assert!(!openable(&mut run.lp, 0, &[g, m], x, run.ever[2].clone()).contains(&(g, Role::Read, read(&run, g))));
     check(&mut run, 1, true);
 }
 
-/// `a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4`'s history, A's grant
-/// before its demotion (`first`) or after, settled: the run, G, M and X.
+/// `a_grant_by_a_lowered_admin_leaves_its_grantee_reading_spec_crypto_4`'s history, A's grant
+/// before its lowering (`first`) or after, settled: the run, G, M and X.
 /// Built once per order, a copy each call.
-fn demoted_granter(first: bool) -> (Run, Tid, Tid, Tid) {
-    LocalPeer::cached_world(&format!("rotation::tests_property::demoted_granter/{first}"), || demoted_granter_built(first), |(run, g, m, x)| (run.copy(), *g, *m, *x))
+fn lowered_granter(first: bool) -> (Run, Tid, Tid, Tid) {
+    LocalPeer::cached_world(&format!("rotation::tests_property::lowered_granter/{first}"), || lowered_granter_built(first), |(run, g, m, x)| (run.copy(), *g, *m, *x))
 }
 
-fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
+fn lowered_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
     let mut lp = synced(N);
     let (a, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let g = independent_thing(&mut lp, 0);
@@ -1353,10 +1353,10 @@ fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
     lp.peers[0].engine.grant(&m, &a, &grant(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
-    let (demote_at, grant_at) = if first { (2_000, 1_000) } else { (1_000, 2_000) };
+    let (lower_at, grant_at) = if first { (2_000, 1_000) } else { (1_000, 2_000) };
     step(&mut run, 0, |run| {
-        run.lp.peers[0].clock.advance(demote_at);
-        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: Some(grant(Role::Read)), retain: None }).unwrap();
+        run.lp.peers[0].clock.advance(lower_at);
+        run.lp.peers[0].engine.lower(&m, &Lowering { holder: a, new: Some(grant(Role::Read)), retain: None }).unwrap();
     });
     step(&mut run, 1, |run| {
         run.lp.peers[1].clock.advance(grant_at);
@@ -1373,16 +1373,16 @@ fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
 // the excuse ends with the role's rotation, the author's departure counted even once it reads
 // again (else a missing rotation there would read as the limit).
 #[test]
-fn the_demoted_granters_removal_shuts_its_grantee_out_spec_crypto_4() {
+fn the_lowered_granters_removal_shuts_its_grantee_out_spec_crypto_4() {
     for readd in [false, true] {
-        let (mut run, g, m, x) = demoted_granter(false);
+        let (mut run, g, m, x) = lowered_granter(false);
         let a = run.tids[1];
         let read = |run: &Run, t: Tid| run.lp.peers[0].engine.epochs(&t).and_then(|e| e.role(Role::Read).newest_held().map(|x| x.0)).unwrap();
         let k = (m, Role::Read, read(&run, m));
         assert!(left_reading(&run, 0, 2, &k), "X reads M by the void grant");
         step(&mut run, 0, |run| {
             run.lp.peers[0].clock.advance(3_000);
-            run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
+            run.lp.peers[0].engine.lower(&m, &Lowering { holder: a, new: None, retain: None }).unwrap();
             if readd {
                 run.lp.peers[0].clock.advance(1_000);
                 run.lp.peers[0].engine.grant(&m, &a, &grant(Role::Read)).unwrap();

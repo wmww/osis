@@ -9,9 +9,9 @@ fn writer_history() -> Vec<Commit> {
     vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, 1, 2, OTHER, PurgeBy::AuthorOrAdmin, 2)]
 }
 
-// spec/permissions.md §5.2: a demotion's frontier keeps exactly the writes it lists
+// spec/permissions.md §5.2: a lowering's frontier keeps exactly the writes it lists
 #[test]
-fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
+fn lowering_frontier_keeps_listed_writes_spec_permissions_5_2() {
     let mut cs = writer_history();
     cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
     let o = evaluate(&held(4, cs));
@@ -40,10 +40,10 @@ fn only_a_marked_own_cover_stands_on_its_removal_spec_permissions_5_2() {
     assert_eq!(evaluate(&held(5, cs(false))).valid[&(11, 0)], false);
 }
 
-// spec/permissions.md §5.2: a demotion from admin to write takes the admin-only writes before it
-// and leaves the dependent ones: each need judged by its own demotions
+// spec/permissions.md §5.2: a lowering from admin to write takes the admin-only writes before it
+// and leaves the dependent ones: each need judged by its own lowerings
 #[test]
-fn demotion_to_write_takes_only_admin_writes_spec_permissions_5_2() {
+fn lowering_to_write_takes_only_admin_writes_spec_permissions_5_2() {
     let cs = vec![
         grant(5, MINT_ADMIN, 0, 1, Some(Role::Admin), None),
         reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
@@ -68,7 +68,7 @@ fn regrant_revives_writes_spec_permissions_5_2() {
 
 // spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the grant writes resting on its grant that the frontier leaves out
 #[test]
-fn demotion_audits_grant_admin_grants_spec_permissions_5_1() {
+fn lowering_audits_grant_admin_grants_spec_permissions_5_1() {
     let cs = |f: Vec<CommitId>| {
         vec![
             grant(5, MINT_ADMIN, 0, 2, Some(Role::Admin), None),
@@ -120,9 +120,9 @@ fn admin_only_aspect_needs_admin_spec_permissions_5_2() {
     assert_eq!(evaluate(&held(2, a)).valid[&(10, 0)], true);
 }
 
-// spec/permissions.md §6: a demotion not listing the request takes the purge right, however early
+// spec/permissions.md §6: a lowering not listing the request takes the purge right, however early
 #[test]
-fn demotion_takes_the_purge_right_spec_permissions_6() {
+fn lowering_takes_the_purge_right_spec_permissions_6() {
     let cs = |f: Vec<CommitId>| {
         vec![
             grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
@@ -155,17 +155,17 @@ fn purge_right_judged_at_the_request_spec_permissions_6() {
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5: a body dropped as covered reads through its cover;
-// the cover turning invalid (a demotion of its author) leaves the body never received, to be
+// the cover turning invalid (a lowering of its author) leaves the body never received, to be
 // fetched again, and until then the node reads less than one that kept it
 #[test]
 fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
     let w = set(1, 10, 7);
-    let mk = |demoted: bool| {
+    let mk = |lowered: bool| {
         let mut own = reg(10, MINT_ADMIN, 1, REG, PurgeBy::Writer, 7);
         own.parts[0].body = Body::Dropped(20);
         let s = snap(20, 1, 2, REG, PurgeBy::Writer, vec![w.clone()]);
         let mut cs = vec![grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None), own, s];
-        if demoted {
+        if lowered {
             cs.push(grant(30, MINT_ADMIN, 3, 1, None, Some(vec![])));
         }
         held(5, cs)

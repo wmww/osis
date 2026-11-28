@@ -196,7 +196,7 @@ fn told(w: &mut World) {
     w.run();
 }
 
-// spec/permissions.md §6 (a holder demoted since can still delete there what its old role allowed),
+// spec/permissions.md §6 (a holder lowered since can still delete there what its old role allowed),
 // spec/sync-judgement.md §4 (a node logs the body again once): node 2's write purgeable by its author is at node
 // 1; node 0 lowers node 2 to read, which
 // moves S's head but not its sync key (a read epoch). With its level-2 key (its own purge
@@ -204,7 +204,7 @@ fn told(w: &mut World) {
 // with no purge: node 1 takes it. The holders log the body again once; node 2 deletes those too
 // and they stay deleted (a second delete stands until the head moves or a part falls), while every
 // reader still reads the write. A known weakness, pinned as today's behaviour
-// (issues/demoted-writer-deletes-at-stores.md, notes/purge-model.md, Tess's answers): a writer lowered
+// (issues/lowered-writer-deletes-at-stores.md, notes/purge-model.md, Tess's answers): a writer lowered
 // to read, holding no author's right any more (spec/permissions.md §6), keeps its old writes out
 // of a store that cannot read, so a reader syncing only through that store lacks them; nothing is
 // erased while a holder keeps the body. The lowering rotated write (its write key is an earlier
@@ -212,7 +212,7 @@ fn told(w: &mut World) {
 // instead: S's sync key rotates, and its old keys' Delete answers 9 (an earlier head's key): the
 // blob stays.
 #[test]
-fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permissions_6() {
+fn a_lowered_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permissions_6() {
     for lower in [true, false] {
         let (mut w, t, s) = world_of_three();
         let c = write(&mut w, 2, t, &[("u:a.0", PurgeBy::AuthorOrAdmin)]);
@@ -231,8 +231,8 @@ fn a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_spec_permis
             assert_eq!(blobs_of(&mut w, &s, &c), vec![b], "removed: the blob stays");
             continue;
         }
-        assert!(head_keys(&mut w, 2, t, &s).write.is_none_or(|k| Some(k.verifying_key()) != keys.write.as_ref().map(|k| k.verifying_key())), "demoted: write rotated, its write key is an earlier head's");
-        assert_eq!(take(&w, &s, old), Code::OK, "demoted: its old keys delete");
+        assert!(head_keys(&mut w, 2, t, &s).write.is_none_or(|k| Some(k.verifying_key()) != keys.write.as_ref().map(|k| k.verifying_key())), "lowered: write rotated, its write key is an earlier head's");
+        assert_eq!(take(&w, &s, old), Code::OK, "lowered: its old keys delete");
         told(&mut w);
         let again = blobs_of(&mut w, &s, &c);
         assert!(!again.is_empty() && !again.contains(&b), "the holders logged it again, fresh");

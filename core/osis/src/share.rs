@@ -337,7 +337,7 @@ fn grant(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<c
 
 /// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
 /// present one, or one past its `until` not yet removed): `h`'s departure, whose rotation only a
-/// demotion carries (spec/permissions.md §3), so it takes `set_role`.
+/// lowering carries (spec/permissions.md §3), so it takes `set_role`.
 fn below_held(e: &osis_engine::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
@@ -573,12 +573,12 @@ impl Osis {
         Ok(Some(ct::Grant { role, until: cur.until, may_grant: cur.may_grant, retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
     }
 
-    /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the
+    /// Lowers or removes the grant of `m` on `t`: the lowering with this node's frontier and the
     /// target's rotation, in one commit (spec/permissions.md §2, §3, §5).
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         let new = self.lowered_grant(t, m, role)?;
-        let fd = flows::Demotion { holder: m, new, retain: o.retain_copy };
-        self.engine(|e| marked(e, o.leave_adminless, |e| e.demote(&t, &fd)))?;
+        let fd = flows::Lowering { holder: m, new, retain: o.retain_copy };
+        self.engine(|e| marked(e, o.leave_adminless, |e| e.lower(&t, &fd)))?;
         Ok(())
     }
 
@@ -641,7 +641,7 @@ impl Osis {
         self.engine(|e| {
             leave_allowed(e, holder, t, own)?;
             // this account's own grant, whichever way this node also holds the target
-            marked(e, o.leave_adminless, |e| e.demote(&t, &flows::Demotion { holder, new: None, retain: o.retain_copy })).map_err(Error::from)
+            marked(e, o.leave_adminless, |e| e.lower(&t, &flows::Lowering { holder, new: None, retain: o.retain_copy })).map_err(Error::from)
         })?;
         Ok(())
     }

@@ -90,7 +90,7 @@ fn the_proven_role_is_capped_by_the_path_spec_sync_opens_2() {
 /// Peer `i` removes `holder` from `t`; the commits it made.
 fn remove(lp: &mut LocalPeer, i: usize, t: Tid, holder: Tid) -> Vec<osis_base::CommitId> {
     let before: std::collections::BTreeSet<_> = lp.peers[i].engine.commit_ids().into_iter().collect();
-    lp.peers[i].engine.demote(&t, &osis_engine::flows::Demotion { holder, new: None, retain: None }).unwrap();
+    lp.peers[i].engine.lower(&t, &osis_engine::flows::Lowering { holder, new: None, retain: None }).unwrap();
     lp.peers[i].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect()
 }
 

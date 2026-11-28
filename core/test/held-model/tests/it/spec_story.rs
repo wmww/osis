@@ -31,7 +31,7 @@ pub fn story_steps(w: &World, sim: &paths::Sim) -> std::collections::BTreeSet<us
 
 /// One story world with a retag (ORG joining T2's unit after the removal): the adapter's default
 /// check. Family world with X's role write granting across two things in one commit, the kiosk
-/// (may-grant grants kept under a demotion) and the thief removing H and B in one commit.
+/// (may-grant grants kept under a lowering) and the thief removing H and B in one commit.
 #[test]
 fn a_story_world_under_a_retag_holds() {
     let setup = paths::Setup { x_role: 5, x_a2: 5, h_t1: true, h_t2: true, regrant: true, ..Default::default() };

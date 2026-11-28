@@ -143,7 +143,7 @@ fn a_met_ask_goes_with_its_holder_spec_permissions_4() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
     report_and_pass(&mut lp, g, tids[1]);
     assert_eq!(asks(&mut lp, g), vec![(tids[1], true)], "met");
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     lp.peers[0].engine.reseal_run(&g).unwrap();
     assert_eq!(asks(&mut lp, g), Vec::new(), "gone with the holder");
 }
@@ -400,7 +400,7 @@ fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
     lp.advance(1_000);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
     assert!(lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().is_none(), "no step due: the admin vouches for no epoch it lacks");
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     lp.advance(1_000);
     lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("a step due after the removal's rotation");
     lp.sync_all().unwrap();
@@ -443,7 +443,7 @@ fn a_removed_writers_keyset_holds_no_fire_back_spec_crypto_3() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write)]);
     let f = fires_kept(&mut lp, g);
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
     lp.advance(1_000);
     lp.peers[0].engine.issue_step(&g, &sync_id).unwrap().expect("a step due after the removal's rotation");
@@ -585,7 +585,7 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.pending_carriers(&d2), vec![Carrier::Entry], "D2 kept by its entry");
     assert_eq!(e0.pending_carriers(&d3), vec![k], "D3 carried by the newer report");
-    e0.demote(&g, &crate::flows::Demotion { holder: m, new: None, retain: None }).unwrap();
+    e0.lower(&g, &crate::flows::Lowering { holder: m, new: None, retain: None }).unwrap();
     e0.reseal_run(&g).unwrap();
     e0.settle_needs().unwrap();
     assert!(!lp.peers[0].engine.pends(&d3) && !awaited_at(&lp.peers[0].engine, &w3), "D3 goes with its holder");

@@ -96,14 +96,14 @@ fn undelete_char_goes_with_its_creation_spec_crdt_4_7() {
     let undel = || {
         Commit { undoes: Some(11), ..content(20, MINT_ADMIN, 3, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![undel(3, 20, 10, 7)])]) }
     };
-    let base = |demote: bool| {
+    let base = |lower: bool| {
         let mut cs = vec![
             grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
             content(10, 1, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(7))])]),
             content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![del(2, 11, 10)])]),
             undel(),
         ];
-        if demote {
+        if lower {
             cs.push(grant(6, MINT_ADMIN, 4, 1, None, Some(vec![])));
         }
         held(5, cs)

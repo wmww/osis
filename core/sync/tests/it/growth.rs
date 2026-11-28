@@ -8,7 +8,7 @@ use crate::harness::{World, grant, fixture_with, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_engine::Mutation;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use std::collections::BTreeMap;
 
 const DAY_MS: u64 = 86_400_000;
@@ -283,7 +283,7 @@ fn lowered() -> (World, (Tid, CommitId)) {
         w.partition(0, 1);
         w.partition(0, 2);
         let a1 = w.node(1).account.unwrap();
-        w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(grant(Role::Read)), retain: None })).unwrap();
+        w.write(0, |e| e.lower(&t, &Lowering { holder: a1, new: Some(grant(Role::Read)), retain: None })).unwrap();
         w.run();
         (w, (t, mine))
     })
@@ -372,7 +372,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 
 // spec/permissions.md §6 (Invalid deltas: valid again, fetched from any holder), spec/commits.md
 // §5 (Forgetting: no entry of a blob of it is known): node 2 judges a lowered writer's write invalid, its
-// author never having heard of the demotion, and the re-grant reaches node 2 while the author is
+// author never having heard of the lowering, and the re-grant reaches node 2 while the author is
 // away: node 2 reads the write from node 3, which keeps S unread and holds it. Fails if node 2
 // forgets the write while node 3 shows it and nothing brings it back.
 #[test]
@@ -381,12 +381,12 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
     w.cap = crate::harness::WIDE_CAP;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
     let t = w.history.things[0].0;
-    // two islands: {0, 2} hear the demotion, {1, 3} the write
+    // two islands: {0, 2} hear the lowering, {1, 3} the write
     for (a, b) in [(0, 1), (0, 3), (1, 2), (2, 3)] {
         w.partition(a, b);
     }
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(grant(Role::Read)), retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &Lowering { holder: a1, new: Some(grant(Role::Read)), retain: None })).unwrap();
     w.run();
     let key = Ak::new("u:k.0").unwrap();
     let x = w.write(1, |e| {
@@ -399,7 +399,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
     let blobs = w.engine(1).commit_blobs(&x).unwrap();
     let at_store = |w: &mut World| w.store(3).entries(&s).unwrap().iter().any(|e| blobs.contains(&e.blob));
     assert!(at_store(&mut w), "node 3 holds the write");
-    // the author goes away before hearing of the demotion; node 2 meets node 3
+    // the author goes away before hearing of the lowering; node 2 meets node 3
     w.heal();
     for b in [0, 2, 3] {
         w.partition(1, b);
@@ -435,7 +435,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     let a1 = w.node(1).account.unwrap();
     let read = || Some(grant(Role::Read));
     for x in [t, u] {
-        w.write(0, |e| e.demote(&x, &Demotion { holder: a1, new: read(), retain: None })).unwrap();
+        w.write(0, |e| e.lower(&x, &Lowering { holder: a1, new: read(), retain: None })).unwrap();
     }
     w.run();
     w.advance(1_000);
@@ -956,7 +956,7 @@ fn redeem_round(w: &mut World) {
     let l = osis_engine::identity::link_key_tid(&link.seed, link.k);
     w.write(0, |e| {
         e.finalize_link(&link.k, &l)?;
-        e.demote(&t, &Demotion { holder: link.k, new: None, retain: None })
+        e.lower(&t, &Lowering { holder: link.k, new: None, retain: None })
     })
     .unwrap();
     w.run();
@@ -1140,8 +1140,8 @@ fn releasing_a_disputed_thing_returns_storage_to_a_fresh_worlds_spec_permissions
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     w.write(0, |e| e.grant(&t, &a1, &grant(Role::Admin))).unwrap();
     let _ = play(&mut w, &[Run, Partition(0, 1)], String::new());
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap();
-    w.write(1, |e| e.demote(&t, &Demotion { holder: a0, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &Lowering { holder: a1, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.lower(&t, &Lowering { holder: a0, new: None, retain: None })).unwrap();
     let _ = play(&mut w, &[Run, Heal, Run, Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());
     two_as_fresh(w, 2, "disputed");
 }
@@ -1156,7 +1156,7 @@ fn releasing_a_retained_copy_returns_storage_to_a_fresh_worlds_spec_permissions_
     let _ = play(&mut w, &[New(0), Write(0, 0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: Some(true) })).unwrap();
+    w.write(0, |e| e.lower(&t, &Lowering { holder: a1, new: None, retain: Some(true) })).unwrap();
     w.run();
     assert_eq!(w.engine(1).kept_copies(), vec![t], "node 1 keeps a copy");
     let _ = play(&mut w, &[Unstrong(1, None, 0), Unstrong(0, None, 0), Run], String::new());

@@ -329,7 +329,7 @@ fn mesh(dbs: &[&osis::Osis]) {
 }
 
 // spec/requirements.md Permissions (a role M holds on G never depends on who is in M),
-// spec/crypto.md §4 (Carried demotions): Carol reads G, which organization M (Bob's, Alice a reader of it
+// spec/crypto.md §4 (Carried lowerings): Carol reads G, which organization M (Bob's, Alice a reader of it
 // too) writes; Bob removes Erin, a writer of M. Carol's node holds the removal with M's new keyset
 // (it is how G's writers count Erin out), but it shows her no roster of M, before or after: only
 // G's, and M's to Bob. Once Carol reads M her watch on M's grants hears its roster, and hears it

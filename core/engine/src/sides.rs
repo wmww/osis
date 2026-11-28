@@ -291,7 +291,7 @@ impl crate::engine::Engine {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use crate::flows::Demotion;
+    use crate::flows::Lowering;
     use crate::local_peer::LocalPeer;
     use crate::rotation::tests::{grant, synced, target_thing};
     use osis_base::{Role, Tid};
@@ -306,7 +306,7 @@ mod tests {
         }
         lp.sync_all().unwrap();
         lp.advance(1_000);
-        lp.peers[2].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+        lp.peers[2].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
         lp.sync_all().unwrap();
         (lp, g, tids)
     }

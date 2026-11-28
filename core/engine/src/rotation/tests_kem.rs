@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 use super::tests::{grant, rotate_as, synced};
 use crate::error::Error;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
 use osis_base::{Role, Tid};
@@ -110,7 +110,7 @@ fn a_keyset_carries_a_kem_key_where_the_one_it_supersedes_did_spec_crypto_3() {
     lp.sync_all().unwrap();
     let a = plain(&mut lp, 1, &[0, 1]);
     lp.peers[1].engine.grant(&a, &m, &grant(Role::Read)).unwrap();
-    lp.peers[0].engine.demote(&x, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&x, &Lowering { holder: m, new: None, retain: None }).unwrap();
     rotate_as(&mut lp, 0, m, &BTreeSet::from([Role::Sync, Role::Read]), &[]).unwrap();
     assert!(kem_roles(&mut lp, 0, m).contains(&Role::Read), "k2 carries a KEM key");
     lp.sync_all().unwrap();

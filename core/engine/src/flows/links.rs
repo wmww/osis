@@ -3,7 +3,7 @@
 //! thing minted with the key the link's seed derives, its secrets the seed's, with (r,
 //! may-grant) on K. Redeem (a
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
-//! finalization and removing a joiner are demotions by a sharer node.
+//! finalization and removing a joiner are lowerings by a sharer node.
 
 use super::{Done, put_grant};
 use crate::engine::{Engine, Tx};
@@ -231,17 +231,17 @@ impl Engine {
     /// self-removal of its grant on K. Idempotent: once a leave is here, the grant is gone.
     pub fn leave_link(&mut self, k: &Tid) -> Result<Done> {
         let Some(holder) = self.joiner_of(k) else { return Ok(Done::default()) };
-        self.demote(k, &crate::flows::Demotion { holder, new: None, retain: None })
+        self.lower(k, &crate::flows::Lowering { holder, new: None, retain: None })
     }
 
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
-    /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
+    /// an explicit lowering with the sharer's frontier, after `until` passed, after a single-use
     /// redemption (L's grant already gone: its entry is reset again, spec/permissions.md §2), or
     /// to end the link. K rotates before its next encryption (L's departure). The link ends
     /// with it, and so does its seed (`let_seeds_go`).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
         let keeps = self.link_seeds(k, l)?;
-        self.remove_signed_then(None, k, &crate::flows::Demotion { holder: *l, new: None, retain: Some(false) }, &[], move |tx| let_seeds_go(tx, &keeps))
+        self.remove_signed_then(None, k, &crate::flows::Lowering { holder: *l, new: None, retain: Some(false) }, &[], move |tx| let_seeds_go(tx, &keeps))
     }
 
     /// The things keeping the seed of link (K `k`, L `l`) held here (`HeldLink::keep`).
@@ -328,7 +328,7 @@ impl Engine {
     /// §2); the remaining joiners need a new link. L unknown (the link ended, its seed gone) or
     /// already gone from K (a used single-use link): the joiner alone.
     pub fn remove_joiner(&mut self, k: &Tid, l: Option<&Tid>, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
-        let d = crate::flows::Demotion { holder: *joiner, new: None, retain };
+        let d = crate::flows::Lowering { holder: *joiner, new: None, retain };
         let Some(l) = l.filter(|l| self.core.timelines().get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some())) else {
             return self.remove_signed(None, k, &d, &[]);
         };
@@ -396,7 +396,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, krec: osis_base
     // K on the target, which K holds by a strong: K's sync unit carries the target, and so K's
     // grant on it, to a redeemer (spec/permissions.md §7 Redeem step 3)
     let target_grant = Grant { role: spec.role, until: None, may_grant: false, retain: false, floor: None };
-    // K is new: the grant demotes nobody, so it carries no frontier
+    // K is new: the grant lowers nobody, so it carries no frontier
     done.extend(grant_history(tx, None, spec.target, k, &target_grant, false, None, History::All)?);
     let mut m = Mutation::new();
     m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;

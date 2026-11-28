@@ -510,7 +510,7 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
                     let (wi, t) = (1 + rng.below(2) as usize, things[0]);
                     let e = &mut lp.peers[0].engine;
                     let had: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
-                    e.demote(&t, &osis_engine::flows::Demotion { holder: ids[wi], new: None, retain: None }).unwrap();
+                    e.lower(&t, &osis_engine::flows::Lowering { holder: ids[wi], new: None, retain: None }).unwrap();
                     e.grant(&t, &ids[wi], &grant(Role::Write)).unwrap();
                     // the writer takes both and writes at once
                     for c in lp.peers[0].engine.commit_ids().into_iter().filter(|c| !had.contains(c)) {

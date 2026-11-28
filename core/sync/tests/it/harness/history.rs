@@ -21,7 +21,7 @@ use held_model::closure::entry;
 use osis_base::{Ak, CommitId, Ref, Role, Tid, Value};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::flows::Done;
-use osis_engine::flows::grants::Demotion;
+use osis_engine::flows::grants::Lowering;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::sync::Holding;
 use osis_engine::{Engine, Ingested, Mutation};
@@ -468,9 +468,9 @@ pub fn step(w: &mut World, s: &Step) -> String {
             r
         }
         Step::Give(_, k, h, g) => give(w, i, *k, *h, *g),
-        Step::Lower(_, k, h, g) => demote(w, i, *k, *h, Some(*g)),
-        Step::Remove(_, k, j) => demote(w, i, *k, Holder::Node(*j), None),
-        Step::RemoveHolder(_, k, h) => demote(w, i, *k, *h, None),
+        Step::Lower(_, k, h, g) => lower(w, i, *k, *h, Some(*g)),
+        Step::Remove(_, k, j) => lower(w, i, *k, Holder::Node(*j), None),
+        Step::RemoveHolder(_, k, h) => lower(w, i, *k, *h, None),
         Step::Rotate(_, k) => {
             let Some(t) = thing(w, *k) else { return "skipped: no such thing".into() };
             match w.write(i, |e| e.make_independent(&t)) {
@@ -707,10 +707,10 @@ fn give(w: &mut World, i: usize, k: usize, h: Holder, g: Gives) -> Result<String
 }
 
 /// Node `i` lowers holder `h` on thing `k` to `g`, or removes it (`None`).
-fn demote(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
+fn lower(w: &mut World, i: usize, k: usize, h: Holder, g: Option<Gives>) -> Result<String, String> {
     let (Some(t), Some(holder)) = (thing(w, k), holder_tid(w, h)) else { return Ok("skipped: no such thing or holder".into()) };
     let new = g.map(|g| Grant { role: g.role(), until: None, may_grant: false, retain: false, floor: None });
-    let r = w.write(i, |e| e.demote(&t, &Demotion { holder, new, retain: None }));
+    let r = w.write(i, |e| e.lower(&t, &Lowering { holder, new, retain: None }));
     let unknown = r.as_ref().is_err_and(osis_engine::Error::is_store);
     let r = r.map_err(|e| e.to_string());
     let applied = r.is_ok() || (unknown && stands(w, i, &t, &holder, g.map(Gives::role)));

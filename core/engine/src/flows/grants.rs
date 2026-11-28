@@ -1,5 +1,5 @@
 //! Grant writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
-//! removals and demotions carrying the target's rotation, may-grant grants and self-removals,
+//! removals and lowerings carrying the target's rotation, may-grant grants and self-removals,
 //! the frontier (spec/crypto.md §5).
 
 use super::{Done, now_ts, put_grant, put_secrets};
@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 /// A role-lowering grant write: `holder`'s new grant on the target (`None` removes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Demotion {
+pub struct Lowering {
     pub holder: Tid,
     pub new: Option<Grant>,
     /// A removal's word (`new` `None`): retain or erase; `None`: the thing's default in force
@@ -28,7 +28,7 @@ pub struct Demotion {
 
 /// What `d` writes on the holder's grant on `target`, standing at `old`: `d.new`, or for a removal
 /// saying retain the value that says so (spec/permissions.md §3, Retain).
-fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermGrant>, d: &Demotion) -> Result<Option<Grant>> {
+fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermGrant>, d: &Lowering) -> Result<Option<Grant>> {
     if d.new.is_some() {
         return match d.retain.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::Time(0))) {
             true => Err(Error::Misuse("only a removal says retain or erase, by `retain`")),
@@ -78,10 +78,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let may_grant = tx.core.timelines().get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
     // below the holder's grant for keys (one past its `until` included, still in the state) a
     // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
-    // §3): a demotion makes it
+    // §3): a lowering makes it
     let below = tx.core.timelines().get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(grant.role));
     if admin && below {
-        return Err(Error::Misuse("a grant below the holder's grant lowers it (use demote)"));
+        return Err(Error::Misuse("a grant below the holder's grant lowers it (use lower)"));
     }
     if !admin {
         let ok = old.is_none() && may_grant.is_some_and(|i| grant.role <= i);
@@ -255,8 +255,8 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl I
     Ok(())
 }
 
-/// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
-/// demotion carries the frontier and the target's rotation of the roles the holder left in the
+/// A removal or lowering (or a self-removal) of `d.holder` on `target` by `who`: an explicit
+/// lowering carries the frontier and the target's rotation of the roles the holder left in the
 /// same commit (spec/permissions.md §3), after the cascade on the target, where `who` may rotate
 /// those roles, else goes alone (its departure uncovered, the rotation due); no secret of the
 /// target is needed
@@ -265,7 +265,7 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: impl I
 /// rotate does), and the leaver drops what it lost. An explicit removal of an absent grant resets
 /// its dead entries (spec/permissions.md §2). With `others`, an explicit removal of those
 /// holders' grants too, under the same frontier and one rotation (spec/commits.md §2).
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
+pub(crate) fn lower_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Lowering, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.tid());
     let holder = d.holder;
     let ts = now_ts(tx.core);
@@ -309,7 +309,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && let Some(f) = frontier {
         m.frontier(f);
     }
-    // an explicit demotion carries the target's rotation of the roles the holders left
+    // an explicit lowering carries the target's rotation of the roles the holders left
     let mut roles = BTreeSet::new();
     let mut departs = rotation::Departs::No;
     let mut skip = Vec::new();
@@ -318,14 +318,14 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let new_role = rotation::key_role(new_p.as_ref());
     let mut left: BTreeSet<Role> = BTreeSet::new();
     let mut pending = Vec::new();
-    // an explicit lowering from write or above demotes a writer or admin (spec/permissions.md
+    // an explicit lowering from write or above lowers a writer or admin (spec/permissions.md
     // §5.1 step 4): the target's keysets in this commit carry it (spec/crypto.md §4, Carried
-    // demotions)
-    let mut demotes = false;
+    // lowerings)
+    let mut lowers = false;
     let removing: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
     for (x, o, n) in std::iter::once((holder, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
         let held_role = rotation::key_role(o.as_ref());
-        demotes |= !selfr && held_role >= Some(Role::Write) && n < held_role;
+        lowers |= !selfr && held_role >= Some(Role::Write) && n < held_role;
         if let Some(dep) = Departure::of_change(x, held_role, n) {
             left.extend(ROLES.into_iter().filter(|r| *r >= dep.from && Some(*r) <= held_role));
             pending.push(dep);
@@ -338,10 +338,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         rotation::ensure_rotated_but(tx, who, target, &removing, &left, &mut done)?;
         roles = rotation::departure_rotates(tx, &who, &target, left);
         skip = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-        departs = match (pending.is_empty(), demotes) {
+        departs = match (pending.is_empty(), lowers) {
             (true, _) => rotation::Departs::No,
             (false, false) => rotation::Departs::Holder,
-            (false, true) => rotation::Departs::Demoting,
+            (false, true) => rotation::Departs::Lowering,
         };
     }
     if selfr {
@@ -400,7 +400,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         false => BTreeSet::new(),
     };
     let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-    // a finalize demotes nobody (spec/permissions.md §5.1: it audits nothing)
+    // a finalize lowers nobody (spec/permissions.md §5.1: it audits nothing)
     let departs = if pending.is_empty() { rotation::Departs::No } else { rotation::Departs::Holder };
     // a writer's write on `roles.0`: judged by the finalize authority, not an admin's
     m.unchecked();
@@ -455,7 +455,7 @@ impl Engine {
         let me = self.core.tid();
         let admin = self.core.role_now(&me, &t) == Some(Role::Admin);
         let (frontier, covers) = match admin && self.needs_frontier_of(&t, &holder, grant) {
-            true => self.demotion_frontier(t, vec![osis_perm::GrantOp { target: t, holder, grant: grant.map(perm_grant) }])?,
+            true => self.lowering_frontier(t, vec![osis_perm::GrantOp { target: t, holder, grant: grant.map(perm_grant) }])?,
             false => (None, Vec::new()),
         };
         let grant = grant.cloned();
@@ -505,7 +505,7 @@ impl Engine {
         let frontier = match audits {
             true => {
                 let ops: Vec<osis_perm::GrantOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, grant)| osis_perm::GrantOp { target, holder: osis_base::Holder::Thing(holder), grant }).collect();
-                self.demotion_frontier(target, ops)?
+                self.lowering_frontier(target, ops)?
             }
             false => (None, Vec::new()),
         };
@@ -539,14 +539,14 @@ impl Engine {
     }
 
     /// The role for keys of `holder`'s grant on `target` in the state (one past its `until`
-    /// included): a grant below it would be the holder's departure, which only a demotion makes
+    /// included): a grant below it would be the holder's departure, which only a lowering makes
     /// (spec/permissions.md §3).
     pub fn key_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
         rotation::key_role(self.core.timelines().get(target)?.edges_at(None).get(holder, target))
     }
 
-    /// The things a demotion of `holder` on `target` puts in question (spec/permissions.md §5.1):
-    /// every thing the demoted authority gave write or role authority on. What a caller syncs
+    /// The things a lowering of `holder` on `target` puts in question (spec/permissions.md §5.1):
+    /// every thing the lowered authority gave write or role authority on. What a caller syncs
     /// first when it wants the removal to keep more (spec/permissions.md §5.3).
     pub fn removal_scope(&self, target: &Tid, holder: &Tid) -> BTreeSet<Tid> {
         let scope = crate::apply::receipt::scope_of(&self.core, &[(Holder::Thing(*holder), *target)]);
@@ -558,7 +558,7 @@ impl Engine {
     /// (`receipt::scope_of`), and its own cover of what it no longer holds the ID of
     /// (`own_cover`). Returns the frontier and the own covers, which the caller's `Done` carries
     /// before the lowering. `None`: an unknown target.
-    fn demotion_frontier(&mut self, target: Tid, ops: Vec<osis_perm::GrantOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
+    fn lowering_frontier(&mut self, target: Tid, ops: Vec<osis_perm::GrantOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
         let as_of = self.now();
         if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
@@ -576,11 +576,11 @@ impl Engine {
     }
 
     /// Lowers or removes `d.holder`'s grant on `target` (spec/permissions.md §2, §3, §5): an
-    /// explicit demotion by an admin (with the frontier of what this node had received of the
-    /// demoted nodes), or a
+    /// explicit lowering by an admin (with the frontier of what this node had received of the
+    /// lowered nodes), or a
     /// self-removal. The rotation of the roles the holder left goes in the same commit (while Seal
     /// waits, none: it stays due).
-    pub fn demote(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
+    pub fn lower(&mut self, target: &Tid, d: &Lowering) -> Result<Done> {
         self.remove_signed(None, target, d, &[])
     }
 
@@ -601,14 +601,14 @@ impl Engine {
         r
     }
 
-    /// `demote` that also removes `others` in the same commit under one rotation
+    /// `lower` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
-    pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
+    pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Lowering, others: &[Tid]) -> Result<Done> {
         self.remove_signed_then(signer, target, d, others, |_| Ok(()))
     }
 
     /// `remove_signed`, then `then` in the same transaction.
-    pub(crate) fn remove_signed_then(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid], then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
+    pub(crate) fn remove_signed_then(&mut self, signer: Option<Tid>, target: &Tid, d: &Lowering, others: &[Tid], then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         let t = *target;
         let new = match self.core.timelines().get(&t) {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,
@@ -617,10 +617,10 @@ impl Engine {
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_grant);
         let ops: Vec<osis_perm::GrantOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, grant)| osis_perm::GrantOp { target: t, holder: osis_base::Holder::Thing(holder), grant }).collect();
-        let (frontier, covers) = if audits { self.demotion_frontier(t, ops)? } else { (None, Vec::new()) };
+        let (frontier, covers) = if audits { self.lowering_frontier(t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
         let mut done = self.run(|tx| {
-            let done = demote_in(tx, signer, t, &d, others, frontier)?;
+            let done = lower_in(tx, signer, t, &d, others, frontier)?;
             then(tx)?;
             Ok(done)
         })?;
@@ -634,14 +634,14 @@ impl Engine {
 pub enum Removal {
     /// A self-removal through admin on the holder: no frontier, no rotation, no pre-sync.
     SelfRemoval,
-    /// An explicit demotion by an admin of the target: audited with this node's frontier.
+    /// An explicit lowering by an admin of the target: audited with this node's frontier.
     Explicit,
 }
 
 impl Engine {
     /// How this node may remove `holder`'s grant on `target` now, if at all: a self-removal
     /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
-    /// explicit demotion (admin on the target, `usable_role`). Reads the clock up to the next
+    /// explicit lowering (admin on the target, `usable_role`). Reads the clock up to the next
     /// `until` or role commit of the target's and the holder's components (an authority ending by
     /// time alone moves it).
     pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Removal>> {

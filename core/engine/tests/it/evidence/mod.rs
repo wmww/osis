@@ -21,7 +21,7 @@ type Copies = BTreeSet<CopyId<Id, Thing>>;
 /// Held copies with their parts as the derivation takes them.
 type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Thing, Key>>>;
 
-/// The model's rule as the derivation is built: no carried-demotion seed.
+/// The model's rule as the derivation is built: no carried-lowering seed.
 // Interim (issues/engine-evidence-trails-model.md): `keysets` goes when the derivation builds the keyset seed
 fn derived() -> Rule {
     Rule { keysets: false, ..Rule::fixed() }

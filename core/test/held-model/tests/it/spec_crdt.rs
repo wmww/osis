@@ -3,9 +3,9 @@ use crate::util::*;
 use held_model::gen::{MAP, REG, TEXT};
 use held_model::*;
 
-fn demoted(mut cs: Vec<Commit>, demote: bool) -> Held {
+fn lowered(mut cs: Vec<Commit>, lower: bool) -> Held {
     cs.insert(0, grant(5, MINT_ADMIN, 0, 1, Some(Role::Write), None));
-    if demote {
+    if lower {
         cs.push(grant(20, MINT_ADMIN, 3, 1, None, Some(vec![])));
     }
     held(4, cs)
@@ -15,8 +15,8 @@ fn demoted(mut cs: Vec<Commit>, demote: bool) -> Held {
 #[test]
 fn unmerge_removes_invalid_register_write_spec_crdt_4_6() {
     let cs = vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, 1, 2, REG, PurgeBy::AuthorOrAdmin, 2)];
-    assert_eq!(read(&demoted(cs.clone(), false), REG), int(2));
-    assert_eq!(read(&demoted(cs, true), REG), int(1));
+    assert_eq!(read(&lowered(cs.clone(), false), REG), int(2));
+    assert_eq!(read(&lowered(cs, true), REG), int(1));
 }
 
 // spec/crdt.md §4.6 (Removed): others' writes nested in a record the invalid delta created stay;
@@ -29,9 +29,9 @@ fn unmerge_keeps_writes_nested_in_invalid_entry_spec_crdt_4_6() {
         ])]),
         content(11, MINT_ADMIN, 2, vec![part(MAP, PurgeBy::AuthorOrAdmin, vec![put(2, 11, 10, 3, 9)])]),
     ];
-    assert_eq!(read(&demoted(cs.clone(), false), MAP), map(&[(3, 9)]));
-    let never = demoted(cs[1..].to_vec(), true);
-    assert_eq!(evaluate(&demoted(cs, true)).states.get(&(T, MAP)), evaluate(&never).states.get(&(T, MAP)));
+    assert_eq!(read(&lowered(cs.clone(), false), MAP), map(&[(3, 9)]));
+    let never = lowered(cs[1..].to_vec(), true);
+    assert_eq!(evaluate(&lowered(cs, true)).states.get(&(T, MAP)), evaluate(&never).states.get(&(T, MAP)));
 }
 
 // spec/crdt.md §4.6 (Seq elements), §6.1: an invalid creation leaves nothing; what anchors at it is placed at its
@@ -43,8 +43,8 @@ fn unmerged_text_creation_places_nothing_spec_crdt_4_6() {
         content(10, 1, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(1))])]),
         content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(2, 11, 1, Some(a), Some(2))])]),
     ];
-    assert_eq!(read(&demoted(cs.clone(), false), TEXT), text(&[1, 2]));
-    assert_eq!(read(&demoted(cs, true), TEXT), text(&[2]));
+    assert_eq!(read(&lowered(cs.clone(), false), TEXT), text(&[1, 2]));
+    assert_eq!(read(&lowered(cs, true), TEXT), text(&[2]));
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5: a body whose write a valid write superseded is replaced; the winner's is not
@@ -64,8 +64,8 @@ fn superseded_write_is_replaced_spec_crdt_4_8() {
 #[test]
 fn invalid_superseder_kills_nothing_spec_crdt_4_8() {
     let cs = vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, 1, 2, REG, PurgeBy::AuthorOrAdmin, 2)];
-    assert!(evaluate(&demoted(cs.clone(), false)).replaced.contains(&(10, 0)));
-    assert!(!evaluate(&demoted(cs, true)).replaced.contains(&(10, 0)));
+    assert!(evaluate(&lowered(cs.clone(), false)).replaced.contains(&(10, 0)));
+    assert!(!evaluate(&lowered(cs, true)).replaced.contains(&(10, 0)));
 }
 
 // spec/crdt.md §4.5: a text element its own commit inserted and deleted, kept because another

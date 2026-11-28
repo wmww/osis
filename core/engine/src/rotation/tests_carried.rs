@@ -1,5 +1,5 @@
-//! Carried demotions (spec/crypto.md §4, Carried demotions; model core/test/tla/rotation
-//! Depth0.tla `Travel`, `D0_rm_*_travel*`): a keyset of a holder actor carries the demotions of
+//! Carried lowerings (spec/crypto.md §4, Carried lowerings; model core/test/tla/rotation
+//! Depth0.tla `Travel`, `D0_rm_*_travel*`): a keyset of a holder actor carries the lowerings of
 //! writers and admins of it and below it that its rotator held, a node holds the keyset only
 //! with them, and so a parent's node learns a removal below its holder actor exactly when the
 //! keyset that excludes it arrives. Shape: G <- X1 <- .. <- Xd <- {W (write), R (read)}; A
@@ -17,7 +17,7 @@
 #![allow(clippy::unwrap_used)]
 use super::tests::{commit_ids, grant, independent_thing, held_by, newest_read, openable, synced};
 use crate::Mutation;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{CommitId, Role, Tid, Ts, Time};
 use osis_crypto::{Epoch, Secret32};
@@ -83,7 +83,7 @@ fn shape(d: usize) -> Shape {
 }
 
 /// Delivers parts `parts` of commit `c` of peer `from` to peer `to`, and what a verifier needs
-/// beside them as `from` judges it (`Engine::evidence_of`: for a `keys.0` part, the demotions
+/// beside them as `from` judges it (`Engine::evidence_of`: for a `keys.0` part, the lowerings
 /// its keysets carry), each projected to the parts listed: a certificate, as a node logging
 /// `c`'s keyset under a sync ID of G logs it.
 fn deliver_certified(lp: &mut LocalPeer, from: usize, to: usize, c: CommitId, parts: BTreeSet<usize>) {
@@ -172,7 +172,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
     // later than every grant by more than the backdating (`Attack::Backdated`)
     s.lp.advance(1000);
     let before = commit_ids(&mut s.lp, B);
-    s.lp.peers[B].engine.demote(&xd, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    s.lp.peers[B].engine.lower(&xd, &Lowering { holder: x, new: None, retain: None }).unwrap();
     let rm = *commit_ids(&mut s.lp, B).difference(&before).next().unwrap();
     // up to X2 as B's engine does it, then X1 as `carry` says
     for i in (1..s.xs.len()).rev() {
@@ -209,7 +209,7 @@ fn removed_with(s: &mut Shape, who: usize, carry: Carry, again: usize, order: Op
     }
     let x1_rot = x1_rot.unwrap();
     // the last rotation's keysets (at depth 1 the removal's own keysets of X1 carry it whatever `carry` says)
-    let carried: BTreeSet<CommitId> = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|(_, _, k)| k.since.is_some_and(|p| p.commit == x1_rot)).flat_map(|(_, _, k)| k.demotions.iter().copied()).collect();
+    let carried: BTreeSet<CommitId> = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|(_, _, k)| k.since.is_some_and(|p| p.commit == x1_rot)).flat_map(|(_, _, k)| k.lowerings.iter().copied()).collect();
     assert_eq!(carried.contains(&rm), carry == Carry::Honest && who == W, "X1's keysets carry a writer's removal, never a reader's");
     super::tests::send_skipping(&mut s.lp, B, W, &BTreeSet::from([rm]));
     let parts = keys_part(&s.lp, B, &x1_rot, x1);
@@ -356,7 +356,7 @@ fn a_writes_opened(s: &mut Shape, known: BTreeSet<Key>) -> bool {
     opened.contains(&(s.g, Role::Read, e))
 }
 
-// spec/crypto.md §4 (Carried demotions), spec/requirements.md Permissions: for each way W, removed
+// spec/crypto.md §4 (Carried lowerings), spec/requirements.md Permissions: for each way W, removed
 // from Xd unknown to it, acts on G after X1's knowing keyset reached A (plain, rotating X1 past the
 // knowing keyset, a made-up keyset, a backdated rotation), A writes nothing W opens. Depth 1 and 3.
 #[test]
@@ -391,11 +391,11 @@ fn keyset_carrying_nothing_leaks_spec_crypto_4() {
     assert!(!a_writes_opened(&mut s, known), "the replaced box keeps G's epoch stale");
 }
 
-// spec/crypto.md §4 (Held keyset): a keyset is held only with the demotions it carries. A holds
+// spec/crypto.md §4 (Held keyset): a keyset is held only with the lowerings it carries. A holds
 // X1's knowing rotation without the removal it lists: X1's new keyset is not held there (no
 // anchor, nothing stale by it), and is once the removal arrives, whatever the order.
 #[test]
-fn keyset_held_only_with_its_demotions_spec_crypto_4() {
+fn keyset_held_only_with_its_lowerings_spec_crypto_4() {
     let (mut s, rm) = shape_removed(2, W, Carry::Honest);
     let x1 = s.x1();
     let k = knowing(&mut s).0;
@@ -419,7 +419,7 @@ fn keyset_held_only_with_its_demotions_spec_crypto_4() {
 }
 
 // spec/requirements.md Permissions (a parent never depends on who reads through its members);
-// spec/crypto.md §4 (Carried demotions): a reader's removal from Xd travels nowhere above it. A
+// spec/crypto.md §4 (Carried lowerings): a reader's removal from Xd travels nowhere above it. A
 // holds X1's keysets made knowing R's removal, but not the removal: R still reads Xd as A sees
 // it, X1's keysets carry nothing, and A holds no grant write of Xd it did not hold before.
 #[test]
@@ -433,7 +433,7 @@ fn reader_removal_stays_below_spec_crypto_4() {
     assert_eq!(s.lp.peers[A].engine.core.role_now(&r, &xd), Some(Role::Read), "A learns R left Xd");
     let now: BTreeSet<CommitId> = s.lp.peers[A].engine.core.ix.held.commits_on(&xd).iter().map(|c| c.id).collect();
     assert_eq!(now, before, "A learns a grant write of Xd");
-    assert!(s.lp.peers[A].engine.core.keysets_of(&x1).all(|(_, _, k)| k.demotions.is_empty()), "X1's keysets carry a reader's removal");
+    assert!(s.lp.peers[A].engine.core.keysets_of(&x1).all(|(_, _, k)| k.lowerings.is_empty()), "X1's keysets carry a reader's removal");
 }
 
 /// A {a1 (peer 0), M (read)}, M {m1 (peer 1), S (write)}, S {f (peer 2)}: f reaches M only
@@ -498,18 +498,18 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
     assert!(!openable(&mut lp, 1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");
 }
 
-// spec/crypto.md §4 (Carried demotions: below write too): B demotes W on Xd to read and rotates
-// up to X1's write; X1's keysets carry the demotion, so A counts W a reader of G. W's read and
+// spec/crypto.md §4 (Carried lowerings: below write too): B lowers W on Xd to read and rotates
+// up to X1's write; X1's keysets carry the lowering, so A counts W a reader of G. W's read and
 // write rotation of G (sealing X1's write at its new keyset, which W cannot open) is invalid at
 // A, and A writes under no write epoch W opens.
 #[test]
-fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
+fn lowered_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
     let mut s = shape(2);
     let (w, g, x1, xd, b) = (s.node(W), s.g, s.x1(), s.xd(), s.node(B));
     let mut known = held_by(&s.lp, W, &s.all());
     s.lp.advance(1000);
     let before = commit_ids(&mut s.lp, B);
-    s.lp.peers[B].engine.demote(&xd, &Demotion { holder: w, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    s.lp.peers[B].engine.lower(&xd, &Lowering { holder: w, new: Some(grant(Role::Read)), retain: None }).unwrap();
     let rm = *commit_ids(&mut s.lp, B).difference(&before).next().unwrap();
     s.lp.peers[B].engine.ensure_rotated(&s.xs[1]).unwrap();
     let before = commit_ids(&mut s.lp, B);
@@ -518,7 +518,7 @@ fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
     super::tests::send_skipping(&mut s.lp, B, W, &BTreeSet::from([rm]));
     let parts = keys_part(&s.lp, B, &x1_rot, x1);
     deliver_certified(&mut s.lp, B, A, x1_rot, parts);
-    assert_eq!(s.lp.peers[A].engine.core.role_now(&w, &g), Some(Role::Read), "A holds W's demotion with X1's keyset");
+    assert_eq!(s.lp.peers[A].engine.core.role_now(&w, &g), Some(Role::Read), "A holds W's lowering with X1's keyset");
     let k = knowing(&mut s);
     known.extend(forged(&mut s, g, x1, Some(k), None).1);
     super::tests::send_skipping(&mut s.lp, W, A, &BTreeSet::new());
@@ -539,7 +539,7 @@ fn w_removed_from_x1() -> (Shape, CommitId) {
         let (x1, w) = (s.x1(), s.node(W));
         s.lp.advance(1000);
         let before = commit_ids(&mut s.lp, B);
-        s.lp.peers[B].engine.demote(&x1, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        s.lp.peers[B].engine.lower(&x1, &Lowering { holder: w, new: None, retain: None }).unwrap();
         let rm = *commit_ids(&mut s.lp, B).difference(&before).next().unwrap();
         (s.lp, (s.g, s.xs, rm))
     });
@@ -564,9 +564,9 @@ fn newcomer(s: &mut Shape, from: usize, t: Tid, seed: u64, order: Option<&mut su
     (x, pks)
 }
 
-// Randomized differential (spec/crypto.md §4, Carried demotions; the invariant at the top): over
+// Randomized differential (spec/crypto.md §4, Carried lowerings; the invariant at the top): over
 // depth 1-3, each way W acts, more rotations of X1 after the knowing one (a keyset carrying the
-// demotion on), and the order X1's newest keyset and what it carries reach A (or the keyset alone),
+// lowering on), and the order X1's newest keyset and what it carries reach A (or the keyset alone),
 // A writes nothing W opens while that keyset is held there. With every keyset of X1 carrying
 // nothing (the fix disabled), some case leaks.
 #[test]
@@ -656,14 +656,14 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4(
     assert!(keys_dropped > 0, "no seed dropped W's keyset while holding its boxes");
 }
 
-// spec/crypto.md §4 (Held keyset; Carried demotions), spec/commits.md §5 (Covered; Keep bounds):
-// B removes W from X1, its rotation's keysets carrying the removal by `demotes`, then rotates read
+// spec/crypto.md §4 (Held keyset; Carried lowerings), spec/commits.md §5 (Covered; Keep bounds):
+// B removes W from X1, its rotation's keysets carrying the removal by `lowers`, then rotates read
 // alone. The removal's write and sync keysets stay current, while its `keys.0` part
 // is replaced (its read keyset write died) and drops under B's snapshot past `ROLE_KEEP`. The
 // snapshot's copies name the removal by their writes' stamps, so a node granted X1 afterwards,
 // fed what B holds, holds those keysets as B does.
 #[test]
-fn own_demotion_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
+fn own_lowering_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
     let (mut s, rm) = w_removed_from_x1();
     let (x1, b) = (s.x1(), s.node(B));
     // the removal's keysets still current after read rotates: all but read's (`keys.0` holds the
@@ -688,12 +688,12 @@ fn own_demotion_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Held keyset; Carried demotions): B removes W from X1, its rotation's keysets
-// carrying the removal by `demotes`. A node holding that commit's `keys.0` part without its
+// spec/crypto.md §4 (Held keyset; Carried lowerings): B removes W from X1, its rotation's keysets
+// carrying the removal by `lowers`. A node holding that commit's `keys.0` part without its
 // `roles.0` part (a node may hold a commit's parts at different times) does not hold the
 // keysets (W's removal unknown there), and does once the rest arrives.
 #[test]
-fn own_demotion_keyset_held_only_with_its_own_grant_writes_spec_crypto_4() {
+fn own_lowering_keyset_held_only_with_its_own_grant_writes_spec_crypto_4() {
     let (mut s, rm) = w_removed_from_x1();
     let x1 = s.x1();
     let (r, e, _) = s.lp.peers[B].engine.core.keysets_of(&x1).find(|x| x.0 == Role::Write && x.2.since.is_some_and(|p| p.commit == rm)).unwrap();
@@ -718,8 +718,8 @@ fn own_demotion_keyset_held_only_with_its_own_grant_writes_spec_crypto_4() {
     assert!(s.lp.peers[c].engine.core.keyset(&x1, r, &e).is_some(), "held once the removal arrives");
 }
 
-// spec/crypto.md §4 (Held keyset; Carried demotions), spec/commits.md §5 Keep bounds: B's removal
-// of W from X1 rotates X1 in its own commit, so X1's keysets carry it by `demotes`, held only with
+// spec/crypto.md §4 (Held keyset; Carried lowerings), spec/commits.md §5 Keep bounds: B's removal
+// of W from X1 rotates X1 in its own commit, so X1's keysets carry it by `lowers`, held only with
 // that commit's grant writes. B may rotate read again, compacts X1's `keys.0` (and perhaps
 // `secrets.0`) and drops what that covers past `ROLE_KEEP` (after a read rotation, the removal's
 // `keys.0` part too): a node granted X1 afterwards, fed what B holds in any order, holds the
@@ -727,16 +727,16 @@ fn own_demotion_keyset_held_only_with_its_own_grant_writes_spec_crypto_4() {
 // only) as B does.
 #[test]
 #[ignore = "property"]
-fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4() {
-    osis_base::testenv::Seeds::from_env("OSIS_OWN_DEMOTION_START", "OSIS_OWN_DEMOTION_SEEDS", 0..4).run(
-        "rotation::tests_carried::own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4",
-        |s| format!("OSIS_OWN_DEMOTION_START={s} OSIS_OWN_DEMOTION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_carried::own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4"),
+fn own_lowering_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4() {
+    osis_base::testenv::Seeds::from_env("OSIS_OWN_LOWERING_START", "OSIS_OWN_LOWERING_SEEDS", 0..4).run(
+        "rotation::tests_carried::own_lowering_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4",
+        |s| format!("OSIS_OWN_LOWERING_START={s} OSIS_OWN_LOWERING_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_carried::own_lowering_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4"),
         |seed| {
         let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut s, rm) = w_removed_from_x1();
         let x1 = s.x1();
-        let mut demotes: Vec<_> = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.2.demotions.contains(&rm)).map(|x| (x.0, x.1)).collect();
-        assert!(!demotes.is_empty(), "the removal's own rotation carries it by `demotes`");
+        let mut lowers: Vec<_> = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.2.lowerings.contains(&rm)).map(|x| (x.0, x.1)).collect();
+        assert!(!lowers.is_empty(), "the removal's own rotation carries it by `lowers`");
         let (keys, secrets) = (osis_base::Ak::new("keys.0").unwrap(), osis_base::Ak::new("secrets.0").unwrap());
         s.lp.advance(1000);
         // read alone rotated again: the other roles' keysets stay the removal's
@@ -744,7 +744,7 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto
             let b = s.node(B);
             s.lp.peers[B].engine.run(|tx| super::rotate_now(tx, b, x1, &BTreeSet::from([Role::Read]))).unwrap();
             s.lp.advance(1000);
-            demotes.retain(|(r, _)| *r != Role::Read);
+            lowers.retain(|(r, _)| *r != Role::Read);
         }
         s.lp.peers[B].engine.snapshot(&x1, &keys).unwrap().unwrap();
         if rng.next(2) == 0 {
@@ -752,7 +752,7 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto
         }
         s.lp.advance(osis_base::format::ROLE_KEEP_MS + 1 + rng.next(3) * 86_400_000);
         super::tests::drop_covered(&mut s.lp, B, x1);
-        for (r, e) in &demotes {
+        for (r, e) in &lowers {
             assert!(s.lp.peers[B].engine.core.keyset(&x1, *r, e).is_some(), "seed {seed}: B holds its own keyset {r:?}");
         }
         let (x, pks) = newcomer(&mut s, B, x1, 800 + seed, Some(&mut rng));
@@ -761,7 +761,7 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto
                 let _ = s.lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
             }
         }
-        for (r, e) in &demotes {
+        for (r, e) in &lowers {
             assert!(s.lp.peers[x].engine.core.keyset(&x1, *r, e).is_some(), "seed {seed}: the newcomer lacks X1's keyset {r:?} B holds");
         }
     },

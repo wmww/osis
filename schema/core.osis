@@ -143,11 +143,11 @@ type keyset = struct {
     /// left out at, each with the 32-byte IDs of its causes' commits: it stays left out at a
     /// keyset while a cause stands (spec/crypto.md §4, Left out).
     left_out 5: map<weak, map<epoch, set<blob>>>,
-    /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
-    /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
-    demotions 6: set<blob>,
-    /// Whether this keyset's own commit is such a demotion.
-    demotes 7: bool,
+    /// 32-byte IDs of other commits lowering a writer or admin of the actor or of an actor
+    /// below it, which travel with the keyset (spec/crypto.md §4, Carried lowerings).
+    lowerings 6: set<blob>,
+    /// Whether this keyset's own commit is such a lowering.
+    lowers 7: bool,
     /// A sync keyset's claim epoch: the read epoch whose roles secret its claim key takes
     /// (spec/sync-ids.md §3); absent in every other keyset.
     claim 8: option<epoch>,

@@ -369,7 +369,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.signer },
             };
             let ws = set(ts, id, r.below(5) as i64);
-            // the chief, else often a node a grant names on the thing: a grant or demotion between
+            // the chief, else often a node a grant names on the thing: a grant or lowering between
             // the delta and the request decides its right (judged at the request, spec/permissions.md §6)
             let granted: Vec<NodeId> = commits
                 .iter()

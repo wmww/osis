@@ -11,7 +11,7 @@
 //! and K sync (a sync-only box: K keeps Y unread). Hostile parts: W, W2 or X boxing R, P or G at a
 //! made-up epoch, or writing a step bearing one; A planting a box and a step with no keyset.
 //! Validity is judged at each part's point: a box needs write on Y, a keyset, a step or a grant
-//! write admin (A demoted after its plant changes nothing). Sync and read share one epoch
+//! write admin (A lowered after its plant changes nothing). Sync and read share one epoch
 //! counter: a read box gives both secrets of its epoch, a sync box the sync secret alone.
 //! A node holds any subset of the parts (a stub carries no keyset) and opens the boxes to
 //! the holders it acts for or holds secrets of.

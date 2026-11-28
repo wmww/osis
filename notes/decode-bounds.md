@@ -15,7 +15,7 @@
 | a stored state read for its snapshot or sweep | writers (as stored) | `osis_crdt::Paged` (`page_view`), `SnapState::walk`, `pages::StoredPages` | the skeleton, a page per collection the walk is inside, a path shell per paged collection in that page's range (what the node's page index holds per collection anyway): one dot naming many keys holds no more (crdt `tests_walk::one_dot_many_keys_holds_a_page_at_a_time_spec_8`); read once writes with an end end, also what they reach in the held bodies (`osis_crdt::Joined`, notes/engine-paged.md) |
 | a body judged covered | writer | `retention::snapshot::covered_body` | a group of its pages about the two parts' root bytes, with its skeleton, and per write a dot |
 | a commit's linked header lists | author | `Header::resolve` | the bytes of its own lists: a list's tree is keyed to its header (list key) |
-| a demotion's frontier | signer | `osis_commit::frontier_ids` | its bytes: 32 B an ID held against 34 sent, one copy |
+| a lowering's frontier | signer | `osis_commit::frontier_ids` | its bytes: 32 B an ID held against 34 sent, one copy |
 | the trees a thing's sources link | writers | `tree_refs::Reach` | what opens each counted link and its counts, about 350 B a link |
 | a peer's filter | stranger | `Opens::beacons`, records load | its coding (`osis_proto::filter::Beacons`) |
 

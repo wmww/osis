@@ -490,14 +490,14 @@ pub(crate) enum Departs {
     No,
     /// A holder's departure (a removal's or finalize's rotation): its names mark it.
     Holder,
-    /// One that also demotes a writer or admin (an explicit lowering from write or above): its
-    /// keysets carry their own commit too (spec/crypto.md §4, Carried demotions).
-    Demoting,
+    /// One that also lowers a writer or admin (an explicit lowering from write or above): its
+    /// keysets carry their own commit too (spec/crypto.md §4, Carried lowerings).
+    Lowering,
 }
 
 /// The rotation of `roles` of `a` (boxes and left-out records from `recipients`), written into `m`, its
 /// history boxes carrying the secrets this node holds and the names of the departures from `a`
-/// it holds (`departures::names`), its keysets the demotions it holds in effect on `a`
+/// it holds (`departures::names`), its keysets the lowerings it holds in effect on `a`
 /// (`departures::carried`). `held` is this node's view (derived epochs for the switch to secrets
 /// of its own). `departs`: what the same commit departs from `a` (a removal's rotation): its
 /// names mark it by `ts`, signer and blind, and the commit covers that departure itself
@@ -524,7 +524,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
         None
     };
     let names = departures::names(tx.core, &a, own);
-    let carried = osis_keys::Carried { demotions: departures::carried(tx.core, &a), demotes: departs == Departs::Demoting };
+    let carried = osis_keys::Carried { lowerings: departures::carried(tx.core, &a), lowers: departs == Departs::Lowering };
     let bare = kem::bare(tx, &a, roles)?;
     let rot = osis_keys::rotate_leaving_out(&a, roles, held, &secrets, &boxing.holders, &boxing.left_out, &carried, &bare, &names, cut, seed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;

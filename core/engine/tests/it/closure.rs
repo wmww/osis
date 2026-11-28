@@ -322,7 +322,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                         continue;
                     }
                     if had.is_some_and(|h| h > m) {
-                        e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: Some(grant), retain: None }).unwrap();
+                        e.lower(&tids[t], &osis_engine::flows::Lowering { holder: tids[g], new: Some(grant), retain: None }).unwrap();
                     } else {
                         e.grant(&tids[t], &tids[g], &grant).unwrap();
                     }
@@ -332,7 +332,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                     grants.insert((g, t), m);
                 }
                 5 if grants.contains_key(&(g, t)) => {
-                    e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: None, retain: None }).unwrap();
+                    e.lower(&tids[t], &osis_engine::flows::Lowering { holder: tids[g], new: None, retain: None }).unwrap();
                     grants.remove(&(g, t));
                     order.retain(|x| *x != (g, t));
                 }
@@ -515,7 +515,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     let read = |lp: &mut LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
     assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
     let e = &mut lp.peers[0].engine;
-    let lowering = e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::grant_of(osis_base::Role::Sync)), retain: None }).unwrap();
+    let lowering = e.lower(&x, &osis_engine::flows::Lowering { holder: ps[1], new: Some(crate::flows::grant_of(osis_base::Role::Sync)), retain: None }).unwrap();
     // the lowering's role commits reach account 1, as its sync role keeps them coming
     for c in &lowering.commits {
         let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
@@ -609,7 +609,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
             crate::flows::send_carried(&mut lp, 1, 0, &[x]);
         }
         // the grant ends and its last fire leaves the inbox: nothing of T's grant is held
-        let removal = lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: p0, new: None, retain: Some(false) }).unwrap().commits;
+        let removal = lp.peers[1].engine.lower(&t, &osis_engine::flows::Lowering { holder: p0, new: None, retain: Some(false) }).unwrap().commits;
         crate::flows::send_carried(&mut lp, 1, 0, &removal);
         lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
         lp.peers[0].tick().unwrap();
@@ -994,7 +994,7 @@ fn a_retained_copy_stays_once_released_spec_commits_5() {
     let reg = crate::common::ak("t:reg.0");
     let before = [x, y].map(|t| lp.peers[1].engine.get(&t, &reg).unwrap());
     assert!(before.iter().all(Option::is_some), "peer 1 reads X and Y");
-    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(true) }).unwrap();
+    lp.peers[0].engine.lower(&x, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: Some(true) }).unwrap();
     crate::flows::spread(&mut lp);
     let e1 = &mut lp.peers[1].engine;
     e1.role_duties().unwrap();
@@ -1038,7 +1038,7 @@ fn a_release_judges_every_commit_on_the_held_set_before_it_spec_sync_set_3() {
     }
     crate::flows::spread(&mut lp);
     lp.peers[0].engine.snapshot(&x, &reg).unwrap().unwrap();
-    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(true) }).unwrap();
+    lp.peers[0].engine.lower(&x, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: Some(true) }).unwrap();
     crate::flows::spread(&mut lp);
     let e1 = &mut lp.peers[1].engine;
     e1.drop_body(&both, &x, &reg).unwrap();
@@ -1064,7 +1064,7 @@ fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
     lp.peers[0].engine.grant(&x, &ps[1], &crate::flows::grant_of(osis_base::Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     let e1 = &mut lp.peers[1].engine;
-    let c = e1.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    let c = e1.lower(&x, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     assert!(e1.waiting_removals().contains(&c), "the leave waits");
     e1.unhold(osis_base::Strong(x)).unwrap();
     let left: BTreeSet<Tid> = e1.left_closure().into_keys().collect();

@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{Key, Rng, all_boxed, blocked_at, grant, independent_thing, held_by, newest_read, opens_in, settle, synced};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
 use osis_schema::core_types as ct;
@@ -76,7 +76,7 @@ fn world(seed: u64) -> World {
     log.push(format!("members {members:?}, grants first {grants_first}, writers {writers:?}"));
     let kept = held_by(&lp, V, &xs);
     assert!(kept.iter().any(|k| k.0 == xs[0]), "V reads G before its removal");
-    lp.peers[adm[at]].engine.demote(&xs[at], &Demotion { holder: tids[V], new: None, retain: None }).unwrap();
+    lp.peers[adm[at]].engine.lower(&xs[at], &Lowering { holder: tids[V], new: None, retain: None }).unwrap();
     log.push(format!("peer {} removes V from X{at}", adm[at]));
     World { lp, xs, adm, writers, kept, log }
 }
@@ -208,7 +208,7 @@ fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
         for change in 0..6usize {
             let p = 4 + change / 2 % 2;
             let n = if change % 2 == 0 {
-                lp.peers[3].engine.demote(&m, &Demotion { holder: tids[p], new: None, retain: None }).unwrap().commits.len()
+                lp.peers[3].engine.lower(&m, &Lowering { holder: tids[p], new: None, retain: None }).unwrap().commits.len()
             } else {
                 lp.peers[3].engine.grant(&m, &tids[p], &grant(Role::Read)).unwrap();
                 0

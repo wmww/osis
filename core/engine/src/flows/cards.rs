@@ -17,7 +17,7 @@
 //! each side's readers taking its own side's keys from the whole; its commits, A's and the inbox's
 //! admins and writers (judged), so where grants to A go is chosen by A's admins alone (the inbox
 //! field needs admin, `validity::rotation_required`), and an honest entry's keysets carry the
-//! demotions of A's admins and writers (`holder_keys`), voiding a demoted party's later commits
+//! lowerings of A's admins and writers (`holder_keys`), voiding a lowered party's later commits
 //! another entry carries. C's other writers may remove a card, never put one. A removed writer of
 //! A writes no valid entry once its removal applies; a stranger holding an old card seals to A's
 //! keysets as of that card until a newer one reaches it (spec/sync-inbox.md §2: what it seals is

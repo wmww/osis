@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{grant, independent_thing, newest_read, send_skipping, synced};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -211,8 +211,8 @@ fn leaver_through_keyless_grant_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Covers; tail): the tail write taking the holder below the role is one that applies; a dropped write lowering it applies nothing and pins nothing. Admin P4 demotes admin P1 to read (K); P1, not knowing,
-// self-removes (S); the mint admin, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
+// spec/crypto.md §4 (Covers; tail): the tail write taking the holder below the role is one that applies; a dropped write lowering it applies nothing and pins nothing. Admin P4 lowers admin P1 to read (K); P1, not knowing,
+// self-removes (S); the mint admin, not knowing K, lowers P4 to read (D), whose audit drops K. Admin
 // Q holds K and D but not S: P1 is admin again there, and Q's rotation for P4 boxes P1, naming D.
 // At the mint admin P1's departure is S's, which Q's epochs do not name: the mint admin rotates.
 #[test]
@@ -226,10 +226,10 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
         lp.peers[o].engine.grant(&g, t, &grant(Role::Admin)).unwrap();
     }
     lp.sync_all().unwrap();
-    lp.peers[p4].engine.demote(&g, &Demotion { holder: tids[p1], new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[p4].engine.lower(&g, &Lowering { holder: tids[p1], new: Some(grant(Role::Read)), retain: None }).unwrap();
     let p1_held = leave(&mut lp, p1, g, Forge::None).unwrap();
     lp.peers[o].clock.advance(1_000);
-    lp.peers[o].engine.demote(&g, &Demotion { holder: tids[p4], new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[o].engine.lower(&g, &Lowering { holder: tids[p4], new: Some(grant(Role::Read)), retain: None }).unwrap();
     // Q gets K after D's `ts`
     lp.peers[q].clock.advance(2_000);
     send_skipping(&mut lp, p4, q, &none);
@@ -257,11 +257,11 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count),
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): holder M
-// holds admin on A; P1, M's mint admin, holds admin on A only through M. P1 demotes M to write in a
+// holds admin on A; P1, M's mint admin, holds admin on A only through M. P1 lowers M to write in a
 // commit carrying a frontier and a rotation of admin and read (boxing M). It applies as a self-removal; P1 made the new admin secret and holds only
 // write after, so the mint admin rotates admin again.
 #[test]
-fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
+fn holder_actor_lowered_by_its_own_admin_spec_crypto_4() {
     let mut lp = synced(3);
     let p2 = lp.peers[2].engine.tid();
     let a = independent_thing(&mut lp, 0);
@@ -290,7 +290,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
         })
         .unwrap();
     lp.sync_all().unwrap();
-    assert_eq!(lp.peers[0].engine.core.key_holders(&a).into_iter().find(|h| h.0 == m).map(|h| h.1), Some(Role::Write), "M demoted to write");
+    assert_eq!(lp.peers[0].engine.core.key_holders(&a).into_iter().find(|h| h.0 == m).map(|h| h.1), Some(Role::Write), "M lowered to write");
     assert!(super::tests::blocked_at(&mut lp, 0, a).contains(&Role::Admin), "M's departure from admin covered by P1's epoch");
     lp.peers[0].engine.ensure_rotated(&a).unwrap();
     let now = lp.peers[0].engine.epochs(&a).unwrap().admin.newest_held().map(|x| x.0).unwrap();
@@ -311,7 +311,7 @@ fn a_mint_admins_removal_of_its_holder_is_a_self_removal_spec_permissions_2() {
         lp.peers[0].engine.grant(&a, &m, &grant(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&m, &a), Some(Role::Admin), "account {account}");
-        lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, retain: None }).unwrap();
+        lp.peers[1].engine.lower(&a, &Lowering { holder: m, new: None, retain: None }).unwrap();
         lp.sync_all().unwrap();
         for i in 0..2 {
             assert!(!lp.peers[i].engine.core.key_holders(&a).iter().any(|h| h.0 == m), "peer {i}: removed (account {account})");
@@ -335,7 +335,7 @@ fn inputs(x: &osis_keys::ActorEpochs) -> Inputs {
 #[test]
 fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = shape(Role::Write);
-    let removal = lp.peers[A].engine.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap().commits;
+    let removal = lp.peers[A].engine.lower(&g, &Lowering { holder: tids[W], new: None, retain: None }).unwrap().commits;
     assert!(!removal.is_empty());
     lp.advance(1000);
     let name = osis_keys::Name::applied(osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) }, tids[W]);

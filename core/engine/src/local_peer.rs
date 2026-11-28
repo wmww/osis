@@ -1584,7 +1584,7 @@ impl Engine {
         if self.core.role_now(&me, a) != Some(osis_base::Role::Admin) {
             return Err(crate::error::Error::Permission { tid: *a, needs: osis_base::Role::Admin });
         }
-        let mut done = self.demote(a, &crate::flows::Demotion { holder: *node, new: None, retain: Some(retain) })?;
+        let mut done = self.lower(a, &crate::flows::Lowering { holder: *node, new: None, retain: Some(retain) })?;
         let key = osis_base::Value::Weak(*node);
         let mut m = Mutation::new();
         for t in std::iter::once(*a).chain(also.iter().copied()) {

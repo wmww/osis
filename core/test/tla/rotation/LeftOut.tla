@@ -2,7 +2,7 @@
 \* A holder actor M left out of thing A, and what keeps it out (spec/crypto.md
 \* \S 4 Left out; notes/holder-actors.md, Left out). One cause c (any block
 \* clause: every one names a commit) removes party x; c is void wherever its
-\* invalidator i is held (a concurrent demotion of its author, a side switch).
+\* invalidator i is held (a concurrent lowering of its author, a side switch).
 \* Kind "grant": c writes grants (a departure, a keyless grant) and stands while
 \* valid; "rot": c writes a keyset (a stale box's superseder, the epoch a box or
 \* rotator departure holds, a keyset held invalid) and stands while held. x opens

@@ -149,14 +149,14 @@ pub struct Rotated {
     pub floor: u64,
 }
 
-/// The demotions every keyset of a rotation carries (spec/crypto.md §4, Carried demotions): the
-/// commits demoting a writer or admin of the actor or of an actor below it that the rotator
-/// holds in effect (`demotions`), and whether the rotation's own commit is one (`demotes`: a
+/// The lowerings every keyset of a rotation carries (spec/crypto.md §4, Carried lowerings): the
+/// commits lowering a writer or admin of the actor or of an actor below it that the rotator
+/// holds in effect (`lowerings`), and whether the rotation's own commit is one (`lowers`: a
 /// keyset cannot name its own commit). A node holds the keyset only once it holds them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Carried {
-    pub demotions: BTreeSet<osis_base::CommitId>,
-    pub demotes: bool,
+    pub lowerings: BTreeSet<osis_base::CommitId>,
+    pub lowers: bool,
 }
 
 /// Per rotated role, the holder actors a rotation leaves out of it, each with the keysets of it
@@ -326,8 +326,8 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
                 ks.left_out.insert((*m).into(), out);
             }
         }
-        ks.demotions = carried.demotions.clone();
-        ks.demotes = carried.demotes;
+        ks.lowerings = carried.lowerings.clone();
+        ks.lowers = carried.lowers;
         keys.keysets.insert(r, ks);
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes, floor });

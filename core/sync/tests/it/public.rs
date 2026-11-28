@@ -71,7 +71,7 @@ fn reaching_public() -> (World, Tid, Tid, Tid) {
 #[test]
 fn removing_the_public_ends_what_a_reader_of_the_referrer_reads_spec_sync_set_2() {
     let (mut w, t, p, _) = reaching_public();
-    w.write(0, |e| e.demote(&p, &osis_engine::flows::Demotion { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&p, &osis_engine::flows::Lowering { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();
     set(&mut w, 0, p, "p2");
     w.run();
     assert!(!w.engine(0).sync_unit(&t).contains(&p), "P left T's unit at its logger");
@@ -151,7 +151,7 @@ fn a_stranger_redeems_a_locator_to_a_dependent_and_follows_it_spec_sync_set_2() 
     set(&mut w, 0, d, "d2");
     w.run();
     assert_eq!(reads(&mut w, 1, &d), Some(Value::Str("d2".into())), "D's later writes reach it");
-    w.write(0, |e| e.demote(&x, &osis_engine::flows::Demotion { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&x, &osis_engine::flows::Lowering { holder: Tid::PUBLIC, new: None, retain: None })).unwrap();
     set(&mut w, 0, d, "d3");
     w.run();
     assert_ne!(reads(&mut w, 1, &d), Some(Value::Str("d3".into())), "nothing written since the removal");
@@ -168,7 +168,7 @@ fn a_stranger_redeems_a_locator_after_a_rotation_spec_crypto_4() {
     w.write(0, |e| e.grant(&p, &Tid::PUBLIC, &grant(Role::Read))).unwrap();
     let q = make(&mut w, 0, a, "q");
     w.write(0, |e| e.grant(&p, &q, &grant(Role::Read))).unwrap();
-    w.write(0, |e| e.demote(&p, &osis_engine::flows::Demotion { holder: q, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&p, &osis_engine::flows::Lowering { holder: q, new: None, retain: None })).unwrap();
     w.run();
     let link = w.locator(0, p).expect("P is public");
     assert_eq!(w.redeem_any(1, &link), osis_sync::types::Waiting::Pending);

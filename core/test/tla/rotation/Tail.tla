@@ -6,8 +6,8 @@
 (* or a finalize of the write whose entry it resets (`ends`, 0 the start:   *)
 (* it applies only while that write is in force and timed, and is resolved  *)
 (* only where that write is held, spec/permissions.md §2), voided wherever   *)
-(* its invalidator is held (a demotion of its author ordered before it, or  *)
-(* the audit dropping it), and, with Readers, maybe a reader's (a demotion  *)
+(* its invalidator is held (a lowering of its author ordered before it, or  *)
+(* the audit dropping it), and, with Readers, maybe a reader's (a lowering  *)
 (* to reader voids it, so it does not count). A view is the writes and      *)
 (* invalidators (numbered above N) a node holds: any subset (commits arrive in any order).     *)
 (* Rotator X names from its view (each applied write lowering M; each       *)
@@ -65,7 +65,7 @@ RECURSIVE GrantTo(_, _)
 GrantTo(V, i) == IF i = 0 THEN [val |-> start.val, timed |-> start.timed, src |-> 0] ELSE After(GrantTo(V, i - 1), V, i)
 Applied(V, i) == Applies(V, GrantTo(V, i - 1), i)
 Role(V) == GrantTo(V, N).val
-\* applying nothing, it counts unless a reader's demotion voided it there
+\* applying nothing, it counts unless a reader's lowering voided it there
 Counts(V, i) == i \in Held(V) /\ ~Applied(V, i) /\ ~(ws[i].rd /\ ~Valid(V, i))
 Departed(V) == Role(V) < R
 \* the grant showed M a reader (its start, or a write that applies or counts)
@@ -95,7 +95,7 @@ VoidOf(X) == IF Rule = "old" THEN OldVoid(X) ELSE Void(X)
 \* the rotation commit's own write: X made it, so it applied at X, lowering M below the role
 Marks(X) == {0} \cup {i \in Held(X) : Applied(X, i) /\ ws[i].val < R}
 \* (the mark's commit is held: its rotation may stay valid where its grant write is void, its
-\* author demoted to write)
+\* author lowered to write)
 \* each named write judged as X judged it: an applied one (and the mark's) standing at V, a void
 \* one applying nothing there
 Met(V, X, m) == /\ \A i \in LoweredOf(X, m) : i \in Held(V) /\ MetOk(V, i)

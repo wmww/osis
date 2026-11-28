@@ -346,18 +346,18 @@ fn dependent_of(lp: &mut LocalPeer, g: Tid) -> Tid {
 // admin there), so the step places nothing: Y stays dependent at every node and A (peer 0) and R
 // read each other's writes on it.
 #[test]
-fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
+fn a_lowered_admins_step_splits_nobody_spec_sync_set_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     let y = dependent_of(&mut lp, g);
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     plant_step_box(&mut lp, 1, y, tids[2], 40);
     lp.sync_all().unwrap();
     lp.peers[2].restart(7).unwrap();
     assert!(lp.peers[2].engine.core.ix.secrets.get(&y).is_some_and(|e| e.sync.held().next().is_some()), "R opens no box of D's");
     for i in 0..3 {
-        assert!(lp.peers[i].engine.core.ix.steps.get(&y).is_none(), "peer {i} places a demoted admin's step");
-        assert_eq!(lp.peers[i].engine.core.secret_actor(&y), Some(g), "peer {i} counts Y independent by a demoted admin's step");
+        assert!(lp.peers[i].engine.core.ix.steps.get(&y).is_none(), "peer {i} places a lowered admin's step");
+        assert_eq!(lp.peers[i].engine.core.secret_actor(&y), Some(g), "peer {i} counts Y independent by a lowered admin's step");
     }
     put_on(&mut lp, 2, y, "by R", 1);
     put_on(&mut lp, 0, y, "by A", 1);
@@ -369,17 +369,17 @@ fn a_demoted_admins_step_splits_nobody_spec_sync_set_2() {
 // spec/sync-set.md §2 (Counts as independent: a box and a step only at a node reading none of
 // its role commits), spec/permissions.md §5.2: D (peer 1), an admin of g, writes a step and a
 // read box to R (peer 2) on Y, a dependent of g, with no keyset, and is lowered to write after
-// (its demoter holding the plant). The step stays placed (its `sync.0` write judged at its
+// (its lowerer holding the plant). The step stays placed (its `sync.0` write judged at its
 // point), but R reads Y, so it waits for a keyset that never comes: Y dependent at R and A
 // (peer 0), a restart of R alike, and each reads the other's writes on it. Fails with a box and
 // a step counting at a reading node.
 #[test]
-fn an_admins_plant_splits_no_read_after_its_demotion_spec_sync_set_2() {
+fn an_admins_plant_splits_no_read_after_its_lowering_spec_sync_set_2() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     let y = dependent_of(&mut lp, g);
     plant_step_box(&mut lp, 1, y, tids[2], 60);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[2].restart(7).unwrap();
     assert!(lp.peers[2].engine.core.ix.secrets.get(&y).is_some_and(|e| e.sync.held().next().is_some()), "R opens no box of D's");

@@ -15,8 +15,8 @@
 //!   trial (`Engine::trial`): verified and applied as any receipt, the sides that receipt records
 //!   recorded (Held first), and all of it undone after. Invariant (the guard): a proof judged on
 //!   a reading that undoes a lowering this node's own reading applies proves nothing, so no copy
-//!   brings back a removed or demoted node, and no copy moves this node to another side of a
-//!   fork. A node demoted concurrently proves at the role its path gives here.
+//!   brings back a removed or lowered node, and no copy moves this node to another side of a
+//!   fork. A node lowered concurrently proves at the role its path gives here.
 //! - the role on S: this node's reading alone (no copy reaches it): a proven thing is trusted at
 //!   most at the role its path gives (the proven role), never at the claimed thing's role alone.
 

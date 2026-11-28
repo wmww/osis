@@ -178,8 +178,8 @@ impl Engine {
 
     /// `holder`'s holder keys (spec/wire.md §9; a stranded report's, a card entry's): its current
     /// `keys.0` commits each cut to keys on it (spec/permissions.md §4 Copies), with their
-    /// evidence (cut to evidence), the demotions their keysets carry (spec/crypto.md §4 Carried
-    /// demotions: a receiver holds those keysets only with them, and so the demoted party's later
+    /// evidence (cut to evidence), the lowerings their keysets carry (spec/crypto.md §4 Carried
+    /// lowerings: a receiver holds those keysets only with them, and so the lowered party's later
     /// commits are invalid there) and its records.
     pub fn holder_keys(&mut self, holder: &Tid) -> Result<Certificates> {
         let ev = self.evidence_now()?;
@@ -196,7 +196,7 @@ impl Engine {
             own.commits.entry(k).or_default().extend(h.aspect_parts(holder, "sync.0"));
             evidence.records.insert(h.signer);
             self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);
-            self.carried_demotions(&ev, holder, &k, &mut evidence);
+            self.carried_lowerings(&ev, holder, &k, &mut evidence);
         }
         evidence.records.insert(*holder);
         self.close_records(&ev, &mut evidence);

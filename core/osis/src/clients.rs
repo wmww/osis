@@ -13,7 +13,7 @@ use crate::handle::Osis;
 use osis_base::{Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, p};
 
@@ -136,7 +136,7 @@ impl Osis {
             w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&thing)) {
-            self.engine(|x| x.demote(&t, &Demotion { holder: thing, new: None, retain: None }))?;
+            self.engine(|x| x.lower(&t, &Lowering { holder: thing, new: None, retain: None }))?;
         }
         let mut w = self.write();
         w.at(node, ct::CLIENTS).path(p![osis_base::Weak(thing)]).remove()?;

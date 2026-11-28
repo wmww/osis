@@ -27,7 +27,7 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 
 /// The keyset of an epoch: where `kem`, its KEM public key `kdf("kem", secret)` (spec/crypto.md
 /// §3; the rotator decides by Published KEM keys), listing `supersedes` and the digest of the
-/// rotation's `names` (§4), with no left-out keysets or carried demotions yet (`produce::rotate`
+/// rotation's `names` (§4), with no left-out keysets or carried lowerings yet (`produce::rotate`
 /// adds them).
 pub fn keyset(epoch: &Epoch, secret: &RoleSecret, supersedes: &BTreeSet<Epoch>, names: &Names, kem: bool) -> Keyset {
     Keyset {
@@ -37,8 +37,8 @@ pub fn keyset(epoch: &Epoch, secret: &RoleSecret, supersedes: &BTreeSet<Epoch>, 
         supersedes: supersedes.iter().map(to_schema).collect(),
         names: names.digest(),
         left_out: BTreeMap::new(),
-        demotions: BTreeSet::new(),
-        demotes: false,
+        lowerings: BTreeSet::new(),
+        lowers: false,
         claim: None,
     }
 }

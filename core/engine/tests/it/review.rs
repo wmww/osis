@@ -8,7 +8,7 @@ use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::Package;
 use osis_engine::{Ingested, Mutation};
-use osis_engine::DemotionScope;
+use osis_engine::Loweringscope;
 
 fn set(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
@@ -41,7 +41,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("ash")), PathSeg::Field(1)], op: Op::Set(Value::Int(8)) }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
-    let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let scope = Loweringscope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     lp.advance(10);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
@@ -234,7 +234,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let b = lp.peers[1].engine.tid();
     set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     sync(&mut lp, 0, 1);
-    let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let scope = Loweringscope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     lp.advance(10);

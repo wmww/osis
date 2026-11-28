@@ -172,8 +172,8 @@ impl Dropped {
 }
 
 /// A keyset a `keys.0` body wrote: its role, epoch, the epochs its supersedes list names, its
-/// KEM public key (`None`: another suite, or malformed: never sealed to) and the demotions it
-/// carries (spec/crypto.md §4, Carried demotions).
+/// KEM public key (`None`: another suite, or malformed: never sealed to) and the lowerings it
+/// carries (spec/crypto.md §4, Carried lowerings).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeysetRec {
     pub role: osis_base::Role,
@@ -185,9 +185,9 @@ pub struct KeysetRec {
     /// The keysets of holder actors it records its rotation left them out at, each with its
     /// causes' commits (spec/crypto.md §4, Left out).
     pub left_out: Vec<(Tid, osis_crypto::Epoch, Vec<CommitId>)>,
-    /// The commits whose demotions it carries: those it lists, and its rotation commit where it
-    /// `demotes` (the commit its write names, `KeysBody::of`).
-    pub demotions: Vec<CommitId>,
+    /// The commits whose lowerings it carries: those it lists, and its rotation commit where it
+    /// `lowers` (the commit its write names, `KeysBody::of`).
+    pub lowerings: Vec<CommitId>,
     /// A sync keyset's claim epoch (spec/crypto.md §3).
     pub claim: Option<osis_crypto::Epoch>,
 }
@@ -201,8 +201,8 @@ pub struct KeysetRec {
 /// publish, each with its body's author (what binds a history entry to a rotator,
 /// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
 /// record with their causes, joined (spec/crypto.md §4, Left out: read at the actor's current
-/// epochs), and the demotions they carry, joined (Carried demotions: its rotation commit among
-/// them where it demotes). Held only once those demotions are (`Core::keyset`).
+/// epochs), and the lowerings they carry, joined (Carried lowerings: its rotation commit among
+/// them where it lowers). Held only once those lowerings are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
@@ -211,7 +211,7 @@ pub struct HeldKeyset {
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
     pub left_out: BTreeMap<Tid, BTreeMap<osis_crypto::Epoch, BTreeSet<CommitId>>>,
-    pub demotions: BTreeSet<CommitId>,
+    pub lowerings: BTreeSet<CommitId>,
     /// A sync keyset's claim epoch (spec/crypto.md §3), as its earliest valid body names it
     /// (`since`): every node reads the same one.
     pub claim: Option<osis_crypto::Epoch>,
@@ -284,11 +284,11 @@ pub struct View {
     /// thing whose path is not known is judged invalid. `None` where the path is in the clear.
     pub paths: Option<Arc<Decided>>,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
-    /// receipts or demotion frontiers.
+    /// receipts or lowering frontiers.
     pub memory: bool,
     pub aspects: Vec<AspectView>,
     /// A role commit's frontier (`validity::header_frontier`; perm's adaptation reads it
-    /// for demotions); `None` on other kinds.
+    /// for lowerings); `None` on other kinds.
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// It carries a request, a purge or a release (`Header::purge`; `retention::lasting`).
     pub purges: bool,
@@ -1494,18 +1494,18 @@ impl Core {
     }
 
     /// Held valid keyset `e` of role `r` of actor `m` (spec/crypto.md §4, Held keyset): a valid
-    /// body of it noted (`Indexes::keysets`), and the demotions it carries held here (Carried
-    /// demotions; not the left-out causes it records, which count unheld): until then it counts
+    /// body of it noted (`Indexes::keysets`), and the lowerings it carries held here (Carried
+    /// lowerings; not the left-out causes it records, which count unheld): until then it counts
     /// as not arrived, so nothing seals to it, finds a box stale by it, or descends through it.
     pub(crate) fn keyset(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Option<&HeldKeyset> {
         let k = (*m, r, *e);
         self.ix.keysets.get(&k).filter(|v| self.carried_held(v))
     }
 
-    /// Whether this node holds the demotions keyset `v` carries: the grant writes of each commit
-    /// it carries (`HeldKeyset::demotions`).
+    /// Whether this node holds the lowerings keyset `v` carries: the grant writes of each commit
+    /// it carries (`HeldKeyset::lowerings`).
     fn carried_held(&self, v: &HeldKeyset) -> bool {
-        v.demotions.iter().all(|c| self.ix.held.grant_commit(c).is_some())
+        v.lowerings.iter().all(|c| self.ix.held.grant_commit(c).is_some())
     }
 
     /// Whether this node holds left-out cause `c` (spec/crypto.md §4, Left out; Carried): its
@@ -2046,7 +2046,7 @@ impl Core {
     }
 
     /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
-    /// write of the current ones turned invalid: a demotion's invalid body would stop every
+    /// write of the current ones turned invalid: a lowering's invalid body would stop every
     /// snapshot's frontier for its session below it for good (spec/sync-compaction.md §2), so what this
     /// node writes after a grant again starts a session with no such hole. The plain nonce's
     /// count steps by one (`nonce_count`, no random draw), so `own_plain` recognises every
@@ -2803,7 +2803,7 @@ fn then<T, U>(r: Result<T>, f: impl FnOnce() -> Result<U>) -> Result<T> {
 /// The transaction's end, steps 1 and 2 (notes/engine.md): the flows while their writes bring
 /// things into the node closure.
 fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
-    // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
+    // explicit lowerings applied get this node's addenda (spec/permissions.md §5.2),
     // on what the node closure holds as this transaction leaves it (a node writes only
     // what it holds, spec/sync-set.md §2 Writing). The flows' own writes may bring
     // things into the node closure (an addendum makes the content it vouches for
@@ -3942,7 +3942,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, g));
-        failing(&mut lp.peers[0], &mut failed, |e| e.demote(&g, &crate::flows::Demotion { holder: b, new: None, retain: None }));
+        failing(&mut lp.peers[0], &mut failed, |e| e.lower(&g, &crate::flows::Lowering { holder: b, new: None, retain: None }));
         // received in reverse: most wait for what they depend on, then apply together
         // what g's sync ID carries
         let mut pks = lp.packages_of(0, &g).unwrap();

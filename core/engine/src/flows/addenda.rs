@@ -1,9 +1,9 @@
 //! Addenda (spec/permissions.md §5.2 Addenda, Writing): a witness's writes to a removal for the
-//! content of a demoted node it received and the remover had not, written unasked by one state
-//! rule. For each explicit demotion R makes below write (below admin, for admin-only content) in
-//! this node's view (R's own node included), the content commits of the demoted node in R's
+//! content of a lowered node it received and the remover had not, written unasked by one state
+//! rule. For each explicit lowering R makes below write (below admin, for admin-only content) in
+//! this node's view (R's own node included), the content commits of the lowered node in R's
 //! window (`window`: received by R's `ts` and before R), not listed by its frontier, on each thing
-//! N it is demoted on, are its candidates (`gather`); while one of them is one an
+//! N it is lowered on, are its candidates (`gather`); while one of them is one an
 //! addendum this node wrote now would vouch for and no counting addendum of its own vouches for
 //! it, it owes one addendum on N keyed by R listing every candidate (`unvouched`, `may_vouch`), written once
 //! N is in its node closure and this node may write there (`decide`).
@@ -421,7 +421,7 @@ fn write_entry(tx: &mut Tx<'_>, n: Tid, r: &CommitId, lists: BTreeSet<CommitId>)
 
 /// What a judgement of removal `r` at this node (account `me`) gathers (`Gathered`); `None`: it
 /// never owes (not held, not a role commit with a frontier). `count`: counts the commits scanned.
-/// The candidates (spec/permissions.md §5.2 Addenda, Writing): for each explicit demotion R makes
+/// The candidates (spec/permissions.md §5.2 Addenda, Writing): for each explicit lowering R makes
 /// in this node's view of a node X other than this one below write on a thing N, X's plain
 /// content commits on N or acting for N (no role-class or admin-only part), and for each below
 /// admin, X's commits with admin-only content on N that is not role-class, ordered before R,

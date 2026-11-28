@@ -57,7 +57,7 @@ pub struct CommitBuilder {
     pub aspects: Vec<AspectWrite>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
-    /// The frontier of an explicit demotion, its commit IDs ascending and distinct (spec/permissions.md §5).
+    /// The frontier of an explicit lowering, its commit IDs ascending and distinct (spec/permissions.md §5).
     pub frontier: Option<std::sync::Arc<[CommitId]>>,
     /// The header's blind (spec/crypto.md §7): given when taken before the build (a rotation's
     /// departs mark names it), else drawn at build.

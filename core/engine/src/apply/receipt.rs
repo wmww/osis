@@ -1,4 +1,4 @@
-//! Receipts (spec/permissions.md §5.1, notes/removal.md): what a demotion's
+//! Receipts (spec/permissions.md §5.1, notes/removal.md): what a lowering's
 //! frontier lists, by commit ID only. A held commit counts as received at its meta's receipt
 //! time. Pending and parked commits are not received; snapshot frontiers and `Absorbed` are no
 //! receipts (spec/crdt.md §8).
@@ -10,20 +10,20 @@ use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Engine {
-    /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
-    /// per aspect the scope puts in question and per demoted node, that node's commits this
+    /// The frontier a lowering stamped now must embed (spec/permissions.md §5.1), by commit ID:
+    /// per aspect the scope puts in question and per lowered node, that node's commits this
     /// node received by `as_of` (at their meta's receipt time; bodies held, dropped or compacted
     /// alike; memory commits as durable ones, a forgotten one not received); and, where it falls
     /// below write, its held commits acting for that thing; and every purge request whose right
-    /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
+    /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only. A lowering stamps it as
     /// of now; an earlier `as_of` gives the frontier as of then.
-    pub fn frontier(&mut self, scope: &DemotionScope, as_of: Time) -> Result<Frontier> {
+    pub fn frontier(&mut self, scope: &Loweringscope, as_of: Time) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)
     }
 
     /// `frontier_and_requests` fitted to the list bound (`fit`): what is left out of content the
-    /// demoter's own addenda list instead.
-    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: Time, keep: &BTreeSet<CommitId>) -> Result<Frontier> {
+    /// lowerer's own addenda list instead.
+    pub(crate) fn frontier_fitted(&mut self, scope: &Loweringscope, as_of: Time, keep: &BTreeSet<CommitId>) -> Result<Frontier> {
         let (mut f, content, requests) = self.frontier_and_requests(scope, as_of)?;
         f.commits.extend(keep.iter().copied());
         let out: Vec<CommitId> = content.into_iter().chain(requests).filter(|c| !keep.contains(c)).collect();
@@ -31,10 +31,10 @@ impl Engine {
         Ok(f)
     }
 
-    /// The (demoted node, thing, aspect) triples `scope` puts in question (spec/permissions.md
+    /// The (lowered node, thing, aspect) triples `scope` puts in question (spec/permissions.md
     /// §5.1): role-class and admin-only (`^`) aspects for a fall below admin, every aspect for a
     /// fall below write.
-    fn scope_aspects(&self, scope: &DemotionScope) -> Vec<(Tid, Tid, Ak)> {
+    fn scope_aspects(&self, scope: &Loweringscope) -> Vec<(Tid, Tid, Ak)> {
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
         for (node, things) in &scope.roles {
@@ -52,14 +52,14 @@ impl Engine {
         aspects
     }
 
-    /// The demoter's own cover (spec/permissions.md §5.1, Own cover): the frontier lists every
-    /// received commit of the demoted nodes this node still holds, so only what it no longer
+    /// The lowerer's own cover (spec/permissions.md §5.1, Own cover): the frontier lists every
+    /// received commit of the lowered nodes this node still holds, so only what it no longer
     /// holds the ID of needs another word. For each aspect `scope` puts in question whose state
-    /// holds a live write of a demoted node that stands only through a cover (a session write
+    /// holds a live write of a lowered node that stands only through a cover (a session write
     /// of the node, or a commit-form write, whose commit is not held here: forgotten under a
     /// cover, or never received), this node writes a fresh compaction snapshot from its whole
     /// state, which the frontier names. An aspect this node may not snapshot writes none.
-    pub(crate) fn own_cover(&mut self, scope: &DemotionScope) -> Result<BTreeSet<CommitId>> {
+    pub(crate) fn own_cover(&mut self, scope: &Loweringscope) -> Result<BTreeSet<CommitId>> {
         let mut by_aspect: BTreeMap<(Tid, Ak), BTreeSet<Tid>> = BTreeMap::new();
         for (node, t, ak) in self.scope_aspects(scope) {
             // an own cover is a content snapshot (spec/wire.md §4 field 14)
@@ -86,7 +86,7 @@ impl Engine {
     /// `frontier`, the plain-content commits it lists (what addenda may list, received last
     /// first) and the requests it lists (received last first): what `fit` leaves out when it is
     /// over the list bound, in that order.
-    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: Time) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
+    pub(crate) fn frontier_and_requests(&mut self, scope: &Loweringscope, as_of: Time) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
         let aspects = self.scope_aspects(scope);
         self.run(|tx| {
@@ -129,8 +129,8 @@ impl Engine {
 
 /// Leaves out of frontier `f` as many of `out` (in order) as it takes to fit `max` encoded bytes
 /// (spec/permissions.md §5.1): first the plain-content commits received last, which the
-/// demoter's own addenda list instead (`flows::addenda`), then the purge requests received last,
-/// each losing its right, so that requests never make a role holder impossible to demote (a
+/// lowerer's own addenda list instead (`flows::addenda`), then the purge requests received last,
+/// each losing its right, so that requests never make a role holder impossible to lower (a
 /// hostile holder's flood is what it received last). What is over `max` without them stays over:
 /// `build` refuses it.
 pub(crate) fn fit(f: &mut Frontier, out: &[CommitId], max: usize) {
@@ -179,14 +179,14 @@ mod tests {
 /// What a lowering puts in question, per signer: the things its commits resting on the lowered
 /// grants write (`scope_of`).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct DemotionScope {
+pub struct Loweringscope {
     /// Signer -> things whose role-class and admin-only aspects the frontier lists its commits on.
     pub roles: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Signer -> things on whose every aspect the frontier lists its commits.
     pub content: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
-impl DemotionScope {
+impl Loweringscope {
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty() && self.content.is_empty()
     }
@@ -202,8 +202,8 @@ impl DemotionScope {
 /// there along other paths, which a list names to no effect.
 ///
 /// A key's grant (k, S) holds up only commits signed by k as S (its key hop): their signer is S.
-pub(crate) fn scope_of(core: &Core, grants: &[(osis_base::Holder, Tid)]) -> DemotionScope {
-    let mut scope = DemotionScope::default();
+pub(crate) fn scope_of(core: &Core, grants: &[(osis_base::Holder, Tid)]) -> Loweringscope {
+    let mut scope = Loweringscope::default();
     for (holder, target) in grants {
         for c in core.timelines().paths().resting(holder, target) {
             let Some(m) = core.ix.commits.get(&c) else { continue };

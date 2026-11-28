@@ -122,7 +122,7 @@ pub enum DiagnosticKind {
     /// could not be tightened (the `osis` file store).
     Storage,
     /// A commit of this node's turned invalid after it was written: a required retention it had
-    /// not seen (spec/commits.md §5), a demotion. Its writes no longer read, and nothing re-sends
+    /// not seen (spec/commits.md §5), a lowering. Its writes no longer read, and nothing re-sends
     /// them (`commit`: it, `tids`: its things).
     OwnWriteInvalid,
     /// A read found a link whose value it cannot read: a blob of its tree not held (not fetched

@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     // spec/sync-compaction.md §1 (trigger): a writer whose held bodies of an aspect passed the trigger while
-    // it could not write (demoted to reader) compacts them once its write is granted again, with
+    // it could not write (lowered to reader) compacts them once its write is granted again, with
     // no write of the aspect between, and so after a restart in between. The grant weighs only
     // the aspect owed: another aspect of the thing, weighed while Bob could write, weighs nothing
     // (after the restart it is owed too: an open owes every aspect of a thing it may not write).
@@ -1267,7 +1267,7 @@ mod tests {
             }
             lp.sync_all().unwrap();
             lp.advance(10);
-            lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: b, new: Some(grant(Role::Read)), retain: None }).unwrap();
+            lp.peers[0].engine.lower(&t, &crate::flows::Lowering { holder: b, new: Some(grant(Role::Read)), retain: None }).unwrap();
             lp.sync_all().unwrap();
             let l = lp.peers[1].engine.compaction_load().unwrap().into_iter().find(|l| l.ak == m_ak).unwrap();
             assert!(l.bodies >= 8 && l.held > FACTOR * l.snapshot + l.largest, "over the trigger: {l:?}");

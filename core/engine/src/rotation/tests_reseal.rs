@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use super::tests::{commit_ids, grant, granted, newest_read, rotate_leaving_out, send_skipping};
 use crate::Mutation;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::{LocalPeer, SealedPackage};
 use crate::sync::HeldBlob;
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
@@ -36,17 +36,17 @@ fn reads(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
     matches!(lp.peers[i].engine.get(&g, &x()).unwrap(), Some(Value::Map(m)) if m.contains_key(&Value::Str(k.into())))
 }
 
-/// The shape above, `demoted`: A first demotes a2 to write (D), which only A holds, so W
+/// The shape above, `lowered`: A first lowers a2 to write (D), which only A holds, so W
 /// applies nowhere D is held. Returns the peers, g, W's commits, e_R, w and R's sealed entry
 /// of w (the encryption it logs).
-fn shape(demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
-    shape_of(5, demoted)
+fn shape(lowered: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
+    shape_of(5, lowered)
 }
 
 /// `shape` among `n` peers (those past V granted nothing): built once per process, a copy each call.
-fn shape_of(n: usize, demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
-    let (lp, (g, w_commits, e_r, w, entry)) = LocalPeer::cached(&format!("rotation::tests_reseal::shape/{n}/{demoted}"), || {
-        let (lp, g, w_commits, e_r, w, entry) = build_shape(n, demoted);
+fn shape_of(n: usize, lowered: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
+    let (lp, (g, w_commits, e_r, w, entry)) = LocalPeer::cached(&format!("rotation::tests_reseal::shape/{n}/{lowered}"), || {
+        let (lp, g, w_commits, e_r, w, entry) = build_shape(n, lowered);
         (lp, (g, w_commits, e_r, w, entry))
     });
     (lp, g, w_commits, e_r, w, entry)
@@ -60,14 +60,14 @@ fn shape_at_v() -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, Comm
     (lp, g, w_commits, e_r, w, entry)
 }
 
-fn build_shape(n: usize, demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
+fn build_shape(n: usize, lowered: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
     let (mut lp, g, tids) = granted(n, &[(A2, Role::Admin), (M, Role::Read), (R, Role::Admin), (V, Role::Admin)]);
-    if demoted {
-        lp.peers[A].engine.demote(&g, &Demotion { holder: tids[A2], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    if lowered {
+        lp.peers[A].engine.lower(&g, &Lowering { holder: tids[A2], new: Some(grant(Role::Write)), retain: None }).unwrap();
     }
     lp.peers[A2].clock.advance(5_000);
     let before = commit_ids(&mut lp, A2);
-    lp.peers[A2].engine.demote(&g, &Demotion { holder: tids[M], new: None, retain: None }).unwrap();
+    lp.peers[A2].engine.lower(&g, &Lowering { holder: tids[M], new: None, retain: None }).unwrap();
     let w_commits: BTreeSet<CommitId> = commit_ids(&mut lp, A2).difference(&before).copied().collect();
     lp.sync(A2, R).unwrap();
     lp.peers[R].clock.advance(10_000);
@@ -178,8 +178,8 @@ fn snapshot_without_the_removal_leaks_nothing_spec_crypto_5() {
     assert!(!reads(&mut lp, M, g, "w"));
 }
 
-// spec/requirements.md Permissions (Limit: a removal voided by its author's concurrent demotion),
-// spec/crypto.md §5 (Passing on): A demoted a2 (D) before W, so wherever D is held W applies
+// spec/requirements.md Permissions (Limit: a removal voided by its author's concurrent lowering),
+// spec/crypto.md §5 (Passing on): A lowered a2 (D) before W, so wherever D is held W applies
 // nothing and M reads on; e_R's names are met nowhere D is. V, holding D and e_R's box, reads R's
 // write but neither seals it nor snapshots it under its own epoch, which M holds: in a world where
 // an unseen re-grant of a2 makes W apply, M was removed. Also when V had established e_R and
@@ -260,8 +260,8 @@ fn reseal_never_hands_m_the_write_randomized_plain_spec_crypto_5() {
             s ^= s << 17;
             s & 1 == 1
         };
-        let demoted = coin();
-        let (mut lp, g, w_commits, e_r, w, entry) = shape(demoted);
+        let lowered = coin();
+        let (mut lp, g, w_commits, e_r, w, entry) = shape(lowered);
         let junk = put(&mut lp, A, g, "junk");
         let send_w = |lp: &mut LocalPeer| {
             for pk in lp.packages_for(A2, V).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
@@ -272,7 +272,7 @@ fn reseal_never_hands_m_the_write_randomized_plain_spec_crypto_5() {
         if w_first {
             send_w(&mut lp);
         }
-        let d_first = demoted && coin();
+        let d_first = lowered && coin();
         if d_first {
             lp.sync(A, V).unwrap();
         }
@@ -305,7 +305,7 @@ fn reseal_never_hands_m_the_write_randomized_plain_spec_crypto_5() {
             if step == 0 && entry_late {
                 lp.deliver_sealed(V, &entry).unwrap();
             }
-            if step == 1 && demoted && !d_first {
+            if step == 1 && lowered && !d_first {
                 lp.sync(A, V).unwrap();
             }
         }
@@ -740,7 +740,7 @@ fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
     lp.sync_all().unwrap();
     lp.peers[A2].clock.advance(5_000);
     let before = commit_ids(&mut lp, A2);
-    lp.peers[A2].engine.demote(&g, &Demotion { holder: tids[M], new: None, retain: None }).unwrap();
+    lp.peers[A2].engine.lower(&g, &Lowering { holder: tids[M], new: None, retain: None }).unwrap();
     let w_commits: BTreeSet<CommitId> = commit_ids(&mut lp, A2).difference(&before).copied().collect();
     lp.sync(A2, R).unwrap();
     lp.peers[R].clock.advance(10_000);
@@ -786,7 +786,7 @@ fn a_wrap_waits_for_a_rotation_covering_a_known_removal_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
     let c0 = put(&mut lp, 0, g, "before");
     lp.sync(0, 1).unwrap();
-    let removal = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap().commits[0];
+    let removal = lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap().commits[0];
     super::tests::deliver_without_secrets(&mut lp, 0, 1, g);
     assert!(lp.peers[1].engine.holds_commit(&removal));
     let parts: Vec<usize> = lp.peers[1].engine.body(&c0).unwrap().unwrap().parts;

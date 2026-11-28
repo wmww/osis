@@ -539,7 +539,7 @@ fn a_fallen_purge_brings_back_a_write_its_snapshot_left_out_spec_commits_5() {
     lp.peers[0].engine.grant(&t, &w, &g(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    let lower = lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: w, new: Some(g(Role::Write)), retain: None }).unwrap().commits;
+    let lower = lp.peers[0].engine.lower(&t, &crate::flows::Lowering { holder: w, new: Some(g(Role::Write)), retain: None }).unwrap().commits;
     lp.advance(1_000);
     let mut made = Vec::new();
     for v in ["v1", "SECRET"] {

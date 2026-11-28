@@ -55,7 +55,7 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
 
 /// A `keys.0` body read: the keysets it writes, typed (whole keysets: a rotation replaces the
 /// field), each as noted (`KeysetRec`: its role, epoch, listed epochs, KEM key (suite 1), names
-/// digest, left-out keysets and carried demotions), and the box records it puts (`SealedRec`).
+/// digest, left-out keysets and carried lowerings), and the box records it puts (`SealedRec`).
 #[derive(Clone)]
 pub(crate) struct KeysBody {
     pub write: KeysWrite,
@@ -77,20 +77,20 @@ impl KeysBody {
                     _ => None,
                 };
                 let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|(x, causes)| Some((m.0, osis_keys::aspects::from_schema(x).ok()?, causes.iter().copied().collect())))).collect();
-                let mut demotions: Vec<CommitId> = ks.demotions.iter().copied().collect();
-                if ks.demotes {
+                let mut lowerings: Vec<CommitId> = ks.lowerings.iter().copied().collect();
+                if ks.lowers {
                     // its rotation commit: the commit its write names (a role commit is commit
                     // form, spec/crdt.md §2.1), a snapshot's copy by its stamps
                     let f = field(body, osis_keys::aspects::keyset_field(*role));
-                    demotions.extend(f.into_iter().flat_map(Fragment::live_writes).filter_map(|(d, _)| match d.src.kind() {
+                    lowerings.extend(f.into_iter().flat_map(Fragment::live_writes).filter_map(|(d, _)| match d.src.kind() {
                         osis_crdt::SourceKind::Commit(c) => Some(*c),
                         _ => None,
                     }));
-                    demotions.sort();
-                    demotions.dedup();
+                    lowerings.sort();
+                    lowerings.dedup();
                 }
                 let claim = ks.claim.as_ref().and_then(|x| osis_keys::aspects::from_schema(x).ok());
-                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions, claim })
+                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, lowerings, claim })
             })
             .collect();
         // per role, the keyset the body writes and the commits that wrote it (a delta's: its own
@@ -229,7 +229,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         for (m, x, causes) in &k.left_out {
             held.left_out.entry(*m).or_default().entry(*x).or_default().extend(causes.iter().copied());
         }
-        held.demotions.extend(k.demotions.iter().copied());
+        held.lowerings.extend(k.lowerings.iter().copied());
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
             core.touch();
@@ -1022,7 +1022,7 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
-    use crate::flows::Demotion;
+    use crate::flows::Lowering;
 
     /// A thing whose mint admin is `admin`, made by peer `i`, held by every peer.
     fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
@@ -1253,7 +1253,7 @@ mod tests {
         lp.peers[0].engine.grant(&t, &c, &admin).unwrap();
         lp.sync(0, 2).unwrap();
         lp.sync(1, 2).unwrap();
-        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&t, &Lowering { holder: b, new: None, retain: None }).unwrap();
         lp.peers[2].engine.rotate_boxing_only(&[t], &[Role::Read], &[a, b, c]).unwrap().expect("rotated");
         let e2 = lp.peers[2].engine.epochs(&t).unwrap().read.newest().unwrap();
         for from in [0, 2] {
@@ -1288,7 +1288,7 @@ mod tests {
             let grant = |role| ct::Grant { role, until: None, may_grant: false, retain: false, floor: None };
             lp.peers[0].engine.grant(&t, &w, &grant(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &grant(Role::Read)).unwrap();
-            lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).unwrap();
+            lp.peers[0].engine.lower(&t, &Lowering { holder: m, new: None, retain: None }).unwrap();
             let e0 = lp.peers[0].engine.epochs(&t).unwrap();
             let e = e0.read.newest().unwrap();
             let genuine = e0.read.secret(&e).unwrap().secret().clone();
@@ -1318,7 +1318,7 @@ mod tests {
 
     fn remove(lp: &mut LocalPeer, t: Tid) {
         let b = lp.peers[1].engine.tid();
-        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&t, &Lowering { holder: b, new: None, retain: None }).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None);
     }
@@ -1399,7 +1399,7 @@ mod tests {
         let grant = ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &grant).unwrap();
         lp.sync(0, 1).unwrap();
-        let removal = lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+        let removal = lp.peers[0].engine.lower(&t, &Lowering { holder: b, new: None, retain: None }).unwrap();
         lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
         let regrant = *lp.peers[0].engine.grant(&t, &b, &grant).unwrap().commits.last().unwrap();
         let pk = lp.peers[0].engine.package(&regrant).unwrap().unwrap();
@@ -1478,8 +1478,8 @@ mod tests {
     }
 
     // spec/crypto.md §4 (Reading-only secrets): a box opens whether or not its commit counts. Admin
-    // A of T, demoted by T's mint admin O, rotates T's read role; writer W holds the rotation
-    // before the demotion and writes under A's epoch. Reader R and O hold the demotion first, so
+    // A of T, lowered by T's mint admin O, rotates T's read role; writer W holds the rotation
+    // before the lowering and writes under A's epoch. Reader R and O hold the lowering first, so
     // A's rotation is invalid on arrival there, yet W's write, sealed as a sync ID carries it,
     // opens and reads by value at both.
     #[test]
@@ -1494,9 +1494,9 @@ mod tests {
         lp.peers[o].engine.grant(&t, &tids[w], &grant(Role::Write)).unwrap();
         lp.peers[o].engine.grant(&t, &tids[r], &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        lp.peers[o].engine.demote(&t, &Demotion { holder: tids[a], new: None, retain: None }).unwrap();
+        lp.peers[o].engine.lower(&t, &Lowering { holder: tids[a], new: None, retain: None }).unwrap();
         lp.sync(o, r).unwrap();
-        // A's clock runs ahead: its rotation is stamped after its demotion
+        // A's clock runs ahead: its rotation is stamped after its lowering
         lp.peers[a].clock.advance(120_000);
         let rot = lp.peers[a].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
         send(&mut lp, a, w, &[rot]);
@@ -1638,7 +1638,7 @@ mod tests {
         assert!(below.iter().all(|e| read(&lp, n).secret(e).is_none()), "N holds no read secret of T");
         let ids = |lp: &LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().collect::<std::collections::BTreeSet<_>>();
         let before = ids(&lp, o);
-        lp.peers[o].engine.demote(&t, &Demotion { holder: tids[a], new: None, retain: None }).unwrap();
+        lp.peers[o].engine.lower(&t, &Lowering { holder: tids[a], new: None, retain: None }).unwrap();
         let dem: Vec<CommitId> = ids(&lp, o).difference(&before).copied().collect();
         send(&mut lp, o, n, &dem);
         // A's clock runs ahead: what it writes is stamped after its removal
@@ -1673,7 +1673,7 @@ mod tests {
         lp.peers[0].engine.grant(&g, &y, &grant(Role::Read)).unwrap();
         let t = thing_of(&mut lp, 0, g);
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&g, &Lowering { holder: a, new: None, retain: None }).unwrap();
         // A's clock runs ahead: its grant is stamped after its removal
         lp.peers[1].clock.advance(120_000);
         lp.peers[1].engine.grant(&t, &x, &grant(Role::Read)).unwrap();
@@ -1737,7 +1737,7 @@ mod tests {
         let t = thing_of(&mut lp, 0, g);
         lp.sync_all().unwrap();
         let before: std::collections::BTreeSet<CommitId> = lp.peers[2].engine.commit_ids().into_iter().collect();
-        lp.peers[2].engine.demote(&g, &Demotion { holder: c, new: None, retain: None }).unwrap();
+        lp.peers[2].engine.lower(&g, &Lowering { holder: c, new: None, retain: None }).unwrap();
         let leave: Vec<CommitId> = lp.peers[2].engine.commit_ids().into_iter().filter(|x| !before.contains(x)).collect();
         send(&mut lp, 2, 0, &leave);
         lp.peers[0].engine.ensure_rotated(&g).unwrap();

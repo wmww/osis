@@ -8,7 +8,7 @@ use crate::common;
 use crate::flows::{grant_of, follow, people, spread, thing_of};
 use common::*;
 use osis_base::{Role, Tid};
-use osis_engine::flows::{Demotion, LinkSpec};
+use osis_engine::flows::{Lowering, LinkSpec};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 use osis_perm::{At, Point};
@@ -28,7 +28,7 @@ fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: Tid, e: ct::Grant) {
 }
 
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) {
-    lp.peers[by].engine.demote(&t, &Demotion { holder, new: None, retain: None }).unwrap();
+    lp.peers[by].engine.lower(&t, &Lowering { holder, new: None, retain: None }).unwrap();
     lp.advance(1000);
     spread(lp);
 }

@@ -226,7 +226,7 @@ fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
 // away: the body is gone until fetched again (`Outcome::uncovered`), as for any such commit that had
 // not arrived at all. Not specific to a wait: the node could not tell before it came.
 #[test]
-fn delete_during_a_demotion_wait_counts_as_never_received_spec_sync_6() {
+fn delete_during_a_lowering_wait_counts_as_never_received_spec_sync_6() {
     let c = grant(6, MINT_ADMIN, 2, 1, None, Some(vec![10]));
     let (h, c) = covered(c);
     let o = evaluate(&h);

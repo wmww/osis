@@ -863,9 +863,9 @@ mod tests {
                     lp.peers[0].commit(m).unwrap();
                 }
                 _ => {
-                    // not seen by the demoter, so not vouched for
+                    // not seen by the lowerer, so not vouched for
                     let c = lp.peers[1].engine.tid();
-                    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
+                    lp.peers[0].engine.lower(&t, &crate::flows::Lowering { holder: c, new: None, retain: None }).unwrap();
                 }
             }
             lp.sync_all().unwrap();

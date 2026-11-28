@@ -793,7 +793,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     let bs = add(&mut lp, 1, t, &TAGS, "b".into());
     let pk = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == bs).unwrap();
     lp.deliver(0, &pk).unwrap();
-    let scope = osis_engine::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
+    let scope = osis_engine::Loweringscope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
@@ -968,8 +968,8 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
         let pk = lp.packages_for(1, 2).unwrap().into_iter().find(|p| p.id == bs).unwrap();
         lp.deliver(2, &pk).unwrap();
         lp.advance(1_000);
-        let d = osis_engine::flows::Demotion { holder: ids[1], new: None, retain: None };
-        let rv = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+        let d = osis_engine::flows::Lowering { holder: ids[1], new: None, retain: None };
+        let rv = *lp.peers[0].engine.lower(&t, &d).unwrap().commits.last().unwrap();
         lp.advance(1_000);
         let pk = lp.packages_for(0, 2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
         lp.deliver(2, &pk).unwrap();
@@ -1018,7 +1018,7 @@ fn addenda_wake(k: usize) -> Work {
         sent.push(set_grant(&mut lp.peers[1].engine, *q, alice, Some(grant(Role::Read)), None));
     }
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1_000);
     lp.peers[0].tick().unwrap();
     let pks: Vec<_> = lp.packages_for(1, 0).unwrap().into_iter().filter(|p| sent.contains(&p.id)).collect();
@@ -1211,7 +1211,7 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
 }
 
 /// B (1) gets the mint admin's writes of one purge-on-replace key only through k snapshots,
-/// each dropped at its cover once the next replaces it: B's demotion frontier for the mint
+/// each dropped at its cover once the next replaces it: B's lowering frontier for the mint
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
     let (mut lp, t) = shared_thing(2, &[Role::Write]);
@@ -1230,7 +1230,7 @@ fn dropped_frontier(k: usize) -> (usize, usize) {
         lp.peers[1].tick().unwrap();
     }
     let e = &mut lp.peers[1].engine;
-    let scope = osis_engine::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
+    let scope = osis_engine::Loweringscope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
     let now = e.now();
     let f = e.frontier(&scope, now).unwrap();
     (f.commits.len(), osis_base::encode(&f.to_value()).len())
@@ -1238,7 +1238,7 @@ fn dropped_frontier(k: usize) -> (usize, usize) {
 
 // spec/permissions.md §5.1 (a commit is listed whether A still holds its body, dropped it or compacted it), spec/permissions.md §5.1:
 // a node holding a writer's work only through k and 10k dropped snapshots lists each in its
-// demotion frontier by ID: linear, at most 40 B per snapshot.
+// lowering frontier by ID: linear, at most 40 B per snapshot.
 #[test]
 fn dropped_snapshot_frontier_is_linear_spec_commits_5() {
     let ((c1, b1), (c2, b2)) = (dropped_frontier(6), dropped_frontier(60));
@@ -1298,8 +1298,8 @@ fn long_aspect(n: usize) -> [Work; 3] {
     let (_, recv) = measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap());
     let x = lp.peers[2].engine.tid();
     let (_, fall) = measured_at(&mut lp, 0, |lp| {
-        let d = osis_engine::flows::Demotion { holder: x, new: None, retain: None };
-        lp.peers[0].engine.demote(&t, &d).unwrap()
+        let d = osis_engine::flows::Lowering { holder: x, new: None, retain: None };
+        lp.peers[0].engine.lower(&t, &d).unwrap()
     });
     [one, recv, fall]
 }
@@ -1628,7 +1628,7 @@ fn lost_forget(n: usize) -> (u64, u64) {
     }
     spread(&mut lp);
     assert!(lp.peers[1].engine.get(&d, &reg).unwrap().is_some());
-    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&d, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: None }).unwrap();
     spread(&mut lp);
     lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     for v in 0..n {
@@ -1668,7 +1668,7 @@ fn open_role_reads(n: usize) -> u64 {
     for _ in 0..n {
         lp.peers[0].engine.grant(&d, &ps[1], &grant_of(Role::Read)).unwrap();
         lp.advance(10);
-        lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&d, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: None }).unwrap();
         lp.advance(10);
     }
     let e = &mut lp.peers[0].engine;

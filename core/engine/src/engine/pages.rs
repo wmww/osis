@@ -3309,7 +3309,7 @@ mod tests {
             assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
             f.join(delta.clone());
             // a delta writing on a node of a broken cycle, before or after it joins, may change
-            // which grants are demoted (§6.2): its follow gives up and the placement is laid out anew
+            // which grants are lowered (§6.2): its follow gives up and the placement is laid out anew
             let cyc = on_cycle(&st, &delta);
             st.join(delta.clone());
             let cyc = cyc || on_cycle(&st, &delta);

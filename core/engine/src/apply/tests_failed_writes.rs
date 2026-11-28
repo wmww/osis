@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use crate::Mutation;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use crate::rotation::tests::grant;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -47,7 +47,7 @@ fn grant_by(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> Com
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     lp.advance(1000);
     let h = lp.peers[holder].engine.tid();
-    let id = *lp.peers[by].engine.demote(&t, &Demotion { holder: h, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let id = *lp.peers[by].engine.lower(&t, &Lowering { holder: h, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
 }

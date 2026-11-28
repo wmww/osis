@@ -4,7 +4,7 @@
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{grant, granted, put_on, reads_key};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
 use osis_schema::core_types as ct;
@@ -53,7 +53,7 @@ fn a_public_grant_boxes_open_at_each_rotation() {
     let first = current_read_sync(&lp, 0, g);
     assert_eq!(open_boxes(&mut lp, 0, g), first, "open at each current read and sync epoch, nothing above");
     assert_eq!(opened_by_anyone(&mut lp, g), first);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let after = current_read_sync(&lp, 0, g);
     assert!(after.iter().any(|x| x.0 == Role::Read && !first.contains(x)), "the reader's departure rotates read");
     assert_eq!(open_boxes(&mut lp, 0, g), after, "the rotation boxes the public open at the new epochs");
@@ -68,7 +68,7 @@ fn removing_the_public_rotates_it_out() {
     let (mut lp, g, _) = granted(2, &[(1, Role::Read)]);
     lp.peers[0].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     let before = current_read_sync(&lp, 0, g);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
     let after = current_read_sync(&lp, 0, g);
     assert!(after.iter().any(|x| x.0 == Role::Read && !before.contains(x)), "the public's departure rotates read");
     assert!(opened_by_anyone(&mut lp, g).is_disjoint(&after), "nothing boxed open at the new epochs");
@@ -139,7 +139,7 @@ fn a_replayed_open_box_is_resealed_over_once() {
     let s = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
     let (_, eo) = *old.iter().find(|x| x.0 == Role::Read).unwrap();
     let replay = s.boxes[&osis_keys::aspects::box_key(Tid::PUBLIC, Role::Read, &eo)].clone();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     let current = current_read_sync(&lp, 0, g);
     let (_, en) = *current.iter().find(|x| x.0 == Role::Read && !old.contains(x)).unwrap();
@@ -186,7 +186,7 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     lp.peers[2].engine.redeem_locator(&link, &tids[2]).unwrap();
     lp.sync_all().unwrap();
     assert!(reads_key(&mut lp, 2, g, "open"), "a stranger reads g by the link");
-    assert!(lp.peers[1].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other grant");
+    assert!(lp.peers[1].engine.lower(&g, &Lowering { holder: Tid::PUBLIC, new: None, retain: None }).is_err(), "W removes no other grant");
     lp.peers[1].clock.advance(1_000);
     lp.peers[1].engine.ensure_rotated(&g).unwrap();
     lp.sync_all().unwrap();
@@ -194,7 +194,7 @@ fn a_may_grant_holder_makes_a_thing_public_spec_permissions_2() {
     lp.peers[1].engine.grant(&g, &Tid::PUBLIC, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(public(&lp, 0), Some(Role::Read), "granted again by may-grant");
-    lp.peers[0].engine.demote(&g, &Demotion { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: Tid::PUBLIC, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(public(&lp, 1), None, "the admin removes it");
 }

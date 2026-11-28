@@ -485,7 +485,7 @@ mod tests {
     }
     // spec/permissions.md §2, §5.1 step 4: a late grant makes an may-grant holder an admin earlier,
     // so its write on another's grant turns from a may-grant grant (no audit) into an audited write
-    // (restores what the holder gave up, demotes): the grant's value is the same, the holder's
+    // (restores what the holder gave up, lowers): the grant's value is the same, the holder's
     // write falls, as where the grant came first.
     #[test]
     fn may_grant_grant_turned_audited_any_order_spec_perm_5_1() {
@@ -515,8 +515,8 @@ mod tests {
         let write = lp.peers[2].commit(m).unwrap().unwrap();
         let write = lp.peers[2].engine.package(&write).unwrap().unwrap();
         lp.advance(1000);
-        let left = crate::flows::Demotion { holder: h, new: None, retain: None };
-        let left = *lp.peers[2].engine.demote(&t, &left).unwrap().commits.last().unwrap();
+        let left = crate::flows::Lowering { holder: h, new: None, retain: None };
+        let left = *lp.peers[2].engine.lower(&t, &left).unwrap().commits.last().unwrap();
         let left = lp.peers[2].engine.package(&left).unwrap().unwrap();
         lp.deliver(1, &left).unwrap();
         lp.advance(1000);
@@ -801,7 +801,7 @@ mod keys_tests {
     use osis_schema::Codec;
 
     // spec/crypto.md §3: the deposit seed is an admin's to write. A writer's `keys.0` write of it
-    // is invalid: otherwise a writer (kept valid by its demoter's frontier after removal) chose
+    // is invalid: otherwise a writer (kept valid by its lowerer's frontier after removal) chose
     // the key every deposit to the thing is signed with.
     #[test]
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
@@ -985,7 +985,7 @@ mod keys_tests {
         lp.peers[0].engine.grant(&t, &p, &e(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &e(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, retain: None }).unwrap().commits;
+        let rot = lp.peers[1].engine.lower(&t, &crate::flows::Lowering { holder: r, new: None, retain: None }).unwrap().commits;
         lp.sync_all().unwrap();
         let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
         let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);

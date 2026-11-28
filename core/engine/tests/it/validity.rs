@@ -9,7 +9,7 @@ use osis_base::Classified;
 use osis_base::{Role, Tid, Value, Time};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Event, Ingested, Mutation};
-use osis_engine::DemotionScope;
+use osis_engine::Loweringscope;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -296,7 +296,7 @@ fn applied(r: Ingested) -> osis_base::CommitId {
 }
 
 /// Peer `i`'s frontier over `scope` as of now.
-fn frontier_now(lp: &mut LocalPeer, i: usize, scope: &DemotionScope) -> osis_schema::core_types::Frontier {
+fn frontier_now(lp: &mut LocalPeer, i: usize, scope: &Loweringscope) -> osis_schema::core_types::Frontier {
     let now = lp.peers[i].engine.now();
     lp.peers[i].engine.frontier(scope, now).unwrap()
 }
@@ -308,9 +308,9 @@ fn push_reader(lp: &mut LocalPeer, d: Tid, seed: u64) -> usize {
     lp.peers.len() - 1
 }
 
-/// Bob's demotion scope on `d`.
-fn of(b: Tid, d: Tid) -> DemotionScope {
-    DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) }
+/// Bob's lowering scope on `d`.
+fn of(b: Tid, d: Tid) -> Loweringscope {
+    Loweringscope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) }
 }
 
 // spec/permissions.md §5.1 (frontier; as commit ids, never counters), §5.2, Tess's decision
@@ -478,7 +478,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
 }
 
 // spec/commits.md §2: a role commit changes at most
-// one grant; a frontier needs a demotion. A writer refuses such a commit before it leaves.
+// one grant; a frontier needs a lowering. A writer refuses such a commit before it leaves.
 #[test]
 fn role_content_rules_spec_commits_2() {
     let (mut lp, d, b, c) = setup();
@@ -662,7 +662,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[0].engine.grant(&d, &c, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&d, &osis_engine::flows::Lowering { holder: b, new: None, retain: None }).unwrap();
     lp.advance(1_000);
     let grant = Value::Map(osis_base::ValueMap::from([(Value::Weak(c), grant(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
@@ -670,7 +670,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[2].receive(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&d, &osis_engine::flows::Lowering { holder: c, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
@@ -743,10 +743,10 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.1 (frontier: an admin-only write rests on the lowered hop): an
-// admin's `^` write the demoter had received stays valid when it demotes that admin to write;
+// admin's `^` write the lowerer had received stays valid when it lowers that admin to write;
 // one it had not received goes
 #[test]
-fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
+fn admin_only_write_covered_by_lowering_frontier_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     set_grant(&mut lp.peers[0].engine, d, b, Some(grant(Role::Admin)), None);
     lp.sync_all().unwrap();
@@ -756,7 +756,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     lp.advance(1_000);
     put(&mut lp, 1, d, &unseen, &s("offline"));
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&d, &osis_engine::flows::Lowering { holder: b, new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.get(&d, &seen).unwrap(), Some(s("received")), "{i}: a covered `^` write lost");
@@ -953,7 +953,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
 // fresh node receiving everything reads what Alice reads (Carol's snapshot gives nothing; the
 // writes come from their own commits).
 #[test]
-fn demoted_compactor_fresh_node_spec_perm_5_2() {
+fn lowered_compactor_fresh_node_spec_perm_5_2() {
     let (mut lp, d, _, c) = setup();
     let fresh = reader(&mut lp, 0, d, 5900);
     lp.peers.push(fresh);
@@ -1012,13 +1012,13 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
 // (function of the held set), spec/permissions.md §5.1: alike with Dave receiving Carol's write
 // inside "late" before her snapshot (dated after it, as spec/crdt.md §8 requires).
 #[test]
-fn entry_created_after_demotion_spec_perm_5_2() {
+fn entry_created_after_lowering_spec_perm_5_2() {
     for snapshot_first in [true, false] {
-        entry_created_after_demotion(snapshot_first);
+        entry_created_after_lowering(snapshot_first);
     }
 }
 
-fn entry_created_after_demotion(snapshot_first: bool) {
+fn entry_created_after_lowering(snapshot_first: bool) {
     let (mut lp, d, b, _) = setup();
     // Dave reads d
     push_reader(&mut lp, d, 6100);
@@ -1307,7 +1307,7 @@ fn roles_resets(lp: &mut LocalPeer, d: Tid, done: &osis_engine::flows::Done) -> 
 /// A grants B write and removes it `k` times on one thing: the entry resets of the last grant
 /// and the last removal.
 fn churn_resets(k: usize) -> (usize, usize) {
-    use osis_engine::flows::Demotion;
+    use osis_engine::flows::Lowering;
     let mut lp = net(2, 0);
     let ps = accounts(&mut lp);
     let mut m = Mutation::new();
@@ -1320,7 +1320,7 @@ fn churn_resets(k: usize) -> (usize, usize) {
         lp.advance(10);
         let g = lp.peers[0].engine.grant(&d, &ps[1], &grant(Role::Write)).unwrap();
         lp.advance(10);
-        let r = lp.peers[0].engine.demote(&d, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+        let r = lp.peers[0].engine.lower(&d, &Lowering { holder: ps[1], new: None, retain: None }).unwrap();
         last = (roles_resets(&mut lp, d, &g), roles_resets(&mut lp, d, &r));
     }
     last
@@ -1817,11 +1817,11 @@ fn commit_form_tag_compacted(lp: &mut LocalPeer, t: Tid) -> (osis_base::CommitId
 // spec/permissions.md §5.2 (an invalid s gives nothing), §5.1, spec/commits.md §5: a commit-form
 // commit C's body dropped (covered by the mint admin's snapshot), a snapshot then carrying an
 // extra element under `Commit(C)` never shows: a reader's (its author could not write the
-// aspect), and a writer's made after its author's demotion and backdated before it, whether the
-// demotion (frontier not listing it) or the snapshot arrived first (was issue
+// aspect), and a writer's made after its author's lowering and backdated before it, whether the
+// lowering (frontier not listing it) or the snapshot arrived first (was issue
 // snapshot-copy-residue (closed): one held set, two states).
 #[test]
-fn dropped_commit_dot_copy_by_reader_or_demoted_writer_changes_nothing_spec_perm_5_2() {
+fn dropped_commit_dot_copy_by_reader_or_lowered_writer_changes_nothing_spec_perm_5_2() {
     for role in [Role::Read, Role::Write] {
         let mut lp = net(4, 0);
         lp.sync_all().unwrap();
@@ -1848,7 +1848,7 @@ fn dropped_commit_dot_copy_by_reader_or_demoted_writer_changes_nothing_spec_perm
         lp.advance(1_000);
         let rv = set_grant(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default()));
         let rv_pk = package_for(&mut lp, 0, 2, rv);
-        // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
+        // peer 2: the snapshot first (valid then), then the lowering; peer 3: the other way round
         lp.peers[2].receive(&forged, Vec::new()).unwrap();
         lp.deliver(2, &rv_pk).unwrap();
         lp.deliver(3, &rv_pk).unwrap();
@@ -1856,7 +1856,7 @@ fn dropped_commit_dot_copy_by_reader_or_demoted_writer_changes_nothing_spec_perm
         for i in 2..4 {
             lp.peers[i].reexamine().unwrap();
         }
-        assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "demotion first");
+        assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "lowering first");
         assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "snapshot first");
     }
 }
@@ -1941,13 +1941,13 @@ fn a_readers_snapshot_changes_nothing_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.1 (frontier), §5.2 (compaction snapshot): Carol, a writer, compacts the
-// tags; Dave holds Bob's tag only inside her snapshot. Alice then demotes Carol: with a frontier
+// tags; Dave holds Bob's tag only inside her snapshot. Alice then lowers Carol: with a frontier
 // listing the snapshot (Alice had received it) Dave keeps Bob's tag; with one that does not, the
 // snapshot is stripped like Carol's other writes and Bob's tag goes at Dave (Alice, holding Bob's
-// commit, keeps it), whichever of the snapshot and the demotion Dave gets first, across a restart.
+// commit, keeps it), whichever of the snapshot and the lowering Dave gets first, across a restart.
 #[test]
-fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
-    for (covered, demote_first) in [(true, false), (true, true), (false, false), (false, true)] {
+fn lowered_compactor_snapshot_by_frontier_spec_perm_5_2() {
+    for (covered, lower_first) in [(true, false), (true, true), (false, false), (false, true)] {
         let (mut lp, d, b, c) = setup();
         add_tag(&mut lp, 0, d, "alice");
         add_tag(&mut lp, 1, d, "bob");
@@ -1970,7 +1970,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         let all = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), all, "Alice holds Bob's commit");
         let pks: Vec<_> = packages_reading(&mut lp, 0, 3, d).into_iter().filter(|p| !bob.contains(&p.id)).collect();
-        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if demote_first { p.id == snap } else { p.id == rv });
+        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if lower_first { p.id == snap } else { p.id == rv });
         for pk in early.iter().chain(&late) {
             lp.deliver(3, pk).unwrap();
         }
@@ -1978,7 +1978,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         assert!(lp.peers[3].engine.header(&snap).is_some() && lp.peers[3].engine.header(&rv).is_some());
         assert!(bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()), "Bob's commit is not held");
         let want = if covered { all.clone() } else { BTreeSet::from(["alice".to_string()]) };
-        let case = format!("covered {covered}, demotion first {demote_first}");
+        let case = format!("covered {covered}, lowering first {lower_first}");
         assert_eq!(tags(&mut lp, 3, d), want, "{case}");
         lp.peers[3].restart(6101).unwrap();
         assert_eq!(tags(&mut lp, 3, d), want, "{case}, after a restart");
@@ -2210,7 +2210,7 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
 // gives nothing until it arrives again; another gets the removals first (S2 invalid, S1 kept).
 // Once the first has S1 again, both read Bob's tag, also after a rebuild and a restart.
 #[test]
-fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
+fn coverer_lowered_after_cover_drop_alike_spec_perm_5_2() {
     for bob_held in [false, true] {
         let (mut lp, d, b, c) = setup();
         let mut obs = reader(&mut lp, 0, d, 0x5fa1);
@@ -2236,13 +2236,13 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
         let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
         let base: Vec<_> = pks.iter().filter(|p| p.id != s2 && !late.contains(&p.id)).cloned().collect();
         let mut got = Vec::new();
-        for (n, demote_first) in [false, true].into_iter().enumerate() {
+        for (n, lower_first) in [false, true].into_iter().enumerate() {
             let i = lp.peers.len();
             { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
             for p in &base {
                 lp.deliver(i, p).unwrap();
             }
-            if !demote_first {
+            if !lower_first {
                 lp.deliver(i, &pk(s2)).unwrap();
                 let e = &mut lp.peers[i].engine;
                 assert_eq!(e.covered(&s2, &s1, &d, &ak("t:tags.0")).unwrap(), Some(true), "S2 covers S1");
@@ -2251,7 +2251,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
             for id in &late {
                 lp.deliver(i, &pk(*id)).unwrap();
             }
-            if demote_first {
+            if lower_first {
                 lp.deliver(i, &pk(s2)).unwrap();
             } else {
                 // S1 gives nothing until fetched again
@@ -2262,9 +2262,9 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
             lp.peers[i].reexamine().unwrap();
             let t = tags(&mut lp, i, d);
             lp.peers[i].engine.rebuild_state(&d, &ak("t:tags.0")).unwrap();
-            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; demote first: {demote_first}, rebuilt");
+            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; lower first: {lower_first}, rebuilt");
             lp.peers[i].restart(0x5fa3 + n as u64).unwrap();
-            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; demote first: {demote_first}, restarted");
+            assert_eq!(tags(&mut lp, i, d), t, "Bob's commit held: {bob_held}; lower first: {lower_first}, restarted");
             got.push(t);
         }
         assert_eq!(got[1], BTreeSet::from(["bob".to_string()]), "Bob's commit held: {bob_held}; removal first");
@@ -2610,7 +2610,7 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2, spec/sync-compaction.md §1: as `coverer_demoted_after_cover_drop_alike_*`, with
+// spec/permissions.md §5.2, spec/sync-compaction.md §1: as `coverer_lowered_after_cover_drop_alike_*`, with
 // an older valid snapshot S0 of Alice's that lacks Bob's tag. S1 missing again (S2 invalid) is no
 // body S0 covers: a compactor judging it against S0 keeps it, so once fetched again it gives
 // Bob's tag as at a node that never dropped it.
@@ -3246,8 +3246,8 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
 }
 
-// spec/permissions.md §5.1: a commit with a delta on a thing the demoter does not hold is listed,
-// even when its part in question is droppable there (the demoter cannot judge the other delta).
+// spec/permissions.md §5.1: a commit with a delta on a thing the lowerer does not hold is listed,
+// even when its part in question is droppable there (the lowerer cannot judge the other delta).
 // Bob's one commit writes D and his own thing E; Alice gets only its D part, which Carol's
 // snapshot covers.
 #[test]
@@ -3668,7 +3668,7 @@ fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
 }
 
 // spec/crdt.md §5.7: a reopen forgets a deleted text element's char; the delete falling (its
-// author demoted with nothing listed) brings it back from its creation's body
+// author lowered with nothing listed) brings it back from its creation's body
 #[test]
 fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
     for reopen in [false, true] {
@@ -3726,7 +3726,7 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
             lp.sync_all().unwrap();
             lp.advance(DAY);
             let v5 = write(&mut lp, b, "v5");
-            let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+            let rm = lp.peers[a].engine.lower(&t, &osis_engine::flows::Lowering { holder: bob, new: None, retain: None }).unwrap().commits;
             let ts = |lp: &LocalPeer, i: usize, id| lp.peers[i].engine.header(id).unwrap().ts;
             assert!(rm.iter().all(|r| ts(&lp, a, r) == ts(&lp, b, &v5)), "v5 and the removal share a ts");
             if carol_first {
@@ -3782,7 +3782,7 @@ fn a_removed_writers_write_forged_at_the_removals_ts_is_lost_everywhere_spec_per
         lp.sync_all().unwrap();
         lp.advance(DAY);
         let mut unaware = lp.peers[b].copy().unwrap();
-        let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+        let rm = lp.peers[a].engine.lower(&t, &osis_engine::flows::Lowering { holder: bob, new: None, retain: None }).unwrap().commits;
         for _ in 0..3 {
             lp.sync_all().unwrap();
         }
@@ -3822,7 +3822,7 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
         lp.sync_all().unwrap();
         lp.advance(DAY);
         let mut unaware = lp.peers[b].copy().unwrap();
-        let rm = lp.peers[a].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap().commits;
+        let rm = lp.peers[a].engine.lower(&t, &osis_engine::flows::Lowering { holder: bob, new: None, retain: None }).unwrap().commits;
         for _ in 0..3 {
             lp.sync_all().unwrap();
         }
@@ -5005,7 +5005,7 @@ fn a_writes_path_follows_its_grants_and_their_ends_spec_wire_4() {
     set_grant(&mut lp.peers[0].engine, t, b, Some(grant(Role::Write)), None);
     lp.sync_all().unwrap();
     assert_eq!(write(&mut lp, "granted"), Vec::<Tid>::new(), "a shorter path granted");
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: b, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(write(&mut lp, "removed"), chain, "the used path removed");
 }

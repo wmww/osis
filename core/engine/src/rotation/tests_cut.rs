@@ -476,7 +476,7 @@ fn removed_member(b_cut: bool) -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<Epoch>, BT
     rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     let read = read_epochs(&lp, g);
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     rot(&mut lp, 0, g);
     let gone: BTreeSet<Epoch> = read_epochs(&lp, g).difference(&read).copied().collect();
     if b_cut {
@@ -674,7 +674,7 @@ fn low_floor_waits_for_the_names_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read)]);
     let read = read_epochs(&lp, g);
     let before = super::tests::commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &crate::flows::Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let removal: BTreeSet<osis_base::CommitId> = super::tests::commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[0].engine.grant_with(&g, &tids[3], &grant(Role::Read), History::None).unwrap();
     for pk in lp.packages_for(0, 1).unwrap() {

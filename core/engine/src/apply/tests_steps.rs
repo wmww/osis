@@ -7,7 +7,7 @@
 use crate::engine::journal::Journaled;
 use crate::engine::{Step, StepFault};
 use crate::events::{DiagnosticKind, Event};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use crate::{Engine, Mutation};
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -164,7 +164,7 @@ fn removal_setup() -> (LocalPeer, Tid, CommitId) {
     lp.sync(1, 2).unwrap();
     lp.advance(2000);
     let bob = lp.peers[1].engine.tid();
-    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r = *lp.peers[0].engine.lower(&t, &Lowering { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     (lp, t, r)
 }

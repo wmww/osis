@@ -185,7 +185,7 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
         let (mut w, t) = held(Role::Read);
         let bob = w.node(1).account.unwrap();
         let new = lowered.then_some(grant(Role::Sync));
-        w.write(0, |e| e.demote(&t, &osis_engine::flows::grants::Demotion { holder: bob, new, retain: None })).unwrap();
+        w.write(0, |e| e.lower(&t, &osis_engine::flows::grants::Lowering { holder: bob, new, retain: None })).unwrap();
         w.run();
         w.write(0, |e| e.grant(&t, &bob, &grant(Role::Read)).and_then(|_| e.signal_grant(&t, &bob, &[]))).unwrap();
         w.run();

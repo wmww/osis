@@ -161,7 +161,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | pages (`engine/pages.rs`) `PAGE_BYTES` 3 KiB (page target; a collection of two or more elements whose own bytes are above it pages: 0 a row per element, infinity a write rewrites its state), `GROUP` 32, run budget `max(1024)` rows of work per paged sequence, for a join's dry runs and an op's runs alike (their plans and follow work, an op run at least one; past it the join lays out anew, the op loads whole); `SCAN_PAGE` 256 (`engine/mod.rs`) | P | |
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB (`engine/large.rs`) | P | |
-| `MAX_LIST_BYTES` 64 MiB (format) | R (Tess's decision; past it an author's commit fails `TooLarge` and every receiver refuses it as bad input, so a demotion's frontier over about 1.9×10^6 IDs waits for frontier heads) | lists inline only / a hostile header holds unbounded memory |
+| `MAX_LIST_BYTES` 64 MiB (format) | R (Tess's decision; past it an author's commit fails `TooLarge` and every receiver refuses it as bad input, so a lowering's frontier over about 1.9×10^6 IDs waits for frontier heads) | lists inline only / a hostile header holds unbounded memory |
 | `MAX_READ` 1 GiB (`engine/large.rs`) | R (sign-off; larger values stream only; bounds canonical bytes and as much again decoded, notes/decode-bounds.md) | |
 | `ENTRY_CHARGE` 1024, `FACTOR` 2 (`retention/compact.rs`, the trigger for durable and ephemeral aspects), `MAX_DELIVERED` 2^16 (`ephemeral/signal.rs`) | P/R (commented) | |
 | `PART_OVERHEAD` 2048 (`apply/memory.rs`, node cap charge per held part) | R, measured estimate (commented; `memory::eph_decoded_memory`) | |

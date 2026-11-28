@@ -5,7 +5,7 @@
 
 use crate::flows::{grant_of, people, reopen, send_carried, spread, thing_of};
 use osis_base::{CommitId, Role, Tid};
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Event;
 use osis_schema::core_types as ct;
@@ -61,10 +61,10 @@ fn fight_built(n: usize) -> Fight {
     // b's clock runs ahead; a has not seen b's removal when it writes its own
     lp.peers[1].clock.advance(5000);
     let before = ids(&lp, 1);
-    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap();
     let w = new_ids(&lp, 1, &before);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: b, new: None, retain: None }).unwrap();
     let r = new_ids(&lp, 0, &before);
     Fight { lp, a, b, t, w, r }
 }
@@ -217,14 +217,14 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     let e = new_ids(&lp, 0, &before);
     lp.peers[0].clock.advance(5000);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: b, new: None, retain: None }).unwrap();
     let p = new_ids(&lp, 0, &before);
     send_carried(&mut lp, 0, 2, &p);
     let adm = |lp: &LocalPeer| { let r = lp.peers[2].engine.roster(&t); (r.contains_key(&a), r.contains_key(&b)) };
     assert_eq!(adm(&lp), (true, true), "a's planted removal waits");
     lp.advance(1000);
     let before = ids(&lp, 1);
-    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap();
     let w = new_ids(&lp, 1, &before);
     send_carried(&mut lp, 1, 2, &w);
     assert_eq!(adm(&lp), (false, true));
@@ -256,7 +256,7 @@ fn a_removed_partys_grant_the_removal_does_not_list_falls_where_it_was_held_spec
     lp.advance(1000);
     let roles = |lp: &LocalPeer, i: usize| [x, k, l].map(|p| lp.peers[i].engine.core.role_now(&p, &t));
     assert_eq!(roles(&lp, 2), [Some(Role::Admin), Some(Role::Write), Some(Role::Write)], "W holds both grants");
-    lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: x, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
     assert_eq!(roles(&lp, 2), [None, Some(Role::Write), None], "at W: X removed, K's listed grant stands, L's falls");

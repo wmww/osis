@@ -1,12 +1,12 @@
 ------------------------------ MODULE Withdrawn ------------------------------
 (* Whether any rule passes on a withdrawn epoch's secret both safely and      *)
 (* live (spec/crypto.md §4 Unsuperseded and withdraw; notes/keys-establishment.md).*)
-(* A demotes admin a2 (D); a2, unaware, removes M                            *)
+(* A lowers admin a2 (D); a2, unaware, removes M                            *)
 (* (W); R, holding W alone, rotates read (Rot: e_R, naming W, boxing A, a2,   *)
 (* R, a3 and not M) and writes under it (a2 judges as A, M and N decide     *)
 (* nothing, so they are left out). R also grants N read (NG) later.    *)
 (* Worlds: "none"; "G": a3, holding D, re-granted a2 between D and W, so W    *)
-(* applies again; "X": a4 demoted A before D, voiding D, so W applies. a3 and *)
+(* applies again; "X": a4 lowered A before D, voiding D, so W applies. a3 and *)
 (* a4 may stay offline for good (their sends have no fairness), as may any    *)
 (* re-grant RG of M by A after W. A node passes e_R on (to M, to N) by Rule:  *)
 (*   "met"      e_R established (names met: W applies): the build;          *)
@@ -17,7 +17,7 @@
 (*   "joiners"  "met" for M; for N also where refuted (excluding by names). *)
 (* NoLeakM: M is never handed e_R where W applies in the world's commits and *)
 (* no valid re-grant follows it, but by a node holding a re-grant it judges   *)
-(* valid (an admin's grant concurrent with its own unseen demotion: a stated *)
+(* valid (an admin's grant concurrent with its own unseen lowering: a stated *)
 (* limit, spec/crypto.md §4 Boxes). LiveM: in world "none" (M a reader all    *)
 (* along) M gets e_R. LiveN: N, granted after, gets e_R.                     *)
 EXTENDS FiniteSets

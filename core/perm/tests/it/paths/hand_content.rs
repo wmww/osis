@@ -342,7 +342,7 @@ fn a_fallen_cover_takes_nothing_honest() {
 // ---- Disputes ----
 
 // spec/permissions.md §5.1 Trust set: two removals each undoing one of two removed keys' backdated
-// demotions of B (X's and N5's, after X removed N5 and H removed X) change nothing trusted alone,
+// lowerings of B (X's and N5's, after X removed N5 and H removed X) change nothing trusted alone,
 // so each is tried beside the other: at a node trusting nothing both are shown, and the walk and
 // the model agree on them and on the reading once both are chosen.
 #[test]
@@ -513,8 +513,8 @@ fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
 
 // spec/permissions.md §5.2: an admin-only delta is judged with admin in place of write: cut by a
 // fall from admin, vouched for only by an addendum whose path gives admin. X, admin on A, writes
-// admin-only content on T; H demotes X to write listing nothing; N's addendum (write on A) vouches
-// for nothing, B's (admin) does. X's plain write stays valid: the demotion is no cut below write.
+// admin-only content on T; H lowers X to write listing nothing; N's addendum (write on A) vouches
+// for nothing, B's (admin) does. X's plain write stays valid: the lowering is no cut below write.
 #[test]
 fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
     const KN: u32 = 4;

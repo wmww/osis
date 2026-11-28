@@ -971,9 +971,9 @@ fn sibling_world() -> (crate::harness::World, (osis_base::Tid, osis_base::SyncId
 #[test]
 fn a_removed_store_is_moved_past_a_step_rotating_more_than_its_removal_spec_sync_opens_6() {
     let (mut w, (t, s)) = sibling_world();
-    let removal = osis_engine::flows::grants::Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
+    let removal = osis_engine::flows::grants::Lowering { holder: w.node(1).account.unwrap(), new: None, retain: None };
     w.write(0, |e| {
-        e.demote(&t, &removal).unwrap();
+        e.lower(&t, &removal).unwrap();
         e.rotate_leaving_out(&t, &[osis_base::Role::Admin], &[]).unwrap().expect("an admin rotation");
     });
     w.run();
@@ -1001,8 +1001,8 @@ fn losing_sibling(admin: bool) {
     let fork = w.store(1).path(&s).unwrap().and_then(|p| p.steps.iter().rev().nth(1).map(|st| st.keys.delete));
     assert_eq!(fork != delete(&mut w, 1), admin, "node 1's head bears a new delete key alone by an admin rotation");
     // node 2 removes node 1 (C, a child of B)
-    let removal = osis_engine::flows::grants::Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
-    w.write(2, |e| e.demote(&t, &removal).unwrap());
+    let removal = osis_engine::flows::grants::Lowering { holder: w.node(1).account.unwrap(), new: None, retain: None };
+    w.write(2, |e| e.lower(&t, &removal).unwrap());
     w.run();
     w.heal();
     w.run();

@@ -157,7 +157,7 @@ fn a_node_that_may_rotate_rotates_before_writing_after_its_account_leaves_spec_c
     }
     lp.sync_all().unwrap();
     let before = lp.peers[0].engine.epochs(&t).unwrap().role(Role::Read).current();
-    let c = lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: Some(false) }).unwrap().commits[0];
+    let c = lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: a, new: None, retain: Some(false) }).unwrap().commits[0];
     assert!(lp.peers[0].engine.waiting_removals().contains(&c), "the leave waits to be held elsewhere");
     assert!(lp.peers[0].engine.encrypt_blocked(&t).unwrap(), "its leave holds back its encrypting under T");
     let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();

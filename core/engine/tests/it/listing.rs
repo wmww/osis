@@ -359,7 +359,7 @@ fn events_per_commit_exact() {
     let _ = pk;
     lp.peers[1].receive(&pp.bytes, pp.blobs.clone()).unwrap();
     assert_eq!(told_of(&mut lp.peers[1], d), vec![c], "the purged one only");
-    // Bob's writes turn invalid at a demotion listing none of them: each of them, and no other
+    // Bob's writes turn invalid at a lowering listing none of them: each of them, and no other
     let f = ct::Frontier { commits: BTreeSet::new() };
     lp.sync_all().unwrap();
     lp.peers[1].drain_events();
@@ -423,7 +423,7 @@ fn author_items_are_bounded_spec_wire_4() {
 // spec/permissions.md §6, spec/commits.md §5: a purge by author drops exactly the author's deltas
 // stamped before it, each only if the request holds the right over that delta at its own key. The
 // same in every arrival order of the delta, the setting
-// requiring its retention, the author's demotion and the request, a delta arriving after the
+// requiring its retention, the author's lowering and the request, a delta arriving after the
 // request falling under it; what another wrote and what the author writes later stay.
 #[test]
 fn purge_by_author_any_order_spec_perm_6() {
@@ -451,7 +451,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             lp.sync_all().unwrap();
             let rq = purge(&mut lp, who, PurgeItem::Author { tid: d, ak: reg(), author: ids[1] });
             let prq = pack(&mut lp, who, &rq);
-            // an honest demotion: it lists the delta and the request (spec/permissions.md §5.1)
+            // an honest lowering: it lists the delta and the request (spec/permissions.md §5.1)
             let f = ct::Frontier { commits: [c, rq].into_iter().collect() };
             let dm = set_grant(&mut lp.peers[0].engine, d, ids[1], Some(grant(Role::Read)), Some(f.clone()));
             let pd = pack(&mut lp, 0, &dm);

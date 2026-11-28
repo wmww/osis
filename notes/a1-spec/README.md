@@ -36,7 +36,7 @@ Every role-class commit the engine writes states one path in the clear (never th
 
 | commit (engine site) | path | oracle (roles-model `paths`) |
 |---|---|---|
-| grant, raise, removal, demotion by an admin, several holders under one frontier, a cut grant with its read rotation (`flows::grants::grant_history`, `demote_in`) | the signer's role on the target: admin (`role_with`, `path_with`) | `World::push` (members, `joins`); `a_write_by_descent_is_judged_along_the_record_grants` |
+| grant, raise, removal, lowering by an admin, several holders under one frontier, a cut grant with its read rotation (`flows::grants::grant_history`, `lower_in`) | the signer's role on the target: admin (`role_with`, `path_with`) | `World::push` (members, `joins`); `a_write_by_descent_is_judged_along_the_record_grants` |
 | a grant the signer gives itself on a thing it reaches by descent | the path to the mint admin, then the mint admin (the empty path would end at the holder: a self-removal) | `World::push` (`leave` by path end) |
 | self-removal (a removal of a grant never held lowers, spec/permissions.md §2; removing the holder the signer's only admin rests on is one) | empty where the holder is the signer, else the admin path to the holder, then the holder | `a_self_removal_by_path_end_audits_nothing`, `a_self_removal_raises_nothing` |
 | may-grant grant (`grant_history` without admin) | r on each grant, the last giving admin or carrying the flag (`Need::MayGrant`) | `a_may_grant_grant_applies_by_its_paths_flag` |

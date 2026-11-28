@@ -287,7 +287,7 @@ impl Engine {
     }
 
     /// The evidence of parts `parts` of commit `c` (spec/permissions.md §4 Evidence of a commit):
-    /// the copies the derivation closes them over, the demotions a `keys.0` part's keysets carry,
+    /// the copies the derivation closes them over, the lowerings a `keys.0` part's keysets carry,
     /// and the records `close_records` brings; `c` itself not among them.
     pub(crate) fn evidence_of(&mut self, c: &CommitId, parts: &Parts) -> Result<Certs> {
         let ev = self.evidence_now()?;
@@ -298,7 +298,7 @@ impl Engine {
         let seeds: BTreeSet<(CommitId, Tid)> = on.iter().map(|a| (*c, a.tid)).collect();
         self.add_closure(&ev, &seeds, &mut out);
         for a in on.iter().filter(|a| a.ak.as_str() == "keys.0") {
-            self.carried_demotions(&ev, &a.tid, c, &mut out);
+            self.carried_lowerings(&ev, &a.tid, c, &mut out);
         }
         self.close_records(&ev, &mut out);
         Ok(out)
@@ -484,30 +484,30 @@ impl Engine {
 
     /// `t`'s public key record (spec/sync-inbox.md §1): its record and current `keys.0` commits
     /// projected to `keys.0`, each a certificate copy with its evidence (the steps placing the
-    /// keys it lists among them: a reader judges it) and the demotions its keysets carry
+    /// keys it lists among them: a reader judges it) and the lowerings its keysets carry
     /// (spec/permissions.md §4), added to `out`.
     fn public_key_record_into(&mut self, ev: &Ev, t: &Tid, out: &mut Certs) {
         out.records.insert(*t);
         let mut seeds = BTreeSet::new();
         for c in self.current_keys(t).unwrap_or_default() {
             out.add(c, self.cut_parts(&c, t, Cut::Keys));
-            self.carried_demotions(ev, t, &c, out);
+            self.carried_lowerings(ev, t, &c, out);
             seeds.insert((c, *t));
         }
         self.add_closure(ev, &seeds, out);
     }
 
-    /// The demotions the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
-    /// Carried demotions) and the left-out causes they record (Carried): each carried commit's
-    /// `roles.0` parts (`c`'s own among them where a keyset says `c` demotes) with their
+    /// The lowerings the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
+    /// Carried lowerings) and the left-out causes they record (Carried): each carried commit's
+    /// `roles.0` parts (`c`'s own among them where a keyset says `c` lowers) with their
     /// evidence, a cause's `keys.0` parts beside them (a rotation commit making a box stale),
     /// added to `out`: a receiver holds those keysets only with them.
-    pub(crate) fn carried_demotions(&mut self, ev: &Ev, t: &Tid, c: &CommitId, out: &mut Certs) {
+    pub(crate) fn carried_lowerings(&mut self, ev: &Ev, t: &Tid, c: &CommitId, out: &mut Certs) {
         let mut carried: BTreeSet<CommitId> = BTreeSet::new();
         let mut causes: BTreeSet<CommitId> = BTreeSet::new();
         for (r, e, x) in self.core.keysets_noted(t) {
             if self.core.ix.epoch_intro.get(&(*t, r, e)).is_some_and(|i| i.1 == *c) {
-                carried.extend(x.demotions.iter().copied());
+                carried.extend(x.lowerings.iter().copied());
                 causes.extend(x.left_out.values().flat_map(|xs| xs.values().flatten().copied()));
             }
         }
@@ -728,7 +728,7 @@ mod tests {
         lp.peers[0].engine.grant(&t, &p1, &grant(Role::Admin)).unwrap();
         assert!(carries_keys_of(&mut lp, 0, &t, &a, &rot), "A's keys under T beside a grant");
         lp.sync(0, 1).unwrap();
-        lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
+        lp.peers[1].engine.lower(&t, &crate::flows::Lowering { holder: a, new: None, retain: None }).unwrap();
         lp.sync(1, 0).unwrap();
         assert!(!lp.peers[0].engine.core.current_holders(&t).iter().any(|(h, ..)| *h == a), "A removed from T");
         assert!(!carries_keys_of(&mut lp, 0, &t, &a, &rot), "none of A's keys under T once removed");

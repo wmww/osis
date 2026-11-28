@@ -7,10 +7,10 @@
 - The chat's history setting (`retention^.0`, spec/commits.md §5 The setting) is written at creation, before anyone is granted: messages kept for good, the disappearing expiry and edits-off as writer defaults. No validity rule follows from it: a writer ignoring it can only give its own messages another expiry or purge-by.
 - The sender is the commit's purge author (`Stamp::author`), a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): nobody can speak as another.
 - Why the message is the write, not a register holding a message thing's strong: a message thing would need an independent thing per sender (so nobody else can change it) and a place in C's `holds.0` again, which every writer of C may edit.
-- Cost of the shape: a demotion's frontier lists every surviving message of the removed author (about 34 B each, capping a kick near 1.9×10^6 messages of one participant) (frontiers list IDs: notes/removal.md, Frontier encoding); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
+- Cost of the shape: a lowering's frontier lists every surviving message of the removed author (about 34 B each, capping a kick near 1.9×10^6 messages of one participant) (frontiers list IDs: notes/removal.md, Frontier encoding); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
 
 ## Tess's decisions
-- The creating account's home or account as mint admin is the default app's default, not a rule: a chat's mint admin may be a realm or anyone. A chat keeps all messages, so it keeps its member history and needs no roster compaction. Recovery from a vandal writer needs only an admin able to demote.
+- The creating account's home or account as mint admin is the default app's default, not a rule: a chat's mint admin may be a realm or anyone. A chat keeps all messages, so it keeps its member history and needs no roster compaction. Recovery from a vandal writer needs only an admin able to lower.
 - Accepted: a stolen unlocked device shows history; no deniability; deletion binds only honest clients; a node keeping a chat unread sees its metadata. Removal is eventual throughout osis.
 - Member forward secrecy is probably undesirable (it would need erasable per-node KEM keys, MLS-sized; against spec/crypto.md §3).
 - An edit is a whole new message replacing the old one (osis `replace`, honored only from the same verified sender), not ordinary osis editing of a value.

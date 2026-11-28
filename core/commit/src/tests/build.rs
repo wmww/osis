@@ -155,7 +155,7 @@ fn list_overflow_links() {
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
 }
 
-// A list no receiver would resolve (`MAX_LIST_BYTES`) fails at its signer, so a demotion's frontier
+// A list no receiver would resolve (`MAX_LIST_BYTES`) fails at its signer, so a lowering's frontier
 // too large stamps nothing only the signer could apply.
 #[test]
 fn list_over_the_bound_refused_at_the_signer() {

@@ -184,7 +184,7 @@ impl Engine {
     }
 
     /// Writes a fresh snapshot of each aspect a held valid memory compaction snapshot turned
-    /// invalid on (`Core::fallen`; a compactor's demotion not listing it, spec/permissions.md
+    /// invalid on (`Core::fallen`; a compactor's lowering not listing it, spec/permissions.md
     /// §5.2): its covered bodies were forgotten here and deleted at peers by any writer, so a
     /// writer that still holds a valid memory part of the aspect writes what it holds
     /// (spec/sync-compaction.md §2), stamped after every held snapshot. Run by `tick`.

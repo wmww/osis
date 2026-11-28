@@ -489,8 +489,8 @@ fn a_fork_settles_with_each_sides_card_spec_sync_inbox_1() {
     lp.advance(1000);
     // b's clock runs ahead; a has not seen b's removal when it writes its own
     lp.peers[1].clock.advance(5000);
-    let w = made(&mut lp, 1, |lp| drop(lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap()));
-    let r = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap()));
+    let w = made(&mut lp, 1, |lp| drop(lp.peers[1].engine.lower(&t, &osis_engine::flows::Lowering { holder: a, new: None, retain: None }).unwrap()));
+    let r = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: b, new: None, retain: None }).unwrap()));
     // each node's side: the removal it received first
     for (to, first, then) in [(2, (0, &r), (1, &w)), (3, (0, &r), (1, &w)), (4, (1, &w), (0, &r)), (5, (1, &w), (0, &r))] {
         crate::flows::send_carried(&mut lp, first.0, to, first.1);
@@ -523,14 +523,14 @@ fn a_fork_settles_with_each_sides_card_spec_sync_inbox_1() {
 }
 
 // spec/sync-inbox.md §1 (Card: an entry per node, read together), spec/permissions.md §5.1
-// (Frontier): D (peer 1), an admin of T demoted to writer, writes its entry in T's card on C
+// (Frontier): D (peer 1), an admin of T lowered to writer, writes its entry in T's card on C
 // carrying T's keys as it held them as admin, the grant that made it admin and a move of T's
-// inbox to a thing of its own, signed against those keys and stamped after its demotion: a
+// inbox to a thing of its own, signed against those keys and stamped after its lowering: a
 // stranger taking that entry alone fires at D's inbox. A stranger taking the card as honest nodes
-// hold it fires at T's own inbox: T's admin's entry carries the demotion. Failed when one card
+// hold it fires at T's own inbox: T's admin's entry carries the lowering. Failed when one card
 // held whatever its last writer put and honest nodes left it, D having once held admin.
 #[test]
-fn a_demoted_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
+fn a_lowered_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
     let (mut lp, ps) = crate::flows::people(2);
     let (c, d) = (ps[0], ps[1]);
     let mut m = Mutation::new();
@@ -552,16 +552,16 @@ fn a_demoted_admins_card_points_no_stranger_at_its_inbox_spec_sync_inbox_1() {
     let mut keys = lp.peers[1].engine.holder_keys(&t).unwrap();
     let mut was = lp.peers[1].copy().unwrap();
     lp.advance(1000);
-    let dm = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: d, new: Some(crate::flows::grant_of(Role::Write)), retain: None }).unwrap()));
+    let dm = made(&mut lp, 0, |lp| drop(lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: d, new: Some(crate::flows::grant_of(Role::Write)), retain: None }).unwrap()));
     settle(&mut lp);
-    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write), "premise: D demoted");
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write), "premise: D lowered");
     // D's own move of the inbox, signed against the keys it held as admin, stamped after its
-    // demotion
+    // lowering
     was.clock.advance(10_000);
     let mut m = Mutation::new();
     cards::put_inbox(&mut m, t, i2).unwrap();
     let f = was.commit(m).unwrap().unwrap();
-    assert!(dm.iter().all(|x| was.engine.header(&f).unwrap().ts > lp.peers[0].engine.header(x).unwrap().ts), "premise: stamped after the demotion");
+    assert!(dm.iter().all(|x| was.engine.header(&f).unwrap().ts > lp.peers[0].engine.header(x).unwrap().ts), "premise: stamped after the lowering");
     let pk = was.engine.package(&f).unwrap().unwrap();
     let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
     let moved = osis_base::decode(&pk.bytes, &limits).unwrap();

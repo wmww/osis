@@ -10,8 +10,8 @@
 \* Scen "race": the honest race of notes/holder-actors.md. Party X removed from
 \* U, which m (U's admin, reading U) knows and w (T's writer, not reading U)
 \* never learns but through U's keysets (a reader's removal travels nowhere);
-\* B's keyset kn made by a party a concurrent demotion invalidates, held
-\* invalid where the demotion is (U's keysets made knowing it carry it).
+\* B's keyset kn made by a party a concurrent lowering invalidates, held
+\* invalid where the lowering is (U's keysets made knowing it carry it).
 \* Above: how T judges a foreign keyset of U. "drop": as held invalid (its
 \* list passes nothing on); "builder": as any held valid keyset; "star" (the
 \* rule): its list keeps what it lists stale, but it anchors nothing and is no
@@ -56,7 +56,7 @@ B == IF Scen = "fork"
 VARIABLES u,   \* U's epochs: index -> [by, lists, hist, box, knows, dem, ht]
           t,   \* T's epochs: index -> [by, lists, hist, box, rec, ht]
           rs,  \* re-seals of U into T's epochs: [e, ks, by]
-          hu, ht, hr, hd,  \* per node: U's epochs, T's, re-seals, the demotion held
+          hu, ht, hr, hd,  \* per node: U's epochs, T's, re-seals, the lowering held
           nu, nt, uu, ut,  \* per rotator: rotations of U, of T, unprompted ones
           wr               \* T's content writes: [e, knew]
 

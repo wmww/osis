@@ -45,7 +45,7 @@ fn refer(w: &mut World, from: Tid, r: Value) {
 fn set_role(w: &mut World, on: Tid, to: Tid, role: Option<Role>) {
     match role {
         Some(r) => drop(w.write(0, |e| e.grant(&on, &to, &grant(r))).unwrap()),
-        None => drop(w.write(0, |e| e.demote(&on, &osis_engine::flows::Demotion { holder: to, new: None, retain: None })).unwrap()),
+        None => drop(w.write(0, |e| e.lower(&on, &osis_engine::flows::Lowering { holder: to, new: None, retain: None })).unwrap()),
     }
 }
 

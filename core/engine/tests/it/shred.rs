@@ -989,7 +989,7 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
 }
 
 /// Node 1 holds snapshot `snap` of `t:big.0` carrying `cx` (marker `mx`) and `cy` (`my`), both
-/// by 0; admin 2 purged `cx` (the snapshot held as its leftover), then 0 demoted 2 without having
+/// by 0; admin 2 purged `cx` (the snapshot held as its leftover), then 0 lowered 2 without having
 /// seen the request: it fell at 1, the snapshot still held as its leftover.
 struct Fallen {
     lp: LocalPeer,
@@ -1002,7 +1002,7 @@ struct Fallen {
 
 fn fallen_snapshot_rig() -> Fallen {
     use osis_base::Role;
-    use osis_engine::flows::Demotion;
+    use osis_engine::flows::Lowering;
     let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0).unwrap();
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
@@ -1027,7 +1027,7 @@ fn fallen_snapshot_rig() -> Fallen {
     assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped(sai), "the snapshot is held as its leftover");
     assert!(!lp.peers[1].engine.part_short(&snap, sai), "standing, the purge leaves the leftover wanting nothing");
     lp.advance(5);
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    let done = lp.peers[0].engine.lower(&t, &Lowering { holder: x, new: None, retain: None }).unwrap();
     for id in &done.commits {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();

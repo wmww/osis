@@ -582,9 +582,9 @@ fn lists_trust_seeds_disputes() {
             w.grant(K, 3, &[A2], T1, A2, Gone, &[]);
             (w, vec![vec![]])
         }),
-        // spec/permissions.md §5.1 Seeds: a trusted demotion to write keeps the grants made by flag
+        // spec/permissions.md §5.1 Seeds: a trusted lowering to write keeps the grants made by flag
         // (control `-seeds-all`).
-        ("a_trusted_demotion_to_write_keeps_the_grants_made_by_flag", || {
+        ("a_trusted_lowering_to_write_keeps_the_grants_made_by_flag", || {
             let mut w = account();
             w.grant(H, 1, &[], A, B, Admin, &[]);
             w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
@@ -746,7 +746,7 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
 }
 
 // G5 with the flag below the role it was granted at (the level it may grant up to, the role, falls
-// with it): N5 holds write with the flag on A and grants Z read and N6 write by it; H demotes N5 to
+// with it): N5 holds write with the flag on A and grants Z read and N6 write by it; H lowers N5 to
 // read with the flag (N6's grant falls, Z's stands), then sets it to write without the flag (Z's
 // falls, or stands where listed).
 #[test]
@@ -921,7 +921,7 @@ fn an_unapplied_grant_changes_nothing_observed() {
     agree(&w, &View::all(&w).without(&[g6]));
 }
 
-fn h_demotes_n5(listing: &[Id]) -> World {
+fn h_lowers_n5(listing: &[Id]) -> World {
     let mut w = account();
     let h = w.push(H, 7, &[], A, Kind::set(N5, Write).may_grant());
     w.push(N5, 4, &[], A, Kind::set(Z, Write).may_grant().listing(w.cut(&[h])));
@@ -937,7 +937,7 @@ fn h_demotes_n5(listing: &[Id]) -> World {
 #[test]
 fn a_lowering_whose_drops_let_an_earlier_write_take_its_authority_changes_roles_unshown() {
     for listing in [&[][..], &[1]] {
-        let w = h_demotes_n5(listing);
+        let w = h_lowers_n5(listing);
         agree_all(&w, &[]);
         agree(&w, &View::all(&w).without(&[0]));
     }

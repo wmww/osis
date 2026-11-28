@@ -135,7 +135,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Two admins remove each other at once: one deterministic outcome? | yes | yes |
 | Can a hostile sole admin wipe the chat for everyone? | accepted | yes |
 | Can a writer lock everyone out by rotating keys to itself? | no | no |
-| Can the creator leave or be demoted? | yes | yes |
+| Can the creator leave or be lowered? | yes | yes |
 
 ## Nodes keeping the chat unread
 
@@ -216,7 +216,7 @@ Chat's use of realms is not designed: each answer is what today's core would giv
 | Removal under 10 MB sent at 1000 members and 100 channels? | yes | yes⁴² |
 | Removal under 10 MB sent at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
 | Does a member's lost node or leave cost the next poster the top realm's whole rotation? | no | yes! |
-| Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
+| Is lowering a mod as cheap as a kick? | yes | no!⁴³ |
 | Does each member's node download every other member's evidence and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | ? |
 | Can a mod mute one member in one channel while they hold the top realm? | yes | opt*⁴⁵ |

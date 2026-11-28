@@ -291,7 +291,7 @@ fn list_items_ascend_and_frontier_shape() {
 }
 
 // spec/wire.md §4 field 12: an inline frontier is exactly `{0: set<32-byte ID>}` too; any other
-// value there is bad input (never a demotion without a frontier).
+// value there is bad input (never a lowering without a frontier).
 #[test]
 fn an_inline_frontier_is_exact_spec_wire_4() {
     let mut h = role_header("roles.0");

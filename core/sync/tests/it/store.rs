@@ -900,7 +900,7 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
 // writer's delete reaches only what the blob's prefix commits to its level keys, under the head's
 // current role keys. Writer X's two entries: one purgeable by its author or an admin (levels 1, 2),
 // one by any writer (1, 2, 3). Hostile writer Y (no admin) holds its own level-2 key and the
-// thing's level-3 key: it deletes nothing of X's author-only entry; once demoted (the head's
+// thing's level-3 key: it deletes nothing of X's author-only entry; once lowered (the head's
 // write key rotates) its level-3 key deletes nothing either; once X is removed (the sync key
 // rotates too) X's own level-2 key deletes nothing under its old sync key.
 #[test]
@@ -929,13 +929,13 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     refused(&mut st, by(authors, &s.sync_key(), &[(2, &y)]), Code::REFUSED, "Y's own level-2 key on X's entry");
     refused(&mut st, by(authors, &s.write_key(), &[(3, &w3)]), Code::REFUSED, "a level the prefix does not list");
     refused(&mut st, by(authors, &s.write_key(), &[(2, &x)]), Code::REFUSED, "level 2 with the write key");
-    // Y demoted: the head's write key rotates
+    // Y lowered: the head's write key rotates
     let (old_write, old_sync) = (s.write_key(), s.sync_key());
     s.write = Secret32::from_bytes([60; 32]);
     let st1 = s.issue();
     s.steps.push(st1.clone());
     assert_eq!(st.reg(&s, std::slice::from_ref(&st1)), Code::OK);
-    refused(&mut st, by(writers, &old_write, &[(3, &w3)]), Code::NOT_HEAD_KEY, "the demoted writer's level-3 key under its old write key");
+    refused(&mut st, by(writers, &old_write, &[(3, &w3)]), Code::NOT_HEAD_KEY, "the lowered writer's level-3 key under its old write key");
     // X removed: write and sync rotate
     let c2 = s.rotate(70);
     assert_eq!(st.reg(&s, std::slice::from_ref(&c2)), Code::OK);

@@ -12,7 +12,7 @@ Built (notes/engine-validity.md, notes/engine-retention-purge.md Leftovers, note
 Not covered by end-to-end world tests: the pieces are tested at their boundaries (read's fake ground, streams' pair, the engine's fallen-snapshot rig). A world per class (unread peers deleting in the same sync; the remover not holding it; a node without the removal deleting a body logged again; stacked drops) belongs in osis-sync.
 
 Left:
-- **Remover snapshot** (notes/removal.md, Frontiers; not built): the remover compacts the aspects the demoted node wrote before stamping, so its snapshot carries content a node wrongly dropped. Shrinks the frontier only for data whose history may be dropped.
+- **Remover snapshot** (notes/removal.md, Frontiers; not built): the remover compacts the aspects the lowered node wrote before stamping, so its snapshot carries content a node wrongly dropped. Shrinks the frontier only for data whose history may be dropped.
 
 Tess floated (not important, not built): edits dated before a re-grant stay invalid even when their author is re-added, which would remove refetch on re-grant entirely.
 

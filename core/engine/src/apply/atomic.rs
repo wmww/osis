@@ -592,7 +592,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     index_commit(tx.core, &id, &view);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
     validity::note_cards(tx.core, &h, &view, &id, &parts.whole);
-    // an explicit demotion: this node judges what addenda it owes (`flows::addenda`)
+    // an explicit lowering: this node judges what addenda it owes (`flows::addenda`)
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
     }

@@ -108,7 +108,7 @@ fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2
     set_setting(&mut lp, 0, g, &setting(false));
     assert!(valid(&lp, 0, &f, g), "a writer's fire: valid whatever the setting");
     grant_write(&mut lp.peers[0].engine, g, p1, Some(grant(Role::Read)), Some(ct::Frontier::default()));
-    assert!(!valid(&lp, 0, &f, g), "unlisted by the demotion, not enabled: invalid");
+    assert!(!valid(&lp, 0, &f, g), "unlisted by the lowering, not enabled: invalid");
     set_setting(&mut lp, 0, g, &setting(true));
     assert!(valid(&lp, 0, &f, g), "enabled: valid as a stranger's");
 }
@@ -159,7 +159,7 @@ fn a_readers_own_setting_enables_nothing_spec_permissions_5_2() {
 // spec/permissions.md §5.2 External fires: a second admin's enabling setting reaches peer 3 after
 // the reader's fire and before the grant making its author admin: the fire is invalid until the
 // grant arrives and the setting's body comes again (dropped while invalid), then valid as at the
-// reader. The admin's demotion with a frontier leaving the setting out makes it invalid again,
+// reader. The admin's lowering with a frontier leaving the setting out makes it invalid again,
 // at a node holding everything and at peer 3 alike.
 #[test]
 fn a_fire_follows_its_settings_validity_spec_commits_5() {
@@ -181,7 +181,7 @@ fn a_fire_follows_its_settings_validity_spec_commits_5() {
     let dem = grant_write(&mut lp.peers[0].engine, g, p2, Some(grant(Role::Read)), Some(ct::Frontier::default()));
     send_carried(&mut lp, 2, 0, &[s1]);
     send_carried(&mut lp, 1, 0, &[f]);
-    assert!(!valid(&lp, 0, &f, g), "the setting unlisted by its author's demotion: invalid");
+    assert!(!valid(&lp, 0, &f, g), "the setting unlisted by its author's lowering: invalid");
     send_carried(&mut lp, 0, 3, &[dem]);
     assert!(!valid(&lp, 3, &f, g), "alike at peer 3");
 }
@@ -234,9 +234,9 @@ fn a_grant_standing_again_by_an_invalid_removal_gives_its_role_again_spec_sync_s
     lp.peers[0].engine.grant(&x, &ps[1], &grant_of(Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X");
-    let carol_out = lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[2], new: None, retain: Some(false) }).unwrap().commits;
+    let carol_out = lp.peers[0].engine.lower(&x, &osis_engine::flows::Lowering { holder: ps[2], new: None, retain: Some(false) }).unwrap().commits;
     lp.advance(1_000);
-    let removal = lp.peers[2].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap().commits;
+    let removal = lp.peers[2].engine.lower(&x, &osis_engine::flows::Lowering { holder: ps[1], new: None, retain: Some(false) }).unwrap().commits;
     lp.sync(2, 1).unwrap();
     carry_roles(&mut lp, 2, 1, &removal, x);
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "Carol's removal applies at Bob");

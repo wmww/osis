@@ -1,6 +1,6 @@
 //! Role flows (spec/permissions.md; notes/engine-roles.md, Role flows): accounts, pairing,
 //! grants and their signals, changes and removals with their rotation,
-//! demotions with their frontier, may-grant grants and self-removal,
+//! lowerings with their frontier, may-grant grants and self-removal,
 //! re-seal, registration steps, links, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!
@@ -19,7 +19,7 @@ pub(crate) mod inbox;
 pub(crate) mod roots;
 
 
-pub use grants::{Demotion, Removal};
+pub use grants::{Lowering, Removal};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 
 use crate::engine::{Core, Engine, Tx};

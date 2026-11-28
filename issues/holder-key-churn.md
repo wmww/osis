@@ -9,7 +9,7 @@ Directions (design work, model first):
 - A node that may not rotate a thing applies its rotation with only the pages holding its boxes (unfetched pages are a may-hold state, spec/sync-judgement.md §2); what rotators, re-sealers and the stale-box rules read of the other boxes decides how far this goes.
 
 ## Baseline
-Measured in the engine (the commits of `grant`, `demote` and `ensure_rotated` packaged as `thing_cost::what_a_reader_costs` packages its grant: holder H with m writer members, H write on X, X's roster its admin and H; sync entries and stamps not counted), with notes/thing-cost.md:
+Measured in the engine (the commits of `grant`, `lower` and `ensure_rotated` packaged as `thing_cost::what_a_reader_costs` packages its grant: holder H with m writer members, H write on X, X's roster its admin and H; sync entries and stamps not counted), with notes/thing-cost.md:
 
 | event | bytes | who downloads it |
 |---|---|---|

@@ -291,7 +291,7 @@ fn more_accepted() -> Vec<Record> {
     a.purge_by = retention::ROLE_PURGE_BY;
     b.aspects.push(a);
     b.frontier = Some(std::sync::Arc::from([CommitId([0x51; 32]), CommitId([0x52; 32])]));
-    out.push(record("role demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
+    out.push(record("role lowering with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
     // a linked aspect list (above CHUNK_THRESHOLD)
     let at = ts(1_700_000_007_000);
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);

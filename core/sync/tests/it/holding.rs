@@ -108,7 +108,7 @@ fn strong(w: &mut World, i: usize, from: Option<Tid>, t: Tid, on: bool) {
 /// Node `i` lowers `holder`'s record grant on `t` to `to` (removes it at `None`), leaving `t`
 /// adminless if so.
 fn lower_record_grant(w: &mut World, i: usize, t: Tid, holder: Tid, to: Option<Role>) {
-    w.write(i, |e| e.leaving_adminless(|e| e.demote(&t, &osis_engine::flows::Demotion { holder, new: to.map(grant), retain: None }))).unwrap();
+    w.write(i, |e| e.leaving_adminless(|e| e.lower(&t, &osis_engine::flows::Lowering { holder, new: to.map(grant), retain: None }))).unwrap();
 }
 
 fn value(w: &mut World, i: usize, t: &Tid) -> Option<Value> {
@@ -237,10 +237,10 @@ fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_perm
     w.run();
     strong(&mut w, 1, None, t, true);
     w.write(0, |e| told(e, &t, &carol, &grant(Role::Sync))).unwrap();
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::grants::Demotion { holder: carol, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &osis_engine::flows::grants::Lowering { holder: carol, new: None, retain: None })).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::grants::Demotion { holder: bob, new: Some(grant(Role::Sync)), retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &osis_engine::flows::grants::Lowering { holder: bob, new: Some(grant(Role::Sync)), retain: None })).unwrap();
     w.run();
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
     w.engine(1).check_index();
@@ -425,7 +425,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
     w.write(1, |e| told(e, &t0, &alice, &grant(Role::Read))).unwrap();
     w.run();
     w.partition(1, 2);
-    w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(2, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: alice, new: None, retain: None })).unwrap();
     w.write(1, |e| told(e, &t1, &alice, &grant(Role::Sync))).unwrap();
     strong(&mut w, 0, None, t1, true);
     w.heal();
@@ -459,7 +459,7 @@ fn a_reader_removed_as_a_sibling_grants_on_a_dependent_reads_it_no_more_spec_per
     strong(&mut w, 0, None, t1, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1 through T0");
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: alice, new: None, retain: None })).unwrap();
     w.write(2, |e| told(e, &t1, &alice, &grant(Role::Sync))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more");
@@ -733,7 +733,7 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
     w.write(2, |e| told(e, &t2, &bob, &grant(Role::Admin))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
-    w.write(2, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.write(2, |e| e.lower(&t2, &osis_engine::flows::Lowering { holder: t0, new: None, retain: None })).unwrap();
     w.run();
     let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
     refile(&mut w, 2, 0, &s0, false);
@@ -833,7 +833,7 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
     assert!(holds_value(&mut w, 1, &t));
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::grants::Demotion { holder: bob, new: Some(grant(Role::Sync)), retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &osis_engine::flows::grants::Lowering { holder: bob, new: Some(grant(Role::Sync)), retain: None })).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t), None, "lowered: reads nothing");
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
@@ -862,7 +862,7 @@ fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
     strong(&mut w, 0, None, t2, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2 through T0");
-    w.write(1, |e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.lower(&t2, &osis_engine::flows::Lowering { holder: t0, new: None, retain: None })).unwrap();
     w.run();
     let s0 = w.engine(1).sync_id_of(&t0).unwrap().unwrap();
     refile(&mut w, 1, 0, &s0, false);
@@ -893,7 +893,7 @@ fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_j
 fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: alice, new: None, retain: None })).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
     assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more: {}", w.why_role(0, &t0));
@@ -907,7 +907,7 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
-    w.write(1, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: alice, new: None, retain: Some(true) })).unwrap();
+    w.write(1, |e| e.lower(&t1, &osis_engine::flows::Lowering { holder: alice, new: None, retain: Some(true) })).unwrap();
     w.run();
     let mut kept = w.engine(0).kept_copies();
     kept.sort();
@@ -946,7 +946,7 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     strong(&mut w, 1, Some(t1), t0, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: t1, new: None, retain: Some(true) })).unwrap();
     w.run();
     assert_eq!(w.engine(0).kept_copies(), vec![t0], "a copy of T0 kept: {}", w.why_role(0, &t0));
     w.heal();
@@ -1011,7 +1011,7 @@ fn a_reader_takes_a_concurrent_promotions_grant_through_a_rotation_spec_sync_ids
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: t1, new: None, retain: Some(true) })).unwrap();
     w.run();
     assert_eq!(w.engine(0).kept_copies(), vec![t0], "a copy of T0 kept: {}", w.why_role(0, &t0));
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "the copy of T0 reads");
@@ -1031,7 +1031,7 @@ fn a_direct_removal_saying_retain_keeps_a_copy_that_reads_spec_permissions_3() {
     strong(&mut w, 0, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "Alice reads T");
-    w.write(1, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: alice, new: None, retain: Some(true) })).unwrap();
+    w.write(1, |e| e.lower(&t, &osis_engine::flows::Lowering { holder: alice, new: None, retain: Some(true) })).unwrap();
     w.run();
     assert_eq!(w.engine(0).kept_copies(), vec![t], "a copy of T kept: {}", w.why_role(0, &t));
     assert_eq!(value(&mut w, 0, &t), Some(Value::Str("bob".into())), "the copy reads: {}", w.why_role(0, &t));
@@ -1073,9 +1073,9 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
 fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: t1, new: None, retain: Some(true) })).unwrap();
     w.run();
-    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.write(1, |e| e.lower(&t0, &osis_engine::flows::Lowering { holder: alice, new: None, retain: None })).unwrap();
     w.run();
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
     assert!(w.engine(0).kept_copies().is_empty(), "no copy kept");

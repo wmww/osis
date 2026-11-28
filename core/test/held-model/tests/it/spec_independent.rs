@@ -26,7 +26,7 @@ fn an_honest_box_counts_before_its_keyset_spec_permissions_4() {
 
 /// An admin's step is its word (spec/sync-ids.md §4 Owner), but only a node reading none of Y's
 /// role commits counts Y independent by it: A planting a box and a step on Y with no keyset
-/// (demoted after or not) makes Y count independent at K, keeping Y unread, and at no reader, so
+/// (lowered after or not) makes Y count independent at K, keeping Y unread, and at no reader, so
 /// it splits no read.
 #[test]
 fn an_admins_plant_splits_no_reader_spec_sync_set_2() {

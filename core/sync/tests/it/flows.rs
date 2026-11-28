@@ -4,7 +4,7 @@
 use crate::harness::{World, grant};
 use osis_base::{Role, Value};
 use osis_engine::Mutation;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 
 
 // spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box
@@ -43,7 +43,7 @@ fn a_removal_is_logged_before_what_was_written_after_it_spec_sync_judgement_3() 
             e.commit(m).unwrap().unwrap()
         };
         let mut made = vec![write(e, 0)];
-        made.push(e.demote(&t, &Demotion { holder: a2, new: None, retain: None }).unwrap().commits[0]);
+        made.push(e.lower(&t, &Lowering { holder: a2, new: None, retain: None }).unwrap().commits[0]);
         for i in 1..6 {
             made.push(write(e, i));
         }

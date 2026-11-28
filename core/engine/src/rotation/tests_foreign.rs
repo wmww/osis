@@ -4,7 +4,7 @@
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{grant, independent_thing, newest_read, rotate_as, rotate_leaving_out, synced};
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
@@ -33,8 +33,8 @@ fn fork_on_m() -> (LocalPeer, Tid, Tid, Epoch, Epoch) {
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);
-        lp.peers[Q].engine.demote(&m, &Demotion { holder: p, new: None, retain: None }).unwrap();
-        lp.peers[P].engine.demote(&m, &Demotion { holder: q, new: None, retain: None }).unwrap();
+        lp.peers[Q].engine.lower(&m, &Lowering { holder: p, new: None, retain: None }).unwrap();
+        lp.peers[P].engine.lower(&m, &Lowering { holder: q, new: None, retain: None }).unwrap();
         let (kp, kq) = (newest_read(&lp, P, m).unwrap(), newest_read(&lp, Q, m).unwrap());
         exchange(&mut lp);
         (lp, (m, a, kp, kq))
@@ -231,8 +231,8 @@ fn fork_below_g() -> (LocalPeer, Tid, Tid, Tid) {
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);
-        lp.peers[Q].engine.demote(&m, &Demotion { holder: p, new: None, retain: None }).unwrap();
-        lp.peers[P].engine.demote(&m, &Demotion { holder: q, new: None, retain: None }).unwrap();
+        lp.peers[Q].engine.lower(&m, &Lowering { holder: p, new: None, retain: None }).unwrap();
+        lp.peers[P].engine.lower(&m, &Lowering { holder: q, new: None, retain: None }).unwrap();
         exchange(&mut lp);
         (lp, (m, a, g))
     });
@@ -348,8 +348,8 @@ fn fork_with_one_role_rotators() -> (LocalPeer, Tid, Tid, Tid, Epoch) {
         lp.sync_all().unwrap();
         lp.advance(1000);
         lp.peers[Q].clock.advance(5000);
-        lp.peers[Q].engine.demote(&m, &Demotion { holder: ids[P], new: None, retain: None }).unwrap();
-        lp.peers[P].engine.demote(&m, &Demotion { holder: ids[Q], new: None, retain: None }).unwrap();
+        lp.peers[Q].engine.lower(&m, &Lowering { holder: ids[P], new: None, retain: None }).unwrap();
+        lp.peers[P].engine.lower(&m, &Lowering { holder: ids[Q], new: None, retain: None }).unwrap();
         exchange(&mut lp);
         lp.peers[Q].engine.ensure_rotated(&a).unwrap();
         let eq = newest_read(&lp, Q, a).unwrap();

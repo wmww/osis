@@ -684,7 +684,7 @@ mod tests {
     /// what it lost. How many blobs of `t1`'s tree peer 1 still holds, and whether it holds all
     /// of `t2`'s.
     fn lose_t1(t1_value: impl Fn(&Link) -> Value) -> (usize, bool) {
-        use crate::flows::Demotion;
+        use crate::flows::Lowering;
         use osis_base::Role;
         use osis_schema::core_types::Grant;
         let mut lp = LocalPeer::fresh(2, osis_base::Time(1_700_000_000_000));
@@ -717,7 +717,7 @@ mod tests {
         let tree2 = lp.peers[0].engine.live_trees(&t2).unwrap().blobs;
         assert!(tree1.iter().chain(&tree2).all(|b| lp.peers[1].engine.has_blob(b)), "peer 1 holds both trees");
         lp.advance(1000);
-        let removal = lp.peers[0].engine.demote(&t1, &Demotion { holder: v, new: None, retain: None }).unwrap().commits;
+        let removal = lp.peers[0].engine.lower(&t1, &Lowering { holder: v, new: None, retain: None }).unwrap().commits;
         for c in removal {
             let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
             lp.deliver(1, &pk).unwrap();

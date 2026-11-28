@@ -123,9 +123,9 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
     osis_keys::Names { list, departs }
 }
 
-/// The demotions a rotation of `a` carries (spec/crypto.md §4, Carried demotions): the commits
-/// of the explicit demotions on `a` held here that took a party below write or admin there, its
-/// own or through an actor below `a` at any depth (the walk records a demotion on everything the
+/// The lowerings a rotation of `a` carries (spec/crypto.md §4, Carried lowerings): the commits
+/// of the explicit lowerings on `a` held here that took a party below write or admin there, its
+/// own or through an actor below `a` at any depth (the walk records a lowering on everything the
 /// lowered grant's target reaches, spec/permissions.md §5.1 step 4), and that the party has not
 /// regained. A reader's removal records none: it stays hidden from what holds `a`.
 pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {

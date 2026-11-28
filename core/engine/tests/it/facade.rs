@@ -6,7 +6,7 @@ use crate::common::{REG, s};
 use crate::flows::{grant_of, people, spread, thing_of};
 use osis_base::{Ak, Role, Tid};
 use osis_crypto::SeededRng;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
@@ -76,7 +76,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let head = |lp: &mut LocalPeer| lp.peers[0].engine.sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().unwrap().clone();
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing newer");
     let before = head(&mut lp);
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    let done = lp.peers[0].engine.lower(&t, &Lowering { holder: ps[1], new: None, retain: None }).unwrap();
     let needs = lp.peers[0].engine.due_step(&s).unwrap().expect("the rotation's step is due");
     assert!(needs.needs.contains(done.commits.last().unwrap()) && !needs.deposit_only, "it registers the removal's rotation");
     let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
@@ -114,7 +114,7 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
 #[test]
 fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
-    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    let c = lp.peers[0].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     assert!(lp.peers[0].engine.waiting_removals().contains(&c), "the writer waits");
     assert!(lp.peers[2].engine.waiting_removals().is_empty(), "another account's node waits on nothing");
@@ -139,8 +139,8 @@ fn a_self_removal_done_drops_its_own_loss_alone_spec_perm_3() {
     }
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
-    let c1 = e.demote(&t1, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
-    let c2 = e.demote(&t2, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    let c1 = e.lower(&t1, &Lowering { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    let c2 = e.lower(&t2, &Lowering { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     assert_eq!(*e.waiting_removals(), BTreeSet::from([c1, c2]));
     e.removal_done(&c1).unwrap();
     assert!(e.epochs(&t1).is_none_or(|x| x.read.held().next().is_none()), "t1 dropped");
@@ -162,12 +162,12 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     e.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
-    let c = e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
+    let c = e.lower(&t, &Lowering { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     e.removal_done(&c).unwrap();
     assert!(e.waiting_removals().is_empty());
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "read through the holder");
     spread(&mut lp);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: ps[1], new: None, retain: None }).unwrap();
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
     e.role_duties().unwrap();
@@ -199,7 +199,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     lp.peers[2].engine.grant(&g, &a, &grant_of(Role::Read)).unwrap();
     lp.peers[2].engine.grant(&t, &g, &grant_of(Role::Read)).unwrap();
     spread(&mut lp);
-    let other = lp.peers[2].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    let other = lp.peers[2].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     for i in [0, 1] {
         assert!(lp.peers[i].engine.waiting_removals().is_empty(), "node {i}: another account's removal is no wait");
@@ -208,7 +208,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     }
     lp.peers[2].engine.grant(&t, &a, &grant_of(Role::Write)).unwrap();
     spread(&mut lp);
-    let own = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    let own = lp.peers[0].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     for i in [0, 1] {
         assert!(lp.peers[i].engine.waiting_removals().contains(&own), "node {i} waits on the own removal");
@@ -223,7 +223,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
 fn siblings_removing_at_once_both_drop_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     for i in [0, 1] {
-        lp.peers[i].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
+        lp.peers[i].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap();
         lp.advance(10);
     }
     spread(&mut lp);
@@ -240,7 +240,7 @@ fn siblings_removing_at_once_both_drop_spec_perm_3() {
 #[test]
 fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
-    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    let c = lp.peers[0].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     assert!(lp.peers[1].engine.waiting_removals().contains(&c));
     lp.advance(10);
@@ -258,7 +258,7 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
 #[test]
 fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
-    let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
+    let c = lp.peers[0].engine.lower(&t, &Lowering { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     let e = &mut lp.peers[1].engine;
     let lost: Vec<Tid> = e.lost_leaving().unwrap().actors.into_keys().collect();
@@ -421,8 +421,8 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
     e.make_independent(&t).unwrap();
     e.grant(&t, &ps[1], &grant_of(Role::Read)).unwrap();
     e.grant(&t, &ps[2], &grant_of(Role::Read)).unwrap();
-    let first = *e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
-    let second = *e.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
+    let first = *e.lower(&t, &Lowering { holder: ps[1], new: None, retain: None }).unwrap().commits.last().unwrap();
+    let second = *e.lower(&t, &Lowering { holder: ps[2], new: None, retain: None }).unwrap().commits.last().unwrap();
     let with = e.logged_with(&second).unwrap();
     assert!(with.contains(&first), "the earlier removal it names: {with:?}");
 }

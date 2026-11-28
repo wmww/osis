@@ -4,7 +4,7 @@
 (* an admin that leaves by self-removal (S) and may forge: a history entry at *)
 (* an epoch it holds listing S, a backdated rotation (valid: it was admin at  *)
 (* that ts) listing S, or a rotation in S itself. With Audit, the audit-drop *)
-(* shape: P demotes L to read (K), L self-removes (S), O removes P (D) and   *)
+(* shape: P lowers L to read (K), L self-removes (S), O removes P (D) and   *)
 (* its audit drops K; admin Q may hold D without S and rotate for P.         *)
 (* Only the entry the rotation commit wrote counts (bound by                 *)
 (* the keyset's names hash), and only while that commit's author holds the   *)
@@ -17,7 +17,7 @@
 (* before its id). Names: applied lowerings, and void writes that count and  *)
 (* give a role. With Dup, Q removes L concurrently with S (S2, carrying Q's   *)
 (* rotation, which leaves L out), so S2 applies nothing where S is held.     *)
-(* Regrant: O removes reader-admin M (Rm), then demotes P to DemoteTo (Dp);  *)
+(* Regrant: O removes reader-admin M (Rm), then lowers P to LowerTo (Dp);  *)
 (* P, not holding Dp, may remove M itself (W) and re-grant it (Gr), boxing M *)
 (* at its current epochs (P acts so even when not a writer, from what it     *)
 (* holds: PKnows at the start); both are ordered after Dp, so they apply     *)
@@ -32,7 +32,7 @@
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Forge, Audit, Writers, MaxE, Dup, Regrant, DemoteTo, PKnows, Else, MetVoid, KeylessHolds
+CONSTANTS Forge, Audit, Writers, MaxE, Dup, Regrant, LowerTo, PKnows, Else, MetVoid, KeylessHolds
 
 Honest == Writers
 Members == {"P", "L", "Q"} \cup (IF Regrant THEN {"M"} ELSE {})
@@ -46,7 +46,7 @@ K == [id |-> "K", ts |-> 5, author |-> "P", h |-> "L", val |-> READ, kind |-> "c
 S == [id |-> "S", ts |-> 9, author |-> "L", h |-> "L", val |-> NONE, kind |-> "self"]
 D == [id |-> "D", ts |-> 11, author |-> "O", h |-> "P", val |-> NONE, kind |-> "chg"]
 Rm == [id |-> "Rm", ts |-> 3, author |-> "O", h |-> "M", val |-> NONE, kind |-> "chg"]
-Dp == [id |-> "Dp", ts |-> 12, author |-> "O", h |-> "P", val |-> DemoteTo, kind |-> "chg"]
+Dp == [id |-> "Dp", ts |-> 12, author |-> "O", h |-> "P", val |-> LowerTo, kind |-> "chg"]
 Static == {S} \cup (IF Audit THEN {K, D} ELSE {}) \cup (IF Regrant THEN {Rm, Dp} ELSE {})
 StaticIds == {c.id : c \in Static}
 
@@ -66,7 +66,7 @@ AllIds == {c.id : c \in cs}
 CommitOf(id) == CHOOSE c \in cs : c.id = id
 
 \* ---- the role timeline at a node holding H ---------------------------------
-\* O's demotion of P (D) audits P: its frontier holds none of P's writes, so every
+\* O's lowering of P (D) audits P: its frontier holds none of P's writes, so every
 \* write of P before it is dropped wherever D is held.
 Dropped(H, c) == c.author = "P" /\ c.kind = "chg" /\ "D" \in H /\ c.ts < D.ts
 

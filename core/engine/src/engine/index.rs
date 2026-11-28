@@ -125,17 +125,17 @@ impl Rec for Role {
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
         let left_out: Vec<(Tid, osis_crypto::Epoch, BTreeSet<CommitId>)> = self.left_out.iter().flat_map(|(m, xs)| xs.iter().map(|(x, c)| (*m, *x, c.clone()))).collect();
-        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), left_out.to(), self.demotions.to(), self.claim.to()])
+        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), left_out.to(), self.lowerings.to(), self.claim.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem_in, since, names, left_out, demotions, claim] = f.as_slice() else { return None };
-        let (lists, kem_in, since, names, demotions, claim) = (Rec::from(lists)?, Rec::from(kem_in)?, Rec::from(since)?, Rec::from(names)?, Rec::from(demotions)?, Rec::from(claim)?);
+        let [lists, kem_in, since, names, left_out, lowerings, claim] = f.as_slice() else { return None };
+        let (lists, kem_in, since, names, lowerings, claim) = (Rec::from(lists)?, Rec::from(kem_in)?, Rec::from(since)?, Rec::from(names)?, Rec::from(lowerings)?, Rec::from(claim)?);
         let mut out: BTreeMap<Tid, BTreeMap<osis_crypto::Epoch, BTreeSet<CommitId>>> = BTreeMap::new();
         for (m, x, c) in <Vec<(Tid, osis_crypto::Epoch, BTreeSet<CommitId>)> as Rec>::from(left_out)? {
             out.entry(m).or_default().insert(x, c);
         }
-        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: out, demotions, claim })
+        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: out, lowerings, claim })
     }
 }
 /// `[holder, epoch]` pairs of a by-holder set map.
@@ -709,8 +709,8 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                     w = w.raw(&c.0);
                 }
             }
-            w = w.u32(k.demotions.len() as u32);
-            for c in &k.demotions {
+            w = w.u32(k.lowerings.len() as u32);
+            for c in &k.lowerings {
                 w = w.raw(&c.0);
             }
             w = match &k.claim {
@@ -835,12 +835,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
                 }
                 left_out.push((m, x, causes));
             }
-            let mut demotions = Vec::new();
+            let mut lowerings = Vec::new();
             for _ in 0..r.u32()? {
-                demotions.push(CommitId(r.arr()?));
+                lowerings.push(CommitId(r.arr()?));
             }
             let claim = if r.u8()? != 0 { Some(osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?) } else { None };
-            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions, claim });
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, lowerings, claim });
         }
         let peer_delete_from = r.u64()?;
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();

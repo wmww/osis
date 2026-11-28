@@ -105,7 +105,7 @@ fn a_signal_is_followed_where_its_holder_is_read_spec_sync_inbox_5() {
     lp.peers[1].engine.take_carried().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&g), Some(Role::Read), "peer 1 reads G");
     assert_eq!(synced_under(&mut lp, 1, &s), Some([x].into()), "G read: X followed");
-    lp.peers[0].engine.demote(&g, &super::Demotion { holder: n, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &super::Lowering { holder: n, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[1].engine.take_carried().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&g), None, "peer 1 reads G no more");

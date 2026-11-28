@@ -148,7 +148,7 @@ impl Core {
     /// holds no read secret of it, neither boxed nor through the thing its secrets would derive
     /// from. Only such a node counts a box and a step independent (`stepped`, `Unread`): a reader
     /// counts by a keyset alone, so a box no keyset follows splits no read
-    /// (`tests_planted::an_admins_plant_splits_no_read_after_its_demotion`).
+    /// (`tests_planted::an_admins_plant_splits_no_read_after_its_lowering`).
     pub(crate) fn reads_none(&self, tid: &Tid) -> bool {
         let reads = |e: &ActorEpochs| e.role(Role::Read).holds_any();
         !self.ix.secrets.get(tid).is_some_and(reads) && !self.created(tid).and_then(|r| r.mint_admin()).and_then(|m| self.epochs(&m)).is_some_and(|m| reads(&m))
@@ -163,8 +163,8 @@ impl Core {
     /// valid `sync.0` writes alone, verified to their genesis), and the step binds this very
     /// secret. So no writer below admin makes a dependent thing count independent anywhere by a
     /// box of its choosing (`tests_planted::box_on_a_dependent_thing_splits_nobody`), nor one
-    /// demoted since by its old word: its `sync.0` write is judged at its point
-    /// (`a_demoted_admins_step_splits_nobody`). An admin's step and box with no keyset count
+    /// lowered since by its old word: its `sync.0` write is judged at its point
+    /// (`a_lowered_admins_step_splits_nobody`). An admin's step and box with no keyset count
     /// only at a boxed node keeping the thing unread (`reads_none`), which reads no keyset of it.
     fn stepped(&self, tid: &Tid, e: &ActorEpochs) -> bool {
         let Some(steps) = self.ix.steps.get(tid) else { return false };
@@ -505,7 +505,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// Invariant: a node using the epoch judges each named write as its rotator did, so it
     /// never holds a holder above what the rotator held it at on the word of a write judged
     /// otherwise (a re-seal included): the rotator's names hold every write they pin, but not
-    /// what voided one, or what voided the write voiding a lowering (a demotion of its author
+    /// what voided one, or what voided the write voiding a lowering (a lowering of its author
     /// on a holder actor it wrote through, an audit).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {

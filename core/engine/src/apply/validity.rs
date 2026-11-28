@@ -1539,7 +1539,7 @@ pub(crate) fn grant_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid
 /// admin now, with none (spec/permissions.md §1, The last admin): a standing admin is an admin
 /// grant on `t` with no `until`, its record grant included while it stands, as this node's walk
 /// has them. Reads `t`'s own grants alone: an audit a write makes drops none of the writes its
-/// writer holds (its frontier lists them, `Engine::demotion_frontier`), so it leaves no other
+/// writer holds (its frontier lists them, `Engine::lowering_frontier`), so it leaves no other
 /// thing so at the writer.
 pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Holder, Option<Grant>)]) -> bool {
     let standing = |e: &Grant| e.role == Role::Admin && e.until.is_none();

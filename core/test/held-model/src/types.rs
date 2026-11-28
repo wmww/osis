@@ -347,7 +347,7 @@ pub struct Commit {
     /// Header aspect-list order; one part per aspect, but a role commit has one per grant write.
     pub parts: Vec<Part>,
     pub purge: Vec<PurgeItem>,
-    /// Demotions only: commit IDs the author had received (spec/permissions.md §5.1).
+    /// Lowerings only: commit IDs the author had received (spec/permissions.md §5.1).
     pub frontier: Option<Vec<CommitId>>,
     /// `undoes` (spec/commits.md §7).
     pub undoes: Option<CommitId>,

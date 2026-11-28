@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use crate::Mutation;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid, Time};
 use osis_schema::core_types as ct;
@@ -58,7 +58,7 @@ fn removed_writer(n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
             grants.push((3, Role::Admin));
         }
         let (mut lp, t, tids) = granted(4, &grants);
-        let r1 = lp.peers[0].engine.demote(&t, &Demotion { holder: tids[1], new: None, retain: None }).unwrap().commits;
+        let r1 = lp.peers[0].engine.lower(&t, &Lowering { holder: tids[1], new: None, retain: None }).unwrap().commits;
         (lp, (t, r1))
     });
     (lp, t, r1)
@@ -120,7 +120,7 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
 // spec/crypto.md §4 (names: an entry is bound to a held valid keyset body), spec/permissions.md
 // §5.2: N drops R1's `secrets.0` body under the mint admin's compaction snapshot (which carries
 // the read epoch's entry), then R1's `keys.0` body under admin P's snapshot S; the mint admin
-// then demotes P with a frontier not listing S, so S turns invalid and that body is missing again
+// then lowers P with a frontier not listing S, so S turns invalid and that body is missing again
 // at N. No held valid keyset binds the read epoch's entry any more, so it covers nothing: N
 // rotates read once (an extra rotation, no lockout) and is covered by its own.
 #[test]
@@ -145,7 +145,7 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     let s = s.unwrap();
     assert!(r1.iter().any(|c| !lp.peers[3].engine.body_not_dropped(c, &t, &k)), "R1's keys.0 dropped at N");
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "the dropped rotation stays known");
-    lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync(0, 3).unwrap();
     assert!(!lp.peers[3].engine.core.ix.commits.get(&s).unwrap().valid().iter().any(|v| *v), "S invalid at N");
     assert_eq!(blocked_at(&mut lp, 3, t), BTreeSet::from([Role::Sync, Role::Read]), "R1's keysets missing again: their entries bind to nothing");
@@ -382,7 +382,7 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     let n = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&tag, &bob, &grant(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&n, &tag, &grant(Role::Write)).unwrap();
-    lp.peers[0].engine.demote(&n, &Demotion { holder: tag, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&n, &Lowering { holder: tag, new: None, retain: None }).unwrap();
     lp.peers[0].engine.grant(&n, &tag, &grant(Role::Read)).unwrap();
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
@@ -440,7 +440,7 @@ fn a_sync_holder_takes_the_sync_secret_in_any_order_spec_permissions_3() {
         let g = independent_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
         let granted = lp.peers[0].engine.grant(&g, &b, &grant(Role::Read)).unwrap().commits;
-        let lower = lp.peers[0].engine.demote(&g, &Demotion { holder: b, new: Some(grant(Role::Sync)), retain: None }).unwrap().commits;
+        let lower = lp.peers[0].engine.lower(&g, &Lowering { holder: b, new: Some(grant(Role::Sync)), retain: None }).unwrap().commits;
         let order = if lowering_first { [lower, granted] } else { [granted, lower] };
         for c in order.iter().flatten() {
             let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
@@ -525,9 +525,9 @@ impl Arrival {
         for (i, st) in steps.iter().enumerate() {
             match *st {
                 Step::GrantN(by) => drop(lp.peers[by].engine.grant(&g, &n, &grant(Role::Read)).unwrap()),
-                Step::RemoveN(by) => drop(lp.peers[by].engine.demote(&g, &Demotion { holder: n, new: None, retain: None }).unwrap()),
+                Step::RemoveN(by) => drop(lp.peers[by].engine.lower(&g, &Lowering { holder: n, new: None, retain: None }).unwrap()),
                 Step::Rotate(by) => drop(lp.peers[by].engine.rotate_boxing_only(&[g], &[Role::Read, Role::Write], &tids[..4]).unwrap()),
-                Step::RemoveM(by) => drop(lp.peers[by].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap()),
+                Step::RemoveM(by) => drop(lp.peers[by].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap()),
                 Step::Write(w) => put_on(&mut lp, w, g, &format!("k{i}"), i as i64),
                 Step::Sync(a, b) => lp.sync(a, b).unwrap(),
             }
@@ -767,7 +767,7 @@ fn reseal_puts_missing_boxes_replaces_none_spec_permissions_3() {
 
 // spec/crypto.md §4 (orphaned): a node that may rotate r rotates while a current epoch of r is orphaned,
 // spec/permissions.md §3 (the epoch is orphaned and rotated): every holder ends reading everything: writer W rotates G's read
-// leaving A, the mint admin, out, and A demotes W to read: the readers alone hold W's epoch, so
+// leaving A, the mint admin, out, and A lowers W to read: the readers alone hold W's epoch, so
 // nobody may re-seal A at it. A rotates read; the readers add W's epoch to the new epoch's
 // history, and A reads it.
 #[test]
@@ -776,7 +776,7 @@ fn orphaned_epoch_rotated_spec_crypto_4() {
     rotate_leaving_out(&mut lp, 1, g, &[Role::Read].into(), &[0]);
     lp.sync_all().unwrap();
     let w = newest_read(&lp, 1, g).unwrap();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     for _ in 0..3 {
         for p in 0..3 {
@@ -808,8 +808,8 @@ fn rotation_without_its_boxes_orphans_nothing_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Established): established by its own valid rotation commit: peer 1's rotation G of read
-// (epoch s, boxing peers 2 and 4 only) falls invalid, peer 0 demoting 1 to read concurrently;
-// peer 4's rotation of read is a valid fork beside it. Unaware of the demotion, 2 and 4 re-grant
+// (epoch s, boxing peers 2 and 4 only) falls invalid, peer 0 lowering 1 to read concurrently;
+// peer 4's rotation of read is a valid fork beside it. Unaware of the lowering, 2 and 4 re-grant
 // each other (re-writing every box G made at s), then 2 removes reader 3: its rotation C removes
 // the boxes at s and at 4's fork. C must be established wherever it is held, else 4's fork stays
 // current with its boxes gone, covering 3 by the box rule, and is encrypted under while 3 holds
@@ -818,7 +818,7 @@ fn rotation_without_its_boxes_orphans_nothing_spec_crypto_4() {
 fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let was = [Some(Role::Admin), Some(Role::Admin), Some(Role::Admin), Some(Role::Read), Some(Role::Admin)];
     let (mut lp, g, tids) = granted(5, &(1..5).map(|i| (i, was[i].unwrap())).collect::<Vec<_>>());
-    // the others stay unaware of peer 0's demotion: its fire is kept from them as its commit is
+    // the others stay unaware of peer 0's lowering: its fire is kept from them as its commit is
     lp.hold_fires_of(0, true);
     let others = |lp: &mut LocalPeer| {
         for a in 1..5 {
@@ -829,7 +829,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
             }
         }
     };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Read)), retain: None }).unwrap();
     let read = BTreeSet::from([Role::Read]);
     rotate_leaving_out(&mut lp, 4, g, &read, &[]);
     rotate_leaving_out(&mut lp, 4, g, &read, &[]);
@@ -840,7 +840,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     others(&mut lp);
     let before = lp.peers[2].engine.epochs(&g).unwrap().read.current();
     assert_eq!(before.len(), 2, "G's epoch and 4's fork current at 2: {before:?}");
-    lp.peers[2].engine.demote(&g, &Demotion { holder: tids[3], new: None, retain: None }).unwrap();
+    lp.peers[2].engine.lower(&g, &Lowering { holder: tids[3], new: None, retain: None }).unwrap();
     lp.hold_fires_of(0, false);
     departures_settle(&mut lp, g, was);
 }
@@ -872,7 +872,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
 // spec/crypto.md §4 (names): mint admin A (peer 0) removes reader M (2), rotating read to s (R_s).
 // Admin G (1) signs F, a forged rotation commit of s (s's keyset, history box and X's box
 // written again), then re-grants admin X (3), whose box record it replaces at s (C). A, holding C
-// but not F, removes G, rotating to e (naming R_s); so F is invalid (G demoted concurrently). X
+// but not F, removes G, rotating to e (naming R_s); so F is invalid (G lowered concurrently). X
 // holds every commit but R_s: e must not be established there (else X, still seeing M as a
 // reader, re-seals e to it). Once R_s arrives, e is.
 #[test]
@@ -880,7 +880,7 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
     let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.commit_ids(i).into_iter().collect() };
     let before = ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
@@ -890,7 +890,7 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
     for pk in lp.packages_for(1, 0).unwrap().into_iter().filter(|p| !before.contains(&p.id)) {
         lp.peers[0].receive(&pk.bytes, pk.blobs).unwrap();
     }
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let mut all = lp.packages_for(0, 3).unwrap();
@@ -929,7 +929,7 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
         let _ = lp.peers[0].receive(&pk.bytes, pk.blobs);
     }
     assert!(lp.peers[0].engine.epochs(&g).unwrap().read.get(&s).unwrap().rotations.contains_key(&f), "F valid at A");
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let mut all = lp.packages_for(0, 3).unwrap();
@@ -954,7 +954,7 @@ fn removed_reader() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>,
     let (lp, (g, tids, r_s, s)) = LocalPeer::cached("rotation::tests::removed_reader", || {
         let (mut lp, g, tids) = granted(4, &[(1, Role::Write), (2, Role::Read), (3, Role::Admin)]);
         let before = commit_ids(&mut lp, 0);
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
         let r_s: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
         let s = newest_read(&lp, 0, g).unwrap();
         (lp, (g, tids, r_s, s))
@@ -1013,7 +1013,7 @@ fn writer_rotation_skips(list_s: bool) {
     let e1 = newest_read(&lp, 0, g).unwrap();
     assert!(e1.n() > s.n(), "W's rotation current at A");
     assert_eq!(lp.peers[0].engine.epochs(&g).unwrap().read.current(), vec![e1]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > e1.n());
     let mut all = lp.packages_for(0, 3).unwrap();
@@ -1039,7 +1039,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
     let (mut lp, g, tids, r_s, s) = removed_reader();
     let snap = lp.peers[0].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
     assert!(snap.is_some());
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let all = lp.packages_for(0, 3).unwrap();
@@ -1053,9 +1053,9 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
 #[test]
 fn invalid_snapshot_keys_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Read)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 1, g).unwrap();
     assert!(lp.peers[1].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap().is_some());
     lp.sync(0, 1).unwrap();
@@ -1075,7 +1075,7 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let r_p: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let r_s: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
@@ -1086,7 +1086,7 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
         let _ = lp.peers[4].receive(&pk.bytes, pk.blobs.clone());
     }
     assert_eq!(lp.peers[4].engine.epochs(&g).unwrap().read.current(), vec![s], "s current at B");
-    lp.peers[4].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[4].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 4, g).unwrap();
     assert!(e.n() > s.n());
     let mut all = lp.packages_for(0, 3).unwrap();
@@ -1111,7 +1111,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
     let roles = [Role::Read, Role::Write, Role::Admin];
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
     lp.sync_all().unwrap();
-    // what the demotions came to: one by an admin demoted concurrently is invalid
+    // what the lowerings came to: one by an admin lowered concurrently is invalid
     let mut role = [Some(Role::Admin); N];
     let now: BTreeMap<Tid, Role> = lp.peers[0].engine.core.current_holders(&g).into_iter().map(|(h, r, _)| (h, r)).collect();
     for p in 1..N {
@@ -1138,13 +1138,13 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
     assert!(settled, "no fixpoint in 16 rounds");
     for r in roles {
         let ep = |p: usize| lp.peers[p].engine.epochs(&g).unwrap().role(r).clone();
-        // peer 0, G's mint admin, holds every role and is never demoted
+        // peer 0, G's mint admin, holds every role and is never lowered
         let at0 = ep(0).current();
         for &p in &stay {
             let e = ep(p);
             let c = e.current();
             // peer 0's rotations are all valid: an epoch current elsewhere and unestablished
-            // there is an invalid rotation's (a demoted admin's own, made unaware)
+            // there is an invalid rotation's (a lowered admin's own, made unaware)
             assert!(c.iter().all(|x| ep(0).is_established(x)), "{r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
             assert_eq!(c, at0, "{r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
         }
@@ -1187,7 +1187,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Grant { until: Some(until), ..grant(Role::Write) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[2].clock.advance(1_000);
     let lacked = {
@@ -1222,7 +1222,7 @@ fn a_finalize_rotates_only_what_its_writer_can_wrap_spec_permissions_2() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Grant { until: Some(until), ..grant(Role::Sync) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert!(lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().is_none(), "W holds no current read secret");
     let sync_before = lp.peers[1].engine.epochs(&g).unwrap().sync.current();
@@ -1294,12 +1294,12 @@ pub(super) fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
 // once each rotate, and only the first removal in order lowers it. Each removal's rotation covers
 // the departure wherever the others arrive, so the forks stand and nothing more is due. Writer
 // D's grant ends and four rotators (two admins, two writers) finalize it before any sync; two
-// admins demote writer D to read before any sync.
+// admins lower writer D to read before any sync.
 #[test]
 fn concurrent_removals_fork_once_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Write), (3, Role::Write), (4, Role::Write)]);
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[4], new: Some(ct::Grant { until: Some(until), ..grant(Role::Write) }), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[4], new: Some(ct::Grant { until: Some(until), ..grant(Role::Write) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(rounds_to_settle(&mut lp, g), vec![0], "settled before the end");
     for p in 0..5 {
@@ -1316,10 +1316,10 @@ fn concurrent_removals_fork_once_spec_crypto_4() {
 
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     for p in 0..2 {
-        lp.peers[p].engine.demote(&g, &Demotion { holder: tids[2], new: Some(grant(Role::Read)), retain: None }).unwrap();
+        lp.peers[p].engine.lower(&g, &Lowering { holder: tids[2], new: Some(grant(Role::Read)), retain: None }).unwrap();
     }
     lp.sync_all().unwrap();
-    forks_stand(&mut lp, g, &[Role::Write], 2, "two demotions");
+    forks_stand(&mut lp, g, &[Role::Write], 2, "two lowerings");
 }
 
 // spec/crypto.md §4 (Forks stand): the churn guard: no rotation answers a fork, so none forks another: five rotators fork G's write at once, and the forks reach the nodes in
@@ -1373,7 +1373,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Admin)]);
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Grant { until: Some(until), ..grant(Role::Write) };
-    let u: BTreeSet<_> = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap().commits.into_iter().collect();
+    let u: BTreeSet<_> = lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(timed), retain: None }).unwrap().commits.into_iter().collect();
     lp.peers[0].clock.advance(1_000);
     lp.peers[0].engine.ensure_rotated(&g).unwrap();
     assert!(lp.peers[0].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[1]), "D finalized at A");
@@ -1405,7 +1405,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     let timed = ct::Grant { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..grant(Role::Write) };
     let mut u1 = BTreeSet::new();
     for d in [3, 4] {
-        let c = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap().commits;
+        let c = lp.peers[0].engine.lower(&g, &Lowering { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap().commits;
         if d == 3 {
             u1.extend(c);
         }
@@ -1460,12 +1460,12 @@ fn named_commit_without_its_grant_write_unmet_spec_crypto_4() {
     withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
-// spec/crypto.md §4 (names: every commit whose demotion's audit dropped a grant write on the
-// actor, named by the thing the demotion is on): G's mint admin is actor O (peer 0's); W (1) an
-// admin of O grants D (2) read on G through the record chain (C). Mint admin A demotes W to write on
+// spec/crypto.md §4 (names: every commit whose lowering's audit dropped a grant write on the
+// actor, named by the thing the lowering is on): G's mint admin is actor O (peer 0's); W (1) an
+// admin of O grants D (2) read on G through the record chain (C). Mint admin A lowers W to write on
 // O, not having received C (its frontier misses it), so C is audited away; A then gets C and
 // rotates G's read to e (and its write): no grant write on G departs anyone, and O's read keyset is unchanged, so
-// only the audit names W's demotion. X (3, G's admin) holds C but not the demotion: e must not
+// only the audit names W's lowering. X (3, G's admin) holds C but not the lowering: e must not
 // be established there (X sees D a reader and would re-seal e to it). Once it arrives, e is.
 #[test]
 fn audit_dropped_grant_named_spec_crypto_4() {
@@ -1485,7 +1485,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let c: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
     lp.advance(1_000);
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&o, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.sync(1, 0).unwrap();
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
@@ -1494,7 +1494,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let e = newest_read(&lp, 0, g).unwrap();
     let mut all = lp.packages_for(0, 3).unwrap();
     all.extend(lp.packages_for(1, 3).unwrap());
-    // X gets C after the demotion's `ts`
+    // X gets C after the lowering's `ts`
     lp.peers[3].clock.advance(1_000);
     for pk in all.iter().filter(|p| !dem.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
@@ -1506,7 +1506,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
 
 // spec/crypto.md §4 (Covers: every void tail write named, an audit drop included): A removes D
 // from G (rotation e1 names that removal); W, an admin of G's mint admin O, grants D read on G
-// again, boxing it at e1; A demotes W on O without that grant, so the audit drops it. The drop
+// again, boxing it at e1; A lowers W on O without that grant, so the audit drops it. The drop
 // is a tail write giving D read that e1 does not name void: A must rotate before encrypting
 // under e1, which D holds. G's tid drawn below O's and above it: the drop is named on O, the
 // removal on G, so either sorts first by thing.
@@ -1530,7 +1530,7 @@ fn newest_event_names_departure_spec_crypto_4() {
         lp.peers[0].engine.make_independent(&g).unwrap();
         lp.peers[0].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
         lp.sync_all().unwrap();
         let e1 = newest_read(&lp, 0, g).unwrap();
         lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
@@ -1538,7 +1538,7 @@ fn newest_event_names_departure_spec_crypto_4() {
         assert!(lp.peers[2].engine.epochs(&g).is_some_and(|x| x.read.secret(&e1).is_some()), "G below O {g_below}: D holds e1");
         // ordered after the re-grant, whose author it has not seen: audited, not plain invalid
         lp.peers[0].clock.advance(5_000);
-        lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&o, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
         lp.sync(1, 0).unwrap();
         assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "G below O {g_below}: the re-grant audited away at A");
         assert_eq!(newest_read(&lp, 0, g), Some(e1), "G below O {g_below}");
@@ -1580,7 +1580,7 @@ fn fork_sibling_reseal_spec_crypto_4() {
     send_skipping(&mut lp, 0, 2, &BTreeSet::new());
     let start = held_by(&lp, 2, &[a]);
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&a, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&a, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let removal: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     assert_eq!(lp.peers[0].engine.epochs(&a).unwrap().read.current().len(), 2, "e1 forks a1's removal");
@@ -1605,10 +1605,10 @@ fn removal_with(bad: &[&str], leave_out: bool) -> Vec<String> {
     lp.peers[0].engine.core.forged.clear();
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].engine.core.forge_bad = bad.iter().map(|a| (g, osis_base::Ak::new(*a).unwrap())).collect();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: ids[3], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: ids[3], new: None, retain: None }).unwrap();
     lp.peers[0].engine.core.forge_bad = Default::default();
     lp.peers[0].engine.core.skip_writer_rules = false;
-    // what the demotion built, as sent: the rotation's parts on `bad` do not decode
+    // what the lowering built, as sent: the rotation's parts on `bad` do not decode
     let forged = std::mem::take(&mut lp.peers[0].engine.core.forged);
     assert!(forged.values().any(|f| osis_commit::CommitBlob::decode(f).unwrap().header.aspects.iter().any(|a| bad.contains(&a.ak.as_str()))));
     for i in [1, 2, 3] {
@@ -1708,7 +1708,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Write), (3, Role::Write)]);
     let timed = ct::Grant { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..grant(Role::Write) };
     for d in [2, 3] {
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&g, &Lowering { holder: tids[d], new: Some(timed.clone()), retain: None }).unwrap();
     }
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[3], &grant(Role::Write)).unwrap();
@@ -1734,7 +1734,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
 fn renewed_holder_resealed_spec_crypto_4() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
     let timed = ct::Grant { until: Some(Time(lp.peers[0].engine.core.now().0 + 100)), ..grant(Role::Write) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: Some(timed), retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &grant(Role::Write)).unwrap();
     lp.peers[1].clock.advance(1_000);
@@ -1769,7 +1769,7 @@ fn forks_unboxed_with_departure_rotate_lacking_secrets_spec_crypto_4() {
             forks.push(rotate_as(&mut lp, i, g, &[Role::Read].into(), &[(other, None)]).unwrap()[0]);
         }
     }
-    lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: x, new: None, retain: None }).unwrap();
     // A is gone: only B and D exchange
     lp.sync(0, 1).unwrap();
     lp.sync(0, 2).unwrap();
@@ -1860,7 +1860,7 @@ fn grant_rotates_first_boxes_grantee_only_spec_crypto_4() {
             rotate_leaving_out(&mut lp, i, g, &BTreeSet::from([Role::Read]), &[other]);
         }
     }
-    lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: x, new: None, retain: None }).unwrap();
     lp.sync(0, 1).unwrap();
     lp.sync(0, 2).unwrap();
     lp.sync(1, 2).unwrap();
@@ -1891,7 +1891,7 @@ fn ended_holder_not_resealed_spec_permissions_2() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
     let until = Time(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Grant { until: Some(until), ..grant(Role::Write) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(timed), retain: None }).unwrap();
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
     lp.sync(0, 2).unwrap();
     lp.peers[2].clock.advance(1_000);
@@ -1954,7 +1954,7 @@ fn forks_with_ended_grant_finalize_after_reseal_spec_permissions_2() {
 fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Read)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let f = newest_read(&lp, 0, g).unwrap();
     rotate_leaving_out(&mut lp, 0, g, &read, &[]);
     let g1 = newest_read(&lp, 0, g).unwrap();
@@ -2007,21 +2007,21 @@ fn epochs_are_derived_once_per_change_of_what_they_read() {
 }
 
 /// Peers: 0 = mint admin A of `g`, 1 = admin a2, 2 = reader M, 3 = admin R. A removes M (L),
-/// then demotes a2 to write (D); a2 has not seen D, so what it writes on `g`'s grants after
+/// then lowers a2 to write (D); a2 has not seen D, so what it writes on `g`'s grants after
 /// it applies nowhere that holds D.
-fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>) {
+fn lowered_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>) {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[0].clock.advance(1_000);
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[1].clock.advance(5_000);
     (lp, g, tids, dem)
 }
 
 // spec/crypto.md §4 (Unsuperseded; Lists; withdraws): peers A (0, mint admin), a2 (1, admin), M
-// (2, reader), R (3, admin). A demotes a2 to write (D); a2, unaware, removes M (W); R, holding W
+// (2, reader), R (3, admin). A lowers a2 to write (D); a2, unaware, removes M (W); R, holding W
 // but not D, rotates read (e_R, naming W, boxing no M). At A, W applies nothing (a2 a writer at
 // its point): M reads on, and e_R's names are met at no holder of its secret, yet e_R is current
 // at M (it lacks the secret: established by its commit alone). R, its rotator, withdraws it: a
@@ -2029,9 +2029,9 @@ fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>
 #[test]
 fn unmet_epoch_withdrawn_by_its_rotator_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(5_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync(1, 3).unwrap();
     lp.peers[3].clock.advance(10_000);
     rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
@@ -2078,9 +2078,9 @@ fn withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate
 
 fn build_withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate::local_peer::SealedPackage>) {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(5_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync(1, 3).unwrap();
     lp.peers[3].clock.advance(10_000);
     rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
@@ -2098,7 +2098,7 @@ fn build_withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec
     (lp, g, tids, e_r, entry)
 }
 
-// spec/requirements.md Permissions (Limit: a removal voided by its author's concurrent demotion),
+// spec/requirements.md Permissions (Limit: a removal voided by its author's concurrent lowering),
 // spec/crypto.md §4 (Uses: established only): what R wrote under e_R while it held a2's removal
 // of M applying (W) reaches only e_R's box holders. M, a reader all along once D arrives, and N,
 // granted after, read what came after and never "w": e_R's names are met at no holder of its
@@ -2240,7 +2240,7 @@ fn removed_opens(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize, r: Role)
 // encrypting under e_L, which M opens.
 #[test]
 fn regrant_invalid_here_boxes_removed_reader_spec_crypto_4() {
-    let (mut lp, g, tids, dem) = demoted_unaware();
+    let (mut lp, g, tids, dem) = lowered_unaware();
     send_skipping(&mut lp, 0, 1, &dem);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
     lp.sync(1, 0).unwrap();
@@ -2252,8 +2252,8 @@ fn regrant_invalid_here_boxes_removed_reader_spec_crypto_4() {
 // (a2 a writer at its point) and G is a tail write R's epoch does not name void, so A rotates.
 #[test]
 fn later_removal_named_by_reraising_rotator_spec_crypto_4() {
-    let (mut lp, g, tids, _) = demoted_unaware();
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    let (mut lp, g, tids, _) = lowered_unaware();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[1].clock.advance(1_000);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
     lp.sync(1, 3).unwrap();
@@ -2268,7 +2268,7 @@ fn later_removal_named_by_reraising_rotator_spec_crypto_4() {
 // R's epoch names L only, not G void, so A rotates rather than encrypting under it.
 #[test]
 fn regrant_invalid_here_named_by_no_rotator_that_applied_it_spec_crypto_4() {
-    let (mut lp, g, tids, dem) = demoted_unaware();
+    let (mut lp, g, tids, dem) = lowered_unaware();
     send_skipping(&mut lp, 0, 1, &dem);
     send_skipping(&mut lp, 0, 3, &dem);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
@@ -2283,7 +2283,7 @@ fn regrant_invalid_here_named_by_no_rotator_that_applied_it_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Names: void, apart from applied): peers A (0), a2 (1), M (2, reader), R
-// (3), a3 (4). A removes M (L) and demotes a2 and a3 to write (D, T); a3, holding L but neither,
+// (3), a3 (4). A removes M (L) and lowers a2 and a3 to write (D, T); a3, holding L but neither,
 // raises M to write (W); a2, holding L but neither, not W, grants M read (G, ordered after W).
 // R holds L, W and G, not D or T: G lowers M from write there, so R's rotation names G applied
 // and boxes M as a reader. At A, W and G apply nothing: tail writes R's epoch names not void
@@ -2291,11 +2291,11 @@ fn regrant_invalid_here_named_by_no_rotator_that_applied_it_spec_crypto_4() {
 #[test]
 fn raise_applied_as_lowering_elsewhere_covers_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[0].clock.advance(1_000);
     let before = commit_ids(&mut lp, 0);
     for h in [1, 4] {
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[h], new: Some(grant(Role::Write)), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&g, &Lowering { holder: tids[h], new: Some(grant(Role::Write)), retain: None }).unwrap();
     }
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     for to in [1, 3, 4] {
@@ -2323,13 +2323,13 @@ fn raise_applied_as_lowering_elsewhere_covers_nothing_spec_crypto_4() {
 // its point), and R's epoch does not name it void, so A rotates rather than encrypting under it.
 #[test]
 fn raise_by_author_removed_since_lowers_spec_crypto_4() {
-    let (mut lp, g, tids, dem) = demoted_unaware();
+    let (mut lp, g, tids, dem) = lowered_unaware();
     send_skipping(&mut lp, 0, 1, &dem);
     send_skipping(&mut lp, 0, 3, &dem);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
     lp.sync(1, 3).unwrap();
     lp.peers[3].clock.advance(10_000);
-    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[3].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let r = newest_read(&lp, 3, g).unwrap();
     assert!(openable(&mut lp, 3, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, r)), "R's removal epoch boxes M");
     lp.sync(1, 0).unwrap();
@@ -2338,7 +2338,7 @@ fn raise_by_author_removed_since_lowers_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Met; void): a void name only where its write applies nothing; a raise void here through a holder actor's demotion: P
+// spec/crypto.md §4 (Met; void): a void name only where its write applies nothing; a raise void here through a holder actor's lowering: P
 // is admin of g through holder k (k admin on g). A removes M (L); Q removes P from k (D: a
 // writer of k would still add M by k's admin on g, spec/permissions.md §2 Path's may-grant).
 // P, holding L but not D, re-grants M on g (R); at A, R applies nothing (P writes g through k)
@@ -2355,10 +2355,10 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     lp.grant_through(0, g, k, &grant(Role::Admin));
     lp.grant_through(0, g, tids[2], &grant(Role::Read));
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     let before = commit_ids(&mut lp, 3);
-    lp.peers[3].engine.demote(&k, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[3].engine.lower(&k, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 3).difference(&before).copied().collect();
     lp.sync(3, 0).unwrap();
     lp.peers[1].clock.advance(5_000);
@@ -2382,7 +2382,7 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Covers: every void tail write named void, an older one included): A (0)
-// removes M (2) (L) and demotes a2 (1) to write (D); O2 (5) demotes a3 (4) to write (T), unseen
+// removes M (2) (L) and lowers a2 (1) to write (D); O2 (5) lowers a3 (4) to write (T), unseen
 // by A. a3, holding L but not T, re-grants M (G3); a2, holding L but not D, re-grants M after it
 // (G2). A, holding G2 but not G3 or T, rotates naming L and G2 void. R (3) holds L, D, G2 and
 // G3, not T: G2 applies nothing there, so A's names are met, but G3 holds M a reader there, and
@@ -2397,13 +2397,13 @@ fn raise_name_over_older_raise_resealed_spec_crypto_4() {
 
 fn raise_name_over_older_raise_resealed(r: Role) {
     let (mut lp, g, tids) = granted(6, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin), (5, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[0].clock.advance(1_000);
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     let d: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[5].clock.advance(1_000);
-    lp.peers[5].engine.demote(&g, &Demotion { holder: tids[4], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[5].engine.lower(&g, &Lowering { holder: tids[4], new: Some(grant(Role::Write)), retain: None }).unwrap();
     for to in [1, 4] {
         send_skipping(&mut lp, 0, to, &d);
     }
@@ -2432,8 +2432,8 @@ fn raise_name_over_older_raise_resealed(r: Role) {
 }
 
 // spec/crypto.md §4 (Covers): a drop over an older raise: g's mint admin is O (a holder A made, W
-// an admin of it). A (0) removes M (2) (L); O2 (5) demotes a3 (4) to write on g (T), unseen by
-// A. a3, holding L but not T, re-grants M (G3); W (1) grants M (C); A demotes W on O (X)
+// an admin of it). A (0) removes M (2) (L); O2 (5) lowers a3 (4) to write on g (T), unseen by
+// A. a3, holding L but not T, re-grants M (G3); W (1) grants M (C); A lowers W on O (X)
 // without C, so X's audit drops C. A, holding C but not G3 or T, rotates g naming L and C void. R
 // (3) holds L, C, X and G3, not T: C applies nothing there, so G3 holds M a reader there and R
 // re-seals M at A's epoch. At A, once T and G3 arrive, G3 is a void tail write: A must
@@ -2454,11 +2454,11 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
         lp.peers[0].engine.grant(&g, &tids[h], &grant(Role::Admin)).unwrap();
     }
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[5].clock.advance(1_000);
     let before = commit_ids(&mut lp, 5);
-    lp.peers[5].engine.demote(&g, &Demotion { holder: tids[4], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[5].engine.lower(&g, &Lowering { holder: tids[4], new: Some(grant(Role::Write)), retain: None }).unwrap();
     let t: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
     lp.peers[4].clock.advance(3_000);
     lp.peers[4].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
@@ -2466,7 +2466,7 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     lp.peers[1].clock.advance(4_000);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Read)).unwrap();
     lp.peers[0].clock.advance(6_000);
-    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&o, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
     lp.peers[0].clock.advance(10_000);
@@ -2489,7 +2489,7 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Covers: the tail write taking M below r named, beside the void ones): A (0)
-// demotes a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, raises M to
+// lowers a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, raises M to
 // write (W, ordered after L; it applies nothing where D is held). X (3, an admin) holds D and W
 // but not L: X sees M a reader, boxes it and names W void. At A, X's epoch names the void raise
 // after L but not L: a node where its names are met may lack L and hold M a reader, as X did.
@@ -2497,10 +2497,10 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
 #[test]
 fn raise_named_without_the_removal_before_it_spec_crypto_4() {
     let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.sync(0, 3).unwrap();
     lp.peers[0].clock.advance(1_000);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[1].clock.advance(5_000);
     lp.peers[1].engine.grant(&g, &tids[2], &grant(Role::Write)).unwrap();
     lp.sync(1, 3).unwrap();
@@ -2526,7 +2526,7 @@ fn raise_named_without_the_removal_before_it_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Met: an applied name only where its write stands): A (0)
-// demotes a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, removes M
+// lowers a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, removes M
 // too (L2, after both): at A, L2 applies nothing (a2 is a writer at its point) and would apply
 // over nothing. X (3, an admin) holds L2 but neither D nor L: L2 applies there, and X's
 // rotation names it, leaving M out. V (4, an admin) holds D, L2 and X's rotation, not L: M is a
@@ -2534,15 +2534,15 @@ fn raise_named_without_the_removal_before_it_spec_crypto_4() {
 // establish X's epoch and re-seals M at nothing of it. At A, L2 does not stand either: A must
 // not use X's epoch.
 #[test]
-fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
+fn removal_by_lowered_admin_pins_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.peers[0].clock.advance(1_000);
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let l: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.peers[1].clock.advance(5_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     send_skipping(&mut lp, 1, 3, &BTreeSet::new());
     lp.peers[3].clock.advance(10_000);
     rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
@@ -2562,7 +2562,7 @@ fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Met: a name is met only where its write is judged as its rotator judged
-// it): Q is admin of g through holder k (k's mint admin O2, 5). O2 demotes Q to write on k (D).
+// it): Q is admin of g through holder k (k's mint admin O2, 5). O2 lowers Q to write on k (D).
 // Q, lacking D, removes admin P (1) from g (Rp); P, lacking Rp, removes reader M (2) (L). A (0)
 // holds all: Rp applies nothing (Q a writer through k), L applies, and A rotates naming L. V (4,
 // an admin) holds Rp, L and A's rotation, not D: Rp applies there, so L applies nothing and M
@@ -2572,9 +2572,9 @@ fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
 fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
     let (mut lp, tids, g, dem) = through_holder_actor();
     lp.peers[3].clock.advance(5_000);
-    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[3].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     lp.peers[1].clock.advance(10_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync(3, 0).unwrap();
     lp.sync(1, 0).unwrap();
     assert!(lp.peers[0].engine.core.role_now(&tids[1], &g).is_some(), "Rp applies nothing at A");
@@ -2593,7 +2593,7 @@ fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
 }
 
 /// The holder-actor world of `applied_name_void_elsewhere_through_holder_actor`: Q (3) admin
-/// of g through k, O2 (5) demoting Q to write on k (D, returned), D at A (0) alone.
+/// of g through k, O2 (5) lowering Q to write on k (D, returned), D at A (0) alone.
 fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::CommitId>) {
     let mut lp = synced(6);
     let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.tid()).collect();
@@ -2608,7 +2608,7 @@ fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::Comm
     }
     lp.sync_all().unwrap();
     let before = commit_ids(&mut lp, 5);
-    lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[5].engine.lower(&k, &Lowering { holder: tids[3], new: Some(grant(Role::Write)), retain: None }).unwrap();
     // k's card refreshed with D's rotation: it carries D, so it goes with D
     lp.peers[5].engine.refresh_cards().unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
@@ -2617,7 +2617,7 @@ fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::Comm
 }
 
 // spec/crypto.md §4 (Met: a departs mark only where its commit's writes take): as
-// `applied_name_void_elsewhere_through_holder_actor`, Q (lacking D) demotes P to write (Dp)
+// `applied_name_void_elsewhere_through_holder_actor`, Q (lacking D) lowers P to write (Dp)
 // instead, and P's removal of M (L) carries its rotation, which names L by its departs mark. V,
 // holding Dp, not D, judges L void (P a writer at its point) while P's rotation stands (a
 // writer rotates read): the mark must not be met there by its commit alone.
@@ -2625,9 +2625,9 @@ fn through_holder_actor() -> (LocalPeer, Vec<Tid>, Tid, BTreeSet<osis_base::Comm
 fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     let (mut lp, tids, g, dem) = through_holder_actor();
     lp.peers[3].clock.advance(5_000);
-    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
+    lp.peers[3].engine.lower(&g, &Lowering { holder: tids[1], new: Some(grant(Role::Write)), retain: None }).unwrap();
     lp.peers[1].clock.advance(10_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[2], new: None, retain: None }).unwrap();
     let x = newest_read(&lp, 1, g).unwrap();
     lp.sync(3, 0).unwrap();
     lp.sync(1, 0).unwrap();
@@ -2677,7 +2677,7 @@ fn admin_through_a_dependent_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
             c.map(|_| ())
         })
         .unwrap();
-    lp.peers[0].engine.demote(&d, &Demotion { holder: o, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&d, &Lowering { holder: o, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     (lp, h, t, d)
 }
@@ -2761,7 +2761,7 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     lp.sync(0, 2).unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &x).unwrap(), Some(osis_base::Value::Str("first".into())));
     // peer 1, unaware of T's own secrets
-    lp.peers[1].engine.demote(&f, &Demotion { holder: tids[3], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&f, &Lowering { holder: tids[3], new: None, retain: None }).unwrap();
     let mut m = Mutation::new();
     m.set(t, &x, &osis_base::Value::Str("derived".into())).unwrap();
     let w = lp.peers[1].commit(m).unwrap().unwrap();
@@ -2843,7 +2843,7 @@ fn a_left_thing_stays_without_secrets_when_rebuilt_spec_permissions_3() {
     let pks: Vec<_> = on_g.iter().map(|c| e.package(c).unwrap().unwrap()).collect();
     let s = e.sync_id_of(&g).unwrap().unwrap();
     e.core.followed_links.insert(g, s, None);
-    e.leaving_adminless(|e| e.demote(&g, &Demotion { holder: a, new: None, retain: None })).unwrap();
+    e.leaving_adminless(|e| e.lower(&g, &Lowering { holder: a, new: None, retain: None })).unwrap();
     for c in e.waiting_removals().iter() {
         e.removal_done(c).unwrap();
     }
@@ -2868,7 +2868,7 @@ fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
     lp.peers[1].restart(0).unwrap();
     let (before, _) = served_secrets(&mut lp, g);
     assert!(before.boxes.keys().any(|b| b.holder == osis_base::Weak(tids[1])), "W's boxes held");
-    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     let waiting = lp.peers[1].engine.waiting_removals();
     assert!(!waiting.is_empty(), "the self-removal waits");
@@ -2895,7 +2895,7 @@ fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
 #[test]
 fn a_role_kept_out_is_read_again_once_given_spec_permissions_3() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Admin)]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[]);
     lp.sync(0, 1).unwrap();
     lp.peers[0].engine.grant(&g, &tids[1], &grant(Role::Read)).unwrap();
@@ -3012,7 +3012,7 @@ fn a_dependent_holder_left_so_by_an_invalid_keyset_gets_secrets_of_its_own_spec_
     let (mut lp, g, t, tids) = dependent_of_g();
     let x = independent_thing(&mut lp, 3);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: tids[1], new: None, retain: None }).unwrap();
     // A's clock runs ahead: its grant is stamped after its removal
     lp.peers[1].clock.advance(120_000);
     lp.grant_through(1, t, tids[2], &grant(Role::Read));

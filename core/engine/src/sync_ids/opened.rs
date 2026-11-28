@@ -18,7 +18,7 @@
 //! where the thing's record is held, else the held body's bytes compared at use. A section
 //! forged under an epoch the removed party holds carries no genuine delta it did not already
 //! know. Establishment is judged at use, not at the opening: an epoch's names may stop being
-//! met (a demotion voiding the removal it names).
+//! met (a lowering voiding the removal it names).
 //!
 //! Every path that reads another's content notes the epoch it came under: a section's, a copy's
 //! (its entry's wrap), a sealed fire's (the keyset it is sealed to, `open_sealed_fire`). A part

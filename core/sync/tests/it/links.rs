@@ -104,7 +104,7 @@ fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     assert!(w.engine(1).roster(&link.k).contains_key(&a1), "joined");
-    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&link.target, &osis_engine::flows::Lowering { holder: link.k, new: None, retain: None })).unwrap();
     w.run();
     assert!(!w.engine(1).roster(&link.target).contains_key(&link.k), "K off the target at node 1");
     for i in 0..2 {
@@ -138,7 +138,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     w.partition(0, 1);
-    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&link.target, &osis_engine::flows::Lowering { holder: link.k, new: None, retain: None })).unwrap();
     w.write(0, |e| e.grant(&link.target, &link.k, &grant(Role::Read))).unwrap();
     w.heal();
     w.run();
@@ -315,7 +315,7 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     w.power_on(1);
     w.run();
     assert!(hinted(&w), "kept across a restart");
-    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&link.target, &osis_engine::flows::Lowering { holder: link.k, new: None, retain: None })).unwrap();
     w.run();
     assert!(!w.engine(1).roster(&link.k).contains_key(&w.node(1).account.unwrap()), "node 1's account left K");
     assert!(!hinted(&w), "the peer dropped with the join");

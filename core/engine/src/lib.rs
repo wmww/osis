@@ -25,9 +25,9 @@ pub mod undo;
 pub use apply::{Creation, Ingested, Reason};
 pub use apply::carriers::Carrier;
 pub use apply::reach::Wants;
-pub use apply::receipt::DemotionScope;
+pub use apply::receipt::Loweringscope;
 pub use engine::{Config, Engine, MintAdmin, Mutation};
-/// A demotion's frontier, as `Mutation::frontier` takes it.
+/// A lowering's frontier, as `Mutation::frontier` takes it.
 pub use osis_perm::Frontier;
 pub use error::{Error, Result};
 pub use ephemeral::Written;

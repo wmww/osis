@@ -181,9 +181,9 @@ fn edited(v: Option<Value>, r: &mut Rng, g: u64) -> Value {
 }
 
 /// Node 0 removes writer `who` with a frontier before all its writes: the removal's commit.
-fn demote_peer(w: &mut World, who: usize) -> CommitId {
+fn lower_peer(w: &mut World, who: usize) -> CommitId {
     let (t, x) = (w.t, w.lp.peers[who].engine.tid());
-    let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
+    let scope = crate::apply::receipt::Loweringscope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(x)) }).unwrap();
@@ -272,9 +272,9 @@ impl World {
     }
 
     /// Node 0 removes the rogue with a frontier before all its writes.
-    fn demote(&mut self) {
-        let c = demote_peer(self, ROGUE);
-        self.log.push(format!("demote: {c:?}"));
+    fn lower(&mut self) {
+        let c = lower_peer(self, ROGUE);
+        self.log.push(format!("lower: {c:?}"));
     }
 
     fn sync(&mut self) {
@@ -368,8 +368,8 @@ fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static s
             new.sync();
             old.sync();
         } else if g == steps / 2 {
-            new.demote();
-            old.demote();
+            new.lower();
+            old.lower();
         } else {
             new.step(&mut rn, g);
             old.step(&mut ro, g);
@@ -1273,11 +1273,11 @@ fn invalid_paged_delta_unmerges_per_piece_spec_perm_5_2() {
             let cur = w.lp.peers[1].engine.get(&t, &mix).unwrap();
             let edit = w.commit(1, |m| { m.set(t, &mix, &edited(cur, &mut r, 1)).unwrap(); });
             let before: Vec<CommitId> = w.lp.peers[0].engine.commit_ids();
-            w.demote();
-            let demote = w.lp.peers[0].engine.commit_ids().into_iter().find(|c| !before.contains(c)).unwrap();
+            w.lower();
+            let lower = w.lp.peers[0].engine.commit_ids().into_iter().find(|c| !before.contains(c)).unwrap();
             let mut pks = packages(w, ROGUE, &[fill]);
             pks.extend(packages(w, 1, &[edit]));
-            pks.extend(packages(w, 0, &[demote]));
+            pks.extend(packages(w, 0, &[lower]));
             order.iter().map(|i| pks[*i].clone()).collect()
         });
         assert!(c.get("apply: piece").is_some_and(|n| *n > 2), "{order:?}: {c:?}");
@@ -1423,9 +1423,9 @@ fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, set) = (w.t, aks()[2].clone());
         let fill = w.commit(ROGUE, |m| { m.set(t, &set, &fixed_fill(2, 0)).unwrap(); });
-        let demote = demote_peer(w, ROGUE);
+        let lower = lower_peer(w, ROGUE);
         let mut pks = packages(w, ROGUE, &[fill]);
-        pks.extend(packages(w, 0, &[demote]));
+        pks.extend(packages(w, 0, &[lower]));
         pks
     });
     assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
@@ -1443,9 +1443,9 @@ fn invalid_fill_after_nested_rewrite_spec_perm_5_2() {
         let pk = packages(w, ROGUE, &[fill]);
         w.lp.deliver(1, &pk[0]).unwrap();
         let rewrite = w.commit(1, |m| { m.set(t, &big, &fixed_fill(0, 1)).unwrap(); });
-        let demote = demote_peer(w, ROGUE);
+        let lower = lower_peer(w, ROGUE);
         let mut pks = packages(w, 1, &[rewrite]);
-        pks.extend(packages(w, 0, &[demote]));
+        pks.extend(packages(w, 0, &[lower]));
         pks.extend(pk);
         pks
     });
@@ -1470,7 +1470,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
             m.set(t, &set, &fixed_fill(2, g)).unwrap();
             fills.push(w.lp.peers[by].commit(m).unwrap().unwrap());
         }
-        let (dx, dy) = (demote_peer(w, x), demote_peer(w, y));
+        let (dx, dy) = (lower_peer(w, x), lower_peer(w, y));
         let mut pks = packages(w, x, &[fills[0]]);
         pks.extend(packages(w, y, &[fills[1]]));
         pks.extend(packages(w, 0, &[dx]));
@@ -1507,11 +1507,11 @@ fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
         let other = w.commit(0, |m| {
             m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
         });
-        let demote = demote_peer(w, ROGUE);
+        let lower = lower_peer(w, ROGUE);
         let mut pks = pk;
         pks.extend(packages(w, 1, &[rewrite]));
         pks.extend(packages(w, 0, &[other]));
-        pks.extend(packages(w, 0, &[demote]));
+        pks.extend(packages(w, 0, &[lower]));
         pks
     });
     assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
@@ -1530,7 +1530,7 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
         let put = w.commit(ROGUE, |m| {
             m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
         });
-        let demote = demote_peer(w, ROGUE);
+        let lower = lower_peer(w, ROGUE);
         let mut pks = packages(w, 1, &[fill]);
         pks.extend(packages(w, ROGUE, &[put]));
         for pk in &pks {
@@ -1538,7 +1538,7 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
         }
         let p = &mut w.lp.peers[3];
         p.restart(0).unwrap();
-        packages(w, 0, &[demote])
+        packages(w, 0, &[lower])
     });
     assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
 }

@@ -10,7 +10,7 @@ use common::*;
 use osis_base::{Clock, ManualClock, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Config, Engine, Mutation};
 use osis_schema::Codec;
@@ -63,7 +63,7 @@ fn damaged_caches_are_rebuilt() {
     write(&mut lp, 1, "bob before");
     spread(&mut lp);
     lp.advance(10);
-    lp.peers[0].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&d, &Lowering { holder: pb, new: None, retain: None }).unwrap();
     lp.advance(10);
     write(&mut lp, 1, "bob after");
     spread(&mut lp);

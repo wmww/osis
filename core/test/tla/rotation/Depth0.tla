@@ -161,7 +161,7 @@ Bogus == {}
 \* not judge it) is a stale box of its epoch where x holds a valid keyset of h;
 \* FALSE: not judged, the leak of a Bogus rotation without Travel
 AsOf == FALSE
-\* demotions travel with keys (spec/crypto.md \S 4, Carried demotions; built):
+\* lowerings travel with keys (spec/crypto.md \S 4, Carried lowerings; built):
 \* a keyset carries the removals of writers through holder actors (Via
 \* nodes) and of admins from its actor or an actor below it that its
 \* rotator held (kw), and a node holds a keyset only with what it carries;
@@ -177,7 +177,7 @@ Possession == FALSE
 \* removal), once: it rotates h listing every honest keyset of h made so far
 \* (a keyset descending from h's knowing one), sealing h's holder actors at
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
-\* keyset (notes/holder-actors.md, Carried demotions, the first leak)
+\* keyset (notes/holder-actors.md, Carried lowerings, the first leak)
 Rogue == {}
 \* a node that holds an actor's keysets (certificates under a target's sync
 \* ID) and none of its boxes: BoxBlind {<<node, actor>>}; it judges that

@@ -43,7 +43,7 @@
 //!   (`World::gap`, notes/write-path-design.md §2 The gap; issues/removed-key-writes-show-far.md),
 //!   counted, never excluded silently.
 //! - **Keysets** (`World::rotate`, notes/write-path-design.md §2 D2; notes/a3-spec/README.md Open 8):
-//!   a rotation's keyset is a body on its thing carrying the demotions its writer holds, each whole;
+//!   a rotation's keyset is a body on its thing carrying the lowerings its writer holds, each whole;
 //!   with `Rule::keysets` they are in the required set of every sync ID holding the keyset, and a
 //!   keyset pends at a node lacking one of them (spec/crypto.md §4, Held keyset).
 //! - **Stamping and D4** (`Node::stamps`, `Rule::deposit`): a node logs under a sync ID only where
@@ -60,7 +60,7 @@
 //!   is dropped at once (spec/commits.md §5 Invalid): no act waits for it.
 //!
 //! Left out: records (static, `paths::World::records`), keys and sealing (a keyset is a body that
-//! carries demotions, no more), `@` signals, covers, deposits other than D4's and their promotion
+//! carries lowerings, no more), `@` signals, covers, deposits other than D4's and their promotion
 //! as a step of its own, multi-thing role commits, how units are computed
 //! (an input: `closure` checks the walk).
 
@@ -119,8 +119,8 @@ pub struct Rule {
     /// False: the control (grants only), which under-reads (record grants open keys as grants do: spec/sync-set.md §2).
     pub records: bool,
     pub lists: Lists,
-    /// The carried-demotion seed (notes/a3-spec/README.md Open 8): a held keyset's carried
-    /// demotions are in the required set of each sync ID holding it. False: the control.
+    /// The carried-lowering seed (notes/a3-spec/README.md Open 8): a held keyset's carried
+    /// lowerings are in the required set of each sync ID holding it. False: the control.
     pub keysets: bool,
     /// D4, the reader's deposit on sight (notes/write-path-design.md §2): a node syncing S that
     /// cannot stamp it deposits the removal copies S's required set takes over its holdings.
@@ -193,7 +193,7 @@ pub struct World {
     /// its mint admin): a node holding the part without it knows no path for it, so the part
     /// brings nothing and pends (`World::hidden`). `usize::MAX`: not opened (yet).
     pub opens: BTreeMap<Id, Id>,
-    /// Each rotation's keyset (a body on its thing, `World::rotate`) and the demotions it carries.
+    /// Each rotation's keyset (a body on its thing, `World::rotate`) and the lowerings it carries.
     pub keysets: BTreeMap<Id, Set>,
 }
 
@@ -260,8 +260,8 @@ impl World {
         ids
     }
     /// A rotation by node `n` (notes/write-path-design.md §2, D2): `f` writes its keyset, a body on
-    /// the rotated thing (a content commit standing for the `keys.0` delta), carrying the demotions
-    /// `carried` its writer holds (spec/crypto.md §4 Carried demotions), each whole (E4).
+    /// the rotated thing (a content commit standing for the `keys.0` delta), carrying the lowerings
+    /// `carried` its writer holds (spec/crypto.md §4 Carried lowerings), each whole (E4).
     pub fn rotate(&mut self, n: usize, carried: &[Id], f: impl FnOnce(&mut paths::World) -> Id) -> Id {
         let k = self.write(n, f);
         self.keysets.insert(k, carried.iter().copied().collect());
@@ -288,7 +288,7 @@ impl World {
     }
     /// A removal: a grant write giving below write at its own `ts` (none, read, or an `until`
     /// passed), but a finalize. (`paths::World::lowers` counts every write below admin, a fresh
-    /// grant of write included.) A demotion from admin to write is not one here.
+    /// grant of write included.) A lowering from admin to write is not one here.
     pub fn removes(&self, i: Id) -> Option<Grant> {
         match &self.w.commits[i].kind {
             Kind::Grant { holder, role, until, finalize: false, .. } if paths::alive((*role, *until), self.w.commits[i].ts) < Role::Write => Some((*holder, self.on(i))),
@@ -322,7 +322,7 @@ impl World {
         let chain = if rule.chain_stubs { self.chain_grants(rule, s, unit, reads) } else { BTreeSet::new() };
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || self.holder(i).is_some_and(|hd| chain.contains(&(hd, self.on(i))))).collect();
         if rule.keysets {
-            // a held keyset's carried demotions are evidence of it, each whole
+            // a held keyset's carried lowerings are evidence of it, each whole
             let carried: Vec<Id> = seed.iter().filter_map(|k| self.keysets.get(k)).flatten().copied().filter(|c| h.contains(c)).collect();
             seed.extend(carried);
         }
@@ -675,7 +675,7 @@ impl World {
     // ---- Judging ----
 
     /// `i` pends over `h` (spec/commits.md §4 Unjudgeable): its path entry has not opened, a keyset
-    /// lacks a demotion it carries, a held part of its commit on its thing removing a holder resets
+    /// lacks a lowering it carries, a held part of its commit on its thing removing a holder resets
     /// an entry whose creation `h` lacks (the model writes a commit's parts as events of their own) (spec/permissions.md §2 Grant writes), or a hop it rests on
     /// (`paths::World::rests`, its key hop first), no record hop, has no held grant write ordered
     /// before it that does not itself pend.
@@ -692,7 +692,7 @@ impl World {
         p
     }
     fn pends_here(&self, h: &Set, i: Id, memo: &mut BTreeMap<Id, bool>) -> bool {
-        // a keyset is held only with every demotion it carries (spec/crypto.md §4, Held keyset)
+        // a keyset is held only with every lowering it carries (spec/crypto.md §4, Held keyset)
         if self.hidden(h, i) || self.keysets.get(&i).is_some_and(|c| !c.is_subset(h)) {
             return true;
         }
@@ -829,7 +829,7 @@ impl World {
         }
         out
     }
-    /// P11, carried demotions (notes/a3-spec/README.md Open 8): every demotion a keyset S holds
+    /// P11, carried lowerings (notes/a3-spec/README.md Open 8): every lowering a keyset S holds
     /// carries is in S's entries and in its
     /// reader's required set (`P11`); a rotator holds what its
     /// keyset carries when it writes it (`P11-held`: the generators' own check).
@@ -1410,7 +1410,7 @@ pub fn random(seed: u64, len: usize) -> World {
             }
             8 => {
                 // D's admin rotates D (D2): its keyset carries X's removals on A (A reaches D: the
-                // demotions it holds applied), which its node holds where it syncs A
+                // lowerings it holds applied), which its node holds where it syncs A
                 let (a, n) = admin(D);
                 let carried: Vec<Id> = if w.nodes[n].syncs.contains(&A) { (0..w.by.len()).filter(|&j| w.by[j] == x && w.removes(j).is_some_and(|e| e.1 == A) && w.takes_away(j)).collect() } else { vec![] };
                 w.rotate(n, &carried, |p| p.content(a, bts, &[], D));

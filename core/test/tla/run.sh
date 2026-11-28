@@ -64,7 +64,7 @@ instances=(
   "depth0 rotation Depth0MC D0_nc3.cfg pass"
   "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # mint admin removed: a keyless grant turns keyed
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
-  "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried demotions)
+  "depth0 rotation Depth0MC D0_rm_np_travel.cfg pass" # a removed writer below a holder actor: its removal travels with the knowing keyset (spec/crypto.md §4, Carried lowerings)
   "depth0 rotation Depth0MC D0_rm_np.cfg fail"    # negative control: without travel W seals the knowing keyset it cannot open
   "depth0 rotation Depth0MC D0_rs_blind.cfg pass" # a node holding G's keysets but none of its boxes judges by order: the requirement holds (grants and re-seals record nothing, spec/crypto.md §4 Box records)
   "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
@@ -110,7 +110,7 @@ instances=(
   "withdrawn rotation Withdrawn W_met.cfg pass"         # a withdrawn epoch's secret goes nowhere: no leak (spec/crypto.md §4 Uses)
   "withdrawn rotation Withdrawn W_met_live.cfg fail"    # where W is void e_R's names are unmet: neither M nor later holders get it
   "withdrawn rotation Withdrawn W_refuted.cfg fail"     # negative control: passing a refuted epoch on leaks where a re-grant is unseen
-  "withdrawn rotation Withdrawn W_wait.cfg fail"        # negative control: waiting for the re-granter leaks where another admin's demotion is unseen
+  "withdrawn rotation Withdrawn W_wait.cfg fail"        # negative control: waiting for the re-granter leaks where another admin's lowering is unseen
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them

@@ -2,7 +2,7 @@
 //! original, and the two share nothing.
 
 use osis_engine::Mutation;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, Role, Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -16,7 +16,7 @@ fn put(lp: &mut LocalPeer, who: usize, t: Tid, x: &Ak, k: &str, v: i64) -> Optio
     lp.peers[who].commit(m).ok().flatten()
 }
 
-/// Three nodes: 0 admin of `t`, 1 a writer later demoted (a rotation), 2 an admin; writes
+/// Three nodes: 0 admin of `t`, 1 a writer later lowered (a rotation), 2 an admin; writes
 /// synced and one left unsynced.
 fn history() -> (LocalPeer, Tid, Ak) {
     let mut lp = LocalPeer::new(3, 0, Time(1_700_000_000_000)).unwrap();
@@ -37,7 +37,7 @@ fn history() -> (LocalPeer, Tid, Ak) {
     put(&mut lp, 0, t, &x, "a", 1);
     put(&mut lp, 1, t, &x, "b", 2);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: w, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     put(&mut lp, 2, t, &x, "c", 3);
     put(&mut lp, 0, t, &x, "d", 4);

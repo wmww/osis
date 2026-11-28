@@ -76,7 +76,7 @@ pub struct Setup {
     /// party removed before the theft, whose key the thief holds: `N5_MOVES`, moves 47, 48 and
     /// 53).
     pub n5: u8,
-    /// X's role write before the theft. 0: none; 1: demotes B to write on A; 2: removes A2 from
+    /// X's role write before the theft. 0: none; 1: lowers B to write on A; 2: removes A2 from
     /// T1 (when B shared it); 3: grants A2 admin on T2; 4: a purge request by author A on T1 (not
     /// a role write: content-class, kept only by H's list); 5: one commit granting RD read on T1
     /// through [A] and A2 admin on T2 through [A, ORG] (two things).
@@ -86,7 +86,7 @@ pub struct Setup {
     /// 0: X holds nothing on A2; 1: write on A2; 2: write, and K removes it as H does; 3: admin
     /// on A2, and A2 admin on T1 (X administers T1 through A2 for good); 4: as 3, and B removes A2
     /// from T1 at the removal's tick, stating [A] (a removal of more than one hop); 5: as 1 but A2
-    /// admin on T1, X's grant of G through [A2] at 4, and B demoting A2 on T1 to write with the
+    /// admin on T1, X's grant of G through [A2] at 4, and B lowering A2 on T1 to write with the
     /// flag at the removal's tick, stating [A] (a kiosk: a holder kept at write, the grants made
     /// by it kept). In 1 and 2, A2's share carries no flag and GU's does: X grants through
     /// [A2, GU].
@@ -113,7 +113,7 @@ pub struct Move {
 
 /// The thief's menu: 20 to 24 and 25, 26 are aimed at the remover (X, or a made-up key X grants
 /// admin, granting H admin, standing or until just after the removal; X removing M listing nothing,
-/// or listing M's grant of H; X demoting H listing its own grant); `N5_MOVES` are signed with the
+/// or listing M's grant of H; X lowering H listing its own grant); `N5_MOVES` are signed with the
 /// key of N5, removed by X before the theft (`Setup::n5` 3); 31 is X's twin of that removal; 32 is
 /// X removing A from T1 by [A2] (where it administers T1 through A2); 33 and 34 are X's own grant
 /// set timed by itself (admin until the tick after its `ts`; write until after the story); 35 to 37
@@ -130,15 +130,15 @@ pub struct Move {
 /// `ts`, stamped after the theft; X ending A's admin on T1 at the removal through A2, backdated (the
 /// grant above the signer's on B's removal of A2 from T1, where B makes it). 47 to 53 lower an honest
 /// admin: 47 and 48, with N5's key where X removed N5 before the theft (`Setup::n5` 3), N5
-/// removing or demoting B, stamped before X's removal of N5 (the pair's first world); 49 and 50, X
-/// removing or demoting B, stamped before X's role writes; 51, X removing K from A2 where it
+/// removing or lowering B, stamped before X's removal of N5 (the pair's first world); 49 and 50, X
+/// removing or lowering B, stamped before X's role writes; 51, X removing K from A2 where it
 /// administers A2 (`Setup::x_a2` 3, 4), backdated; 52, a made-up key Z X backdates admin to removing
 /// B after the theft; 53, the same with Z made by N5's key before X's removal of N5. 54 and 55 use
 /// a key the thief made up (TK): X grants it admin on A (an ordinary admin write: notes/
 /// write-path-design.md, Keys K3), backdated before the removal, and acts as A by it,
 /// removing H (listing H's grant of X, which the key's grant rests on) or writing T1.
 pub const MOVES: usize = 56;
-/// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 demotes H. Each
+/// N5 grants H admin, standing or until just after the removal; N5 removes H; N5 lowers H. Each
 /// stamped before X's removal of N5.
 pub const N5_MOVES: std::ops::Range<usize> = 27..31;
 /// The moves the thief may make at tick 5, heard by H and B before the removal (`Move::made` 5):
@@ -172,7 +172,7 @@ pub struct Sim {
     pub r2: Option<Id>,
     /// B's removal of A2 from T1 by [A] (`Setup::x_a2` 4).
     pub r3: Option<Id>,
-    /// B's demotion of A2 on T1 to write with the flag by [A] (`Setup::x_a2` 5).
+    /// B's lowering of A2 on T1 to write with the flag by [A] (`Setup::x_a2` 5).
     pub kiosk: Option<Id>,
     pub rx: Option<Id>,
     pub xfirst: Option<Id>,
@@ -534,7 +534,7 @@ impl Sim {
             self.r2 = Some(r2);
             self.stand(K, r2, &all, rules);
         }
-        // B removes A2 from T1 where its own walk gives it admin on A (X may have demoted it)
+        // B removes A2 from T1 where its own walk gives it admin on A (X may have lowered it)
         if self.setup.x_a2 == 4 && judge(&self.w, rules, &self.view_at(B, Some(REMOVAL - 1), rules)).role(B, A) == Role::Admin {
             let all = self.w.through((A2, T1), |i| self.got(i, B, REMOVAL - 1));
             let r3 = self.put((B, REMOVAL, &[A], T1, Kind::set(A2, Role::None).listing(self.w.cut(&all))), REMOVAL, rng, false);
@@ -1120,7 +1120,7 @@ impl Sim {
         self.w.commits[i].signer == Z || (self.thief.contains_key(&i) && (self.made[i] > REMOVAL || self.w.commits[i].signer == N5)) || (self.w.commits[i].signer == X && self.made[i] > REMOVAL)
     }
     /// An early move of the thief (heard before the removal) whose write takes the remover's
-    /// standing: a timed grant to H, a removal of H's granter listing nothing, a demotion of H.
+    /// standing: a timed grant to H, a removal of H's granter listing nothing, a lowering of H.
     fn aims(&self, i: Id) -> bool {
         self.thief.get(&i).is_some_and(|k| matches!(k, 21 | 23 | 25 | 44 | 45 | 46) || (*k == 24 && self.gh.is_some()))
     }
@@ -1645,7 +1645,7 @@ fn check_world(m: &Sim, rules: &Rules, st: &mut Stats) {
     // N5's key is a removed party's
     let n5_out = s.n5 == 3;
     let x_removed_a2 = s.x_role == 2 && m.xrole.is_some();
-    // B grants again only while it is an admin: X's demotion of it may stand
+    // B grants again only while it is an admin: X's lowering of it may stand
     let b_admin = !(s.x_role == 1 && m.xrole.is_some_and(in_r));
     let stands = |n: Thing| match n {
         H | B => true,
@@ -1677,7 +1677,7 @@ fn check_world(m: &Sim, rules: &Rules, st: &mut Stats) {
     let in_r3 = |i: Id| m.r3.is_some_and(|r3| w.in_frontier(r3, i));
     // X's removal of M listing M's grant of H, heard before the removal (kept)
     let m_cut = || m.thief.iter().any(|(&i, &k)| k == 26 && m.made[i] < REMOVAL);
-    // X's lowering of H heard before the removal (a removal or a demotion, its list naming only
+    // X's lowering of H heard before the removal (a removal or a lowering, its list naming only
     // X's own grant) is kept where a grant of X heard with it gives H back its standing: what it
     // dropped (H's grants of B and N5, what was written under them, what only B's answers kept,
     // M's leave naming B) is lost, as with any
@@ -2006,7 +2006,7 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
         })
         .collect();
     // where N5 was removed before the theft, half the time the pair that makes key order and
-    // receipt order differ (`a_remover_keeps_what_it_received_first`): X's demotion of H and N5's
+    // receipt order differ (`a_remover_keeps_what_it_received_first`): X's lowering of H and N5's
     // grant of admin to H, both stamped before X's removal of N5 and heard after it
     if s.n5 >= 3 && rng.below(2) == 0 {
         moves.extend([Move { kind: 25, ts: 1, made: 5 }, Move { kind: 27, ts: 2, made: 5 }]);

@@ -154,12 +154,12 @@ fn marking() -> impl osis_keys::Held {
 // counting): pinned only by names holding L applied and G void; G alone (its rotator never held
 // L, so boxed M) or L alone (a node judging G valid re-seals M) pins nothing. A write that does
 // not count (its author a reader at its point) is not pinned: a reader forces no rotation
-// (notes/keys-coverage.md, A demoted admin's void re-grant). With no write
+// (notes/keys-coverage.md, A lowered admin's void re-grant). With no write
 // giving M the role applied (start none), the void tail alone pins (the start holds M out
 // everywhere). A second removal F (9) applying nothing here pins only where it would apply over
 // the grant before L (a second finalize of the grant L ended), named applied by a rotator that
-// lacked L or by the rotation commit's own mark; voided by its author's demotion here, it pins
-// nothing (a node holding that demotion but not L holds M a reader).
+// lacked L or by the rotation commit's own mark; voided by its author's lowering here, it pins
+// nothing (a node holding that lowering but not L holds M a reader).
 #[test]
 fn pins_hold_the_tail_spec_crypto_4() {
     let m = tid(3);
@@ -180,7 +180,7 @@ fn pins_hold_the_tail_spec_crypto_4() {
     let marked = Names { list: BTreeSet::new(), departs: Some(Own { ts: 9, author: tid(9), blind: [0; 16] }) };
     assert!(pins(&marked, Role::Read, &twice, &marking()), "F is the rotation commit's own write");
     let voided = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, false, true)]);
-    assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &marking()), "F voided by its author's demotion");
+    assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &marking()), "F voided by its author's lowering");
     // L, F, then G raising M back (void, counting): F pins nothing without G void
     let back = grant_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
     assert!(!pins(&marked, Role::Read, &back, &marking()));

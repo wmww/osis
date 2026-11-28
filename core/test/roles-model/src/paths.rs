@@ -357,7 +357,7 @@ pub struct Rules {
     /// `-no-key-hop`): the key hop is never read, so a removed key keeps signing.
     pub key_hop: bool,
     /// A trusted write's seeds are the writes resting on its grant whose need there its own value
-    /// does not meet, as its audit reads them (a demotion to write keeps the may-grant grants under it).
+    /// does not meet, as its audit reads them (a lowering to write keeps the may-grant grants under it).
     /// False (control `-seeds-all`): every unlisted write resting on its grant.
     pub seeds_by_need: bool,
     /// Control (`-refuse-shapes`): a commit of several grant writes carrying a self-removal or a

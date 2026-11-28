@@ -226,7 +226,7 @@ fn bob_replaces(shared: i64, only: i64) -> (LocalPeer, Tid, CommitId, Vec<Commit
 fn remove_bob(lp: &mut LocalPeer, t: Tid) {
     lp.advance(1000);
     let bob = lp.peers[1].engine.tid();
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &osis_engine::flows::Lowering { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
 }

@@ -10,7 +10,7 @@ use crate::harness::lies::Lie;
 use crate::harness::{World, grant, fixture_with, play};
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
-use osis_engine::flows::Demotion;
+use osis_engine::flows::Lowering;
 
 /// Thing 0 kept unread at node 1, its value written by node 0 and held at node 1.
 fn setup() -> (World, Tid, SyncId, CommitId) {
@@ -151,7 +151,7 @@ fn a_head_move_after_a_restart_logs_again_once_more_spec_sync_judgement_4() {
     assert_eq!(encryptions(&mut w, &c), before + 1, "a restart is no change of ground");
     // removing the reader rotates S: its head moves at node 1
     let head = w.store(1).head_id(&s).unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: x, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.lower(&t, &Lowering { holder: x, new: None, retain: None })).unwrap();
     w.run();
     assert_ne!(w.store(1).head_id(&s).unwrap(), head, "node 1's head moved");
     assert_eq!(encryptions(&mut w, &c), before + 2, "the head moved: logged again once more");

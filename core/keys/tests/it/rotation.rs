@@ -34,10 +34,10 @@ fn grant_raced_by_read_rotation() {
     assert!(kv.read.secret(&er2).is_some());
 }
 
-// spec/crypto.md §4: a rotation of admin demoting a holder to write removes its admin box
+// spec/crypto.md §4: a rotation of admin lowering a holder to write removes its admin box
 // only; its read and write boxes stay.
 #[test]
-fn demoted_keeps_lower_roles() {
+fn lowered_keeps_lower_roles() {
     let rg = &mut rng(0);
     let (k, ke) = (tid(6), actor_epochs(0x60));
     let (a, p, pe, view, s0) = switched(&[actor_rcpt(k, Role::Admin, &ke)], rg);

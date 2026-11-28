@@ -6,7 +6,7 @@
 //! Models.
 //!
 //! The world: A minted with N1 (its record grant), N1 granting N2 admin and N3 a role, then a few
-//! grant writes on A by any of the three (removals, demotions, re-grants, self-removals, any `ts`,
+//! grant writes on A by any of the three (removals, lowerings, re-grants, self-removals, any `ts`,
 //! each writer's frontier honest over a random part of what came before). V holds an
 //! evidence-closed part of them, taken in batches in a random order, its sides recorded as it
 //! takes them (Sides, held first). The prover holds every commit and picks any copies V lacks.
@@ -458,8 +458,8 @@ mod tests {
     }
 
     /// Copies judged with the sides taking them in records (control `-no-receipt`): N1's removal of N3
-    /// at 4 is a seed of N2's demotion of N1 at 5 that V's reading applies; taken in, V sides with
-    /// the demotion and N3 keeps read. Judged under V's trust set as it stands, the copies prove N3
+    /// at 4 is a seed of N2's lowering of N1 at 5 that V's reading applies; taken in, V sides with
+    /// the lowering and N3 keeps read. Judged under V's trust set as it stands, the copies prove N3
     /// nothing until V receives the removal by sync, which no unit V syncs may carry.
     #[test]
     fn honest_copies_are_judged_with_the_sides_their_receipt_records() {

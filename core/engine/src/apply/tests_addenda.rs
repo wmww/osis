@@ -1,7 +1,7 @@
 //! Addenda (spec/permissions.md §5.2, Addenda): writers vouch for a removed holder's edits the remover never received.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use crate::Mutation;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -50,8 +50,8 @@ fn write(lp: &mut LocalPeer, by: usize, t: Tid, a: &str, v: i64) -> CommitId {
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     lp.advance(1000);
     let h = lp.peers[holder].engine.tid();
-    let d = Demotion { holder: h, new: None, retain: None };
-    let id = *lp.peers[by].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    let d = Lowering { holder: h, new: None, retain: None };
+    let id = *lp.peers[by].engine.lower(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
 }
@@ -324,7 +324,7 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     lp.advance(1000);
     let e = write_as(&mut lp, 1, holder, n, "x:e.0", 7);
     lp.advance(1000);
-    let r = *lp.peers[0].engine.demote(&n, &Demotion { holder, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r = *lp.peers[0].engine.lower(&n, &Lowering { holder, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     (lp, n, holder, r, e)
 }
@@ -642,7 +642,7 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
         lp.advance(1);
     }
     let bob = lp.peers[b].engine.tid();
-    let r = *lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r = *lp.peers[a].engine.lower(&t, &Lowering { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
     let r_ts = lp.peers[a].engine.header(&r).unwrap().ts;
     if tie == 2 {
         lp.advance(1);
@@ -730,7 +730,7 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
                 let pk = lp.peers[b].engine.package(&s).unwrap().unwrap();
                 lp.deliver(c, &pk).unwrap();
             }
-            let r = *lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
+            let r = *lp.peers[a].engine.lower(&t, &Lowering { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
             let r_ts = lp.peers[a].engine.header(&r).unwrap().ts;
             let at = format!("Alice {a}, Bob {b}, Carol {c}, Bob compacts {bob_compacts}");
             assert_eq!(lp.peers[b].engine.header(&w).unwrap().ts, r_ts, "{at}: the tie");
@@ -841,12 +841,12 @@ fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2(
         let e = write(&mut lp, b, t, "x:e.0", 7);
         lp.sync(b, c).unwrap();
         lp.advance(1000);
-        lp.peers[a].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap();
+        lp.peers[a].engine.lower(&t, &Lowering { holder: bob, new: None, retain: None }).unwrap();
         lp.advance(1000);
         lp.sync(a, c).unwrap();
         let (_, ad) = addenda(&lp, c, t).into_iter().find(|(x, _)| *x == carol).unwrap();
         lp.sync(c, d).unwrap();
-        let rc = *lp.peers[a].engine.demote(&t, &Demotion { holder: carol, new: None, retain: None }).unwrap().commits.last().unwrap();
+        let rc = *lp.peers[a].engine.lower(&t, &Lowering { holder: carol, new: None, retain: None }).unwrap().commits.last().unwrap();
         let at = format!("Alice {a}, Carol {c}");
         assert_eq!(lp.peers[c].engine.header(&ad).unwrap().ts, lp.peers[a].engine.header(&rc).unwrap().ts, "{at}: the tie");
         lp.advance(1000);
@@ -1234,13 +1234,13 @@ fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_
     }
 }
 
-/// Peer 0 (Alice) demotes Bob (peer 1, an admin) on `t` to `to` (`None`: removes him), a second
+/// Peer 0 (Alice) lowers Bob (peer 1, an admin) on `t` to `to` (`None`: removes him), a second
 /// after everything so far.
-fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
+fn lower_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
     lp.advance(1000);
     let bob = lp.peers[1].engine.tid();
-    let d = Demotion { holder: bob, new: to.map(grant), retain: None };
-    let id = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    let d = Lowering { holder: bob, new: to.map(grant), retain: None };
+    let id = *lp.peers[0].engine.lower(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
     id
 }
@@ -1258,7 +1258,7 @@ fn admin_only_content_is_kept_by_an_admin_witness_spec_perm_5_2() {
             lp.sync(1, p).unwrap();
         }
         lp.advance(1);
-        demote_to(&mut lp, t, to);
+        lower_to(&mut lp, t, to);
         lp.sync_all().unwrap();
         let (carol, dave) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
         let by: Vec<Tid> = addenda(&lp, 0, t).into_iter().map(|(a, _)| a).collect();
@@ -1282,7 +1282,7 @@ fn admin_only_content_is_not_kept_by_a_writers_addendum_spec_perm_5_2() {
     let e = write(&mut lp, 1, t, "x:p^.0", 7);
     lp.sync(1, 3).unwrap();
     lp.advance(1);
-    let r = demote_to(&mut lp, t, None);
+    let r = lower_to(&mut lp, t, None);
     lp.sync(0, 3).unwrap();
     let mut m = Mutation::new();
     let list = ct::Frontier { commits: [e].into_iter().collect() };
@@ -1522,8 +1522,8 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
     lp.sync_all().unwrap();
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
-    let d = Demotion { holder: q, new: None, retain: None };
-    let r1 = *lp.peers[3].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+    let d = Lowering { holder: q, new: None, retain: None };
+    let r1 = *lp.peers[3].engine.lower(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
     let r = remove(&mut lp, 0, t, 1);
     let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
@@ -1584,10 +1584,10 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     };
     let (x, p) = if through(&holders[1]) { (holders[0], holders[1]) } else { (holders[1], holders[0]) };
     lp.sync(1, 2).unwrap();
-    let r1 = *lp.peers[3].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r1 = *lp.peers[3].engine.lower(&t, &Lowering { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     lp.advance(1000);
-    let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r = *lp.peers[0].engine.lower(&t, &Lowering { holder: x, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();

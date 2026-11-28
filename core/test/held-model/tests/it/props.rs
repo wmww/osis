@@ -65,7 +65,7 @@ fn output_is_a_function_of_the_held_set(seeds: Vec<u64>) {
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
 /// their drop as invalid (copies taken from `full`). Each
 /// round changes no read. Commits thrown out whole are fetched again from `full` each round
-/// (`Outcome::revisit`), as are a destroyed thing's parts: a destruction that falls (a demotion of its
+/// (`Outcome::revisit`), as are a destroyed thing's parts: a destruction that falls (a lowering of its
 /// purger arriving later) is repaired like any purge that falls.
 fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held {
     // the last held set judged, with its judgment

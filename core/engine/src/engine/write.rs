@@ -249,7 +249,7 @@ impl Mutation {
         self
     }
 
-    /// The frontier of an explicit demotion (role flows).
+    /// The frontier of an explicit lowering (role flows).
     pub fn frontier(&mut self, f: osis_perm::Frontier) -> &mut Self {
         self.frontier = Some(f);
         self

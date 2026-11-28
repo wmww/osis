@@ -486,7 +486,7 @@ fn a_removal_the_remover_did_not_hold_is_undone() {
 }
 
 /// A lowering the removed node made stays made where the remover lists it (X's removal of N5)
-/// and is undone where it does not (X's demotion of B, which only B received).
+/// and is undone where it does not (X's lowering of B, which only B received).
 #[test]
 fn a_lowering_the_removed_node_made_before_stays_made_only_where_listed() {
     let (mut w, _, gb) = paired();
@@ -649,11 +649,11 @@ fn a_list_keeping_what_unmakes_its_removal_voids_it() {
 }
 
 /// Why the remover keeps in the order received, not in key order. X removed N5 long ago (`out`,
-/// received then). The thief, holding both keys, backdates a demotion of H by X before `out`
-/// and a grant of admin to H by N5 between them. Kept in key order, the demotion comes first
+/// received then). The thief, holding both keys, backdates a lowering of H by X before `out`
+/// and a grant of admin to H by N5 between them. Kept in key order, the lowering comes first
 /// and the removal applies with it (N5's grant repairs it), and then not with `out` (which
 /// drops N5's grant): `out` is left out and N5 is back. Kept in the order received, `out` is
-/// kept, the demotion left out, and N5 stays removed.
+/// kept, the lowering left out, and N5 stays removed.
 #[test]
 fn a_remover_keeps_what_it_received_first() {
     let (mut w, gx, gb) = paired();
@@ -794,7 +794,7 @@ fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
     assert!(!fixed(&w, &[]).applied.contains(&g5));
 }
 
-/// The thief backdates its own leave before the role writes it made honestly (a demotion of B
+/// The thief backdates its own leave before the role writes it made honestly (a lowering of B
 /// and a grant to N5, both received by H and listed): a self-removal audits nothing and states
 /// no hop, so no audit reaches it, and X held no admin at its later writes: they fall, and N5
 /// with them (finding 14). Fix modelled: a lowering of h puts a self-removal of h in question
@@ -1501,11 +1501,11 @@ fn a_remover_sides_with_its_own_removal() {
 }
 
 /// A thief heard first keeps the nodes that heard it until their users choose (accepted:
-/// notes/disputes.md). X, stolen, demotes H to write stamped 7, heard by H and B at 5 (move 25);
-/// H removes X at 6. B held the demotion, applying, before H's removal arrived, a write ordered
-/// before it that its list leaves out: B records the demotion (F2), its seeds take H's removal,
+/// notes/disputes.md). X, stolen, lowers H to write stamped 7, heard by H and B at 5 (move 25);
+/// H removes X at 6. B held the lowering, applying, before H's removal arrived, a write ordered
+/// before it that its list leaves out: B records the lowering (F2), its seeds take H's removal,
 /// and B is told of the counter-removal (F5, `countered`). Choosing H's removal drops the record
-/// of the demotion (F4) and reads as H does. Control `-choice-adds`: the demotion stays recorded,
+/// of the lowering (F4) and reads as H does. Control `-choice-adds`: the lowering stays recorded,
 /// its seeds take the removal chosen, and the choice is void. Control `-untold`: B is told
 /// nothing, and H's removal is lost silently there (`dispute`).
 #[test]
@@ -1904,9 +1904,9 @@ fn an_ended_value_restores_its_flag_as_its_role() {
 }
 
 /// A lowering applied by its verdict only lowers (finding 27): N6, admin by H's grant, grants Z
-/// write and demotes it to read, which is judged (a fall from write) and applied; B removes H not
+/// write and lowers it to read, which is judged (a fall from write) and applied; B removes H not
 /// listing H's grant of N6, which drops it, and the restart finds N6 with no authority. Its
-/// demotion, applied for good, does not raise Z from none to read there: Z ends with nothing, as
+/// lowering, applied for good, does not raise Z from none to read there: Z ends with nothing, as
 /// without the grant, at a node trusting nothing and one trusting the removal alike.
 #[test]
 fn a_lowering_applied_by_its_verdict_raises_nothing() {
@@ -2399,7 +2399,7 @@ fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed(
 /// What `Drops::Commit` changes outside links: parts of one commit on a thing differ in need only
 /// where its path gives less than admin (may-grant grants, a finalize, a leave). B holds write
 /// with the flag on A and, in one commit, grants Z read and N5 write by it; H, not having
-/// received it, then demotes B to read with the flag. N5's grant needs write with the flag and
+/// received it, then lowers B to read with the flag. N5's grant needs write with the flag and
 /// falls; Z's needs read with it, which B keeps: by its own need it stands (control
 /// `-part-drops`), under the rule it falls with N5's (the commit's `roles.0` delta on A is one
 /// part), as osis-perm's walk has it. No generator makes parts of one commit whose needs differ (`tiny_flags` writes no
@@ -2772,16 +2772,16 @@ fn an_honest_holder_leave_is_no_dispute() {
     assert!(!judge(&w, &all, &View::all(&w).trusting(&[leave])).shows(gz));
 }
 
-// ---- Seeds by need: a demotion to write (a kiosk) ----
+// ---- Seeds by need: a lowering to write (a kiosk) ----
 
 /// A2 holds admin on T1; X, a writer of A2, grants G read on T1 through A2 by may-grant; B, not
-/// having received it, demotes A2 on T1 to write with the flag (a kiosk: a holder kept at write).
-/// The grant's need on (A2, T1) is read with the flag, which the demotion still gives: its audit
-/// keeps it at a node trusting nothing, and a trusted demotion's seeds (its value's unmet needs)
+/// having received it, lowers A2 on T1 to write with the flag (a kiosk: a holder kept at write).
+/// The grant's need on (A2, T1) is read with the flag, which the lowering still gives: its audit
+/// keeps it at a node trusting nothing, and a trusted lowering's seeds (its value's unmet needs)
 /// keep it too, so both read alike and nothing is shown. Control (seeds every unlisted write
-/// resting on the grant): the trusting node drops the grant and the demotion is shown as a dispute.
+/// resting on the grant): the trusting node drops the grant and the lowering is shown as a dispute.
 #[test]
-fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
+fn a_trusted_lowering_to_write_keeps_the_grants_made_by_flag() {
     let mut w = account();
     w.grant(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
@@ -2802,8 +2802,8 @@ fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
 // ---- What a write that does not apply may change (notes/path-model-findings.md 33) ----
 
 /// H grants N5 admin at 3 and again at 11; N5 gives N6 write with the flag until 10 at 8,
-/// removes N6 at 9, and demotes H to write with the flag at 11 listing only H's second grant.
-/// The removal of N6 falls from write, is judged and applied; the demotion of H drops H's first
+/// removes N6 at 9, and lowers H to write with the flag at 11 listing only H's second grant.
+/// The removal of N6 falls from write, is judged and applied; the lowering of H drops H's first
 /// grant of N5, and the restart leaves N5 no right at 8 and 9: the grant of N6 does not apply,
 /// and the removal of N6 still applies by its verdict. Without the grant held the removal never
 /// falls and does not apply. What users observe is the same either way (N6 never holds a role,
@@ -2827,9 +2827,9 @@ fn an_unapplied_grant_changes_nothing_observed() {
     assert_eq!(no_effect(&w, &Rules::fixed(), &View::all(&w), &rd, g6), (true, false));
 }
 
-/// Finding 34's world: H grants N5 and Z admin at 4; N5 demotes Z to write at 4 (after H's grants
-/// in key order); Z demotes H and N5 to read at 5; H demotes N5 to write at 7, listing nothing.
-fn h_demotes_n5(listing: &[Id]) -> (World, Id) {
+/// Finding 34's world: H grants N5 and Z admin at 4; N5 lowers Z to write at 4 (after H's grants
+/// in key order); Z lowers H and N5 to read at 5; H lowers N5 to write at 7, listing nothing.
+fn h_lowers_n5(listing: &[Id]) -> (World, Id) {
     let mut w = account();
     let h = w.push(H, 7, &[], A, Kind::set(N5, Write).may_grant());
     w.push(N5, 4, &[], A, Kind::set(Z, Write).may_grant().listing(w.cut(&[h])));
@@ -2842,19 +2842,19 @@ fn h_demotes_n5(listing: &[Id]) -> (World, Id) {
     (w, h)
 }
 
-/// Finding 34 (accepted, counted): the first pass applies N5's demotion of Z, so Z's writes at 5
-/// do not apply, and H's demotion of N5 is judged with H holding admin: `keeps` holds (no setter of
-/// H's grant is dropped) and it applies, dropping N5's demotion of Z. The restart lets Z's writes at
-/// 5 apply, so H's demotion, now raising N5 from read, applies nowhere (finding 27), yet its drop
-/// stays: H ends at read and Z admin, where without H's demotion held H stays admin and Z at write.
-/// No dispute is shown: trusted, H's demotion's seeds take N5's demotion of Z first, Z's writes
-/// apply and H's demotion is void, its seeds lost: the same reading; trusting any other lowering
+/// Finding 34 (accepted, counted): the first pass applies N5's lowering of Z, so Z's writes at 5
+/// do not apply, and H's lowering of N5 is judged with H holding admin: `keeps` holds (no setter of
+/// H's grant is dropped) and it applies, dropping N5's lowering of Z. The restart lets Z's writes at
+/// 5 apply, so H's lowering, now raising N5 from read, applies nowhere (finding 27), yet its drop
+/// stays: H ends at read and Z admin, where without H's lowering held H stays admin and Z at write.
+/// No dispute is shown: trusted, H's lowering's seeds take N5's lowering of Z first, Z's writes
+/// apply and H's lowering is void, its seeds lost: the same reading; trusting any other lowering
 /// changes nothing. Accepted: a fight among three admins, each holding admin at its write; every
-/// node reads it alike and the verdict, once given, stands (finding 16). Listing N5's demotion of Z
-/// (which an honest H that received it names), H's demotion applies and nothing idle has an effect.
+/// node reads it alike and the verdict, once given, stands (finding 16). Listing N5's lowering of Z
+/// (which an honest H that received it names), H's lowering applies and nothing idle has an effect.
 #[test]
 fn a_lowering_whose_drops_let_an_earlier_write_take_its_authority_changes_roles_unshown() {
-    let (w, h) = h_demotes_n5(&[]);
+    let (w, h) = h_lowers_n5(&[]);
     let v = View::all(&w);
     let rd = fixed(&w, &[]);
     assert!(!rd.applied.contains(&h) && rd.dropped == Set::from([1]) && (rd.role(H, A), rd.role(Z, A)) == (Role::Read, Admin), "{rd:?}");
@@ -2862,7 +2862,7 @@ fn a_lowering_whose_drops_let_an_earlier_write_take_its_authority_changes_roles_
     assert_eq!((without.role(H, A), without.role(N5, A), without.role(Z, A)), (Admin, Admin, Write));
     assert_eq!(idle_gate(&w, &[]), vec![h]);
     assert!(disputes(&w, &Rules::fixed(), &v).is_empty());
-    let (w, h) = h_demotes_n5(&[1]);
+    let (w, h) = h_lowers_n5(&[1]);
     let rd = keyed(&w);
     assert!(rd.applied.contains(&h) && (rd.role(H, A), rd.role(N5, A), rd.role(Z, A)) == (Admin, Write, Write), "{rd:?}");
     assert!(effects(&w, &Rules::fixed(), &View::all(&w), &rd).iter().all(|e| !e.observed));
@@ -3126,13 +3126,13 @@ fn first_received_trusts_a_removal_held_before_a_backdated_write() {
     }
 }
 
-/// F2, one side per fight: X, stolen, demotes H to write stamped 7, heard by B at 5; H removes X
-/// at 6, and B, holding the demotion first, records it (its seeds take the removal). The thief
-/// then ends X's own admin at 2 (move 33), so the demotion holds no right and B's walk applies
+/// F2, one side per fight: X, stolen, lowers H to write stamped 7, heard by B at 5; H removes X
+/// at 6, and B, holding the lowering first, records it (its seeds take the removal). The thief
+/// then ends X's own admin at 2 (move 33), so the lowering holds no right and B's walk applies
 /// H's removal, and backdates an end of H's admin at 6 (move 44), a write H's removal leaves out.
 /// B has a side in that fight already: it records nothing for H's removal, reads by the walk
 /// (the removal without right once H's admin ends) and is told of the removal, which chosen
-/// applies. Control `-both`: B records the removal beside the demotion, the demotion's seeds
+/// applies. Control `-both`: B records the removal beside the lowering, the lowering's seeds
 /// take it, both are void, and B is shown nothing.
 #[test]
 fn a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded() {
@@ -3177,11 +3177,11 @@ fn a_lowering_that_applied_taking_nothing_is_a_side() {
 }
 
 /// F4, a choice drops an earlier lowering of its own path. M minted A and paired H; H paired X
-/// and N5, and X removed N5 at 3. X, stolen, demotes H to write stamped 1, listing its own
+/// and N5, and X removed N5 at 3. X, stolen, lowers H to write stamped 1, listing its own
 /// grant, and removes it stamped 5 listing nothing; H removes X at 6, naming X's removal of N5
 /// and X's removal of H (void in H's walk: its drops take X's own grant) and leaving the
-/// demotion out. A node that heard X first recorded both of X's lowerings. Choosing the honest
-/// lowerings drops both records: the demotion as a seed of H's removal, X's removal of H as an
+/// lowering out. A node that heard X first recorded both of X's lowerings. Choosing the honest
+/// lowerings drops both records: the lowering as a seed of H's removal, X's removal of H as an
 /// earlier lowering of the hop H's removal rests on. Control `-choice-seeds` (only the seeds,
 /// either way): X's removal of H stays recorded beside H's removal of X, its seeds take X's own
 /// grant, and X's removal of N5, unapplied in that round, loses its seeds with it.
@@ -3209,7 +3209,7 @@ fn a_choice_drops_an_earlier_lowering_of_its_own_path() {
 }
 
 /// W10, reach-back candidates tried together: two removed keys' backdated lowerings of one admin.
-/// X removed N5 at 3; after H removes X, the thief backdates a demotion of B to 2 with X's key
+/// X removed N5 at 3; after H removes X, the thief backdates a lowering of B to 2 with X's key
 /// (move 50) and another with N5's (move 48). A node holding both removals first records both and
 /// keeps B's share.
 #[test]
@@ -3226,8 +3226,8 @@ fn masked() -> (Sim, Rules) {
     (Sim::build(&s, &rules, &[Move { kind: 50, ts: 2, made: 7 }, Move { kind: 48, ts: 2, made: 8 }], &mut Rng(0)), rules)
 }
 
-/// W10, the same world at a node trusting nothing (N6): both demotions apply at their keys and B's
-/// share is dropped. Trusting either removal alone leaves the other demotion dropping it, so each
+/// W10, the same world at a node trusting nothing (N6): both lowerings apply at their keys and B's
+/// share is dropped. Trusting either removal alone leaves the other lowering dropping it, so each
 /// removal, whose drops include a lowering of another holder's grant, is tried beside the other:
 /// both are shown, and choosing them brings the share back. Control `-alone` (each candidate tried
 /// alone): nothing is shown and the share is lost.
@@ -3808,10 +3808,10 @@ fn a_removed_key_makes_no_may_grant_grant() {
 }
 
 /// A lowered key's commit can stand at a node trusting nothing, which is then shown the lowering
-/// (each lowering judged once, as among members): RK grants TK admin; TK demotes RK to write;
+/// (each lowering judged once, as among members): RK grants TK admin; TK lowers RK to write;
 /// H, having received neither, removes both in one commit. RK's removal is judged with RK at
 /// write, so it puts RK's grant of TK (applied by admin) in no question; TK's removal then drops
-/// the demotion, and the grant stands in the next pass. Nothing of TK's shows either way (TK's
+/// the lowering, and the grant stands in the next pass. Nothing of TK's shows either way (TK's
 /// own removal takes it), both removals are shown as disputes, and a node trusting them drops
 /// the grant. The same world with things for the keys reads alike.
 #[test]
@@ -3839,11 +3839,11 @@ fn a_lowered_keys_grant_standing_where_nothing_is_trusted_is_shown() {
 /// F2, a lowering that applied taking nothing keeps the node's place against a backdated write.
 /// H paired N5, N5 granted B write on T1 at 2 (`gb5`), X removed N5 at 3 listing that grant
 /// (`out5`); the thief makes X's twin of that removal, ordered first and listing less (move 31),
-/// and backdates N5's demotion of B to 2 (move 48), a seed of both removals that drops B's write
+/// and backdates N5's lowering of B to 2 (move 48), a seed of both removals that drops B's write
 /// on T1 at 2 (`gs`). At N5 the twin cannot be recorded (its seeds take N5's own grant, a side),
-/// and `out5` applies behind it taking nothing; recording `out5` when the backdated demotion
-/// arrives drops the demotion, as the twin, recorded, does at B. Variant `-lowered` records
-/// nothing at N5: the demotion acts there, so N5 drops B's write that B shows (alike, liveness).
+/// and `out5` applies behind it taking nothing; recording `out5` when the backdated lowering
+/// arrives drops the lowering, as the twin, recorded, does at B. Variant `-lowered` records
+/// nothing at N5: the lowering acts there, so N5 drops B's write that B shows (alike, liveness).
 #[test]
 fn a_redundant_honest_lowering_is_what_takes_a_backdated_one() {
     let s = Setup { n5: 3, ..Setup::default() };

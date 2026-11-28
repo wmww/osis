@@ -1,5 +1,5 @@
 //! Validity is a function of the held set (spec/permissions.md §5, §5.2; spec/requirements.md
-//! Decentralization): random writes by a writer and demotions of it, with frontiers before,
+//! Decentralization): random writes by a writer and lowerings of it, with frontiers before,
 //! inside and after its writes (backdated ones included), delivered in every arrival order to
 //! fresh nodes, give one verdict per delta and one read.
 
@@ -7,7 +7,7 @@ use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::Mutation;
 use osis_base::{Ak, Clock, CommitId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_engine::DemotionScope;
+use osis_engine::Loweringscope;
 use osis_schema::core_types as ct;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,12 +79,12 @@ fn each_order(mut p: Peer, rest: &[Package], order: &mut Vec<usize>, check: &mut
 }
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
-/// backdated; 1 between them; the last: after them), the demoter (0: A, the mint admin; 2: C, an
+/// backdated; 1 between them; the last: after them), the lowerer (0: A, the mint admin; 2: C, an
 /// admin of G), the thing minted with admin one of G's dependents (0: none; 1: created in a later
 /// commit, so it can arrive late after a late mint admin; 2: in its mint admin's commit), and what follows the
-/// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
-/// item: a commit naming a former leaf), and whether B's last write, which the demoter then
-/// has not received, carries the demotion's very `ts` (`tie`: an HLC tie, so concurrent).
+/// lowering (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
+/// item: a commit naming a former leaf), and whether B's last write, which the lowerer then
+/// has not received, carries the lowering's very `ts` (`tie`: an HLC tie, so concurrent).
 struct Shape {
     writes: usize,
     at: usize,
@@ -96,8 +96,8 @@ struct Shape {
 
 /// One history of `shape`, the rest random. Peer 0 (A) is mint admin of G, gives peer 1 (B) write,
 /// peer 2 (C) admin and peer 3 (D, which then receives nothing more) read; A mints two things with admin G in one commit, and maybe one with admin the first
-/// in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
-/// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
+/// in that commit or the next; B writes on G or on one of them, the lowerer receiving each at once or not
+/// before the lowering; the lowerer removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
 fn sample(shape: Shape) -> usize {
     let mut rng = Rng(1); // xorshift needs a nonzero state
@@ -156,13 +156,13 @@ fn sample(shape: Shape) -> usize {
         lp.advance(1_000);
     }
     let as_of = marks[shape.at.min(shape.writes)];
-    let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
+    let scope = Loweringscope { roles: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
     let f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
     let rm = grant(&mut lp, by, g, b, None, Some(osis_perm::Frontier::new(f.commits)));
     if shape.tie {
         let ts = |p: &Peer, id: &CommitId| p.engine.header(id).unwrap().ts;
         let last = *lp.peers[1].engine.commit_ids().iter().max_by_key(|id| ts(&lp.peers[1], id)).unwrap();
-        assert_eq!(ts(&lp.peers[1], &last), ts(&lp.peers[by], &rm), "B's last write at the demotion's ts");
+        assert_eq!(ts(&lp.peers[1], &last), ts(&lp.peers[by], &rm), "B's last write at the lowering's ts");
     }
     lp.advance(1_000);
     match shape.tail {
@@ -178,7 +178,7 @@ fn sample(shape: Shape) -> usize {
         }
         _ => {}
     }
-    // B's writes reach A and C before B hears of its demotion: a node that loses its role on a
+    // B's writes reach A and C before B hears of its lowering: a node that loses its role on a
     // thing drops its writes there that it has not sent (spec/sync-set.md §3 Release)
     for to in [0, 2] {
         lp.sync(1, to).unwrap();
@@ -207,9 +207,9 @@ fn sample(shape: Shape) -> usize {
 }
 
 // spec/permissions.md §5 (validity is a deterministic function of the commits a node holds), §5.2 (names its commit, whatever their order), spec/crdt.md §4.6:
-// frontiers before (backdated), inside and after the writer's writes; children of the demoted
-// actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
-// mint admin; a commit naming a former leaf; B's last write at the demotion's `ts` (§5.2, Position).
+// frontiers before (backdated), inside and after the writer's writes; children of the lowered
+// actor created in one commit, a grandchild in a later commit or in theirs; a lowering by an admin other than the
+// mint admin; a commit naming a former leaf; B's last write at the lowering's `ts` (§5.2, Position).
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
     let cases = [(1, 0, 0, 1, 0, false), (1, 1, 2, 1, 0, false), (2, 1, 2, 2, 0, false), (2, 1, 0, 0, 0, false), (1, 0, 2, 0, 3, false), (2, 2, 2, 2, 0, true)];

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 enum Op {
     Grant(usize, Role),
     Remove(usize),
-    Demote(usize, Role),
+    Lower(usize, Role),
     Rotate(Role),
     Fork,
 }
@@ -26,7 +26,7 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         3 => (0..POOL, role.clone()).prop_map(|(i, r)| Op::Grant(i, r)),
         2 => (0..POOL).prop_map(Op::Remove),
-        1 => (0..POOL, role.clone()).prop_map(|(i, r)| Op::Demote(i, r)),
+        1 => (0..POOL, role.clone()).prop_map(|(i, r)| Op::Lower(i, r)),
         1 => role.prop_map(Op::Rotate),
         1 => Just(Op::Fork),
     ]
@@ -49,7 +49,7 @@ struct Sim {
     pe: ActorEpochs,
     pool: Vec<(Tid, Kind)>,
     roster: BTreeMap<usize, Role>,
-    /// Ever removed or demoted: never re-granted, so the property is about pure departures.
+    /// Ever removed or lowered: never re-granted, so the property is about pure departures.
     departed: BTreeMap<usize, Departed>,
     view: ActorEpochs,
     s: Secrets,
@@ -105,11 +105,11 @@ impl Sim {
                 let w = box_holder(&self.a, &self.view, &hist(&self.a, &self.view, &self.s), &self.rcpt(i, role), &roles_up_to(role), &mut r).unwrap().unwrap();
                 w.apply(&mut self.s);
             }
-            Op::Remove(i) | Op::Demote(i, _) if self.roster.contains_key(&i) => {
+            Op::Remove(i) | Op::Lower(i, _) if self.roster.contains_key(&i) => {
                 let held = self.roster[&i];
                 let new = match op {
-                    Op::Demote(_, to) if *to < held => Some(*to),
-                    Op::Demote(..) => return,
+                    Op::Lower(_, to) if *to < held => Some(*to),
+                    Op::Lower(..) => return,
                     _ => None,
                 };
                 let lost: BTreeSet<Role> = ROLES.into_iter().filter(|r| Some(*r) > new && *r <= held).collect();
@@ -137,7 +137,7 @@ impl Sim {
             }
             _ => {}
         }
-        // No re-seal: a demoted holder keeps its lower roles' boxes through the demotion's
+        // No re-seal: a lowered holder keeps its lower roles' boxes through the lowering's
         // rotation (spec/crypto.md §4).
     }
 

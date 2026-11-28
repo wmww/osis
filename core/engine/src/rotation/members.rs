@@ -1,6 +1,6 @@
 //! Holder actors as this node judges them (spec/crypto.md §4, Holder actors): key access over the
 //! actor grants it holds (cached), a holder actor's held keysets, the recipient a box seals it
-//! to, stale and keyless boxes of an actor, and the demotions its keysets carry. The rules are
+//! to, stale and keyless boxes of an actor, and the lowerings its keysets carry. The rules are
 //! osis-keys' (`osis_keys::members`); this gathers their inputs.
 //! A departure from a holder actor counts only as what this node may encrypt under
 //! (`super::blocking`): sealing at a keyset is encrypting under it, and a joint box is held back
@@ -226,7 +226,7 @@ pub(crate) fn set_foreign(core: &Core, a: &Tid, view: &mut osis_keys::ActorEpoch
 }
 
 /// The holders of `a` for keys a box of role `r` to which goes past their key access: those
-/// whose grant on `a` is keyless (a box above their role for keys is a demotion's departure, not
+/// whose grant on `a` is keyless (a box above their role for keys is a lowering's departure, not
 /// a key cycle). None in the usual case, with no cycle among the grants held.
 pub(super) fn keyless_holders(core: &Core, a: &Tid) -> BTreeSet<Tid> {
     let keyless = key_access(core);
@@ -283,7 +283,7 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeMap<Epoch, BTreeSet<CommitId>>> {
     let mut out = BTreeMap::new();
     let Some(epochs) = tx.core.epochs(a) else { return Ok(out) };
-    // the noted keysets, held or not (one waiting for its carried demotions counts its record)
+    // the noted keysets, held or not (one waiting for its carried lowerings counts its record)
     let mut recs: BTreeMap<Epoch, BTreeSet<CommitId>> = BTreeMap::new();
     for e in epochs.role(r).current() {
         if let Some(ks) = tx.core.ix.keysets.get(&(*a, r, e)).and_then(|x| x.left_out.get(m)) {
@@ -622,7 +622,7 @@ fn keyless_causes(core: &Core, a: &Tid) -> BTreeSet<CommitId> {
 
 /// The held rotation commits of the keysets the boxes `w` writes to holder actors name, and those
 /// the keysets `keys` writes record holder actors were left out at (spec/crypto.md §4, Carried),
-/// with the demotions each of those carries (Carried demotions), and the held causes those
+/// with the lowerings each of those carries (Carried lowerings), and the held causes those
 /// keysets record (Left out): logged under `a`'s sync IDs with the commit carrying `w`.
 pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&osis_keys::KeysWrite>) -> Vec<osis_base::CommitId> {
     let boxed = w.boxes.iter().flat_map(|(k, b)| osis_keys::box_keysets(b).into_iter().map(|e| (k.holder, k.role, e)));
@@ -632,7 +632,7 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
     let mut out: Vec<osis_base::CommitId> = boxed
         .chain(out)
         .flat_map(|(m, r, e)| {
-            let carries = core.keyset(&m.0, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
+            let carries = core.keyset(&m.0, r, &e).into_iter().flat_map(|x| x.lowerings.iter().copied());
             core.ix.epoch_intro.get(&(m.0, r, e)).map(|x| x.1).into_iter().chain(carries).collect::<Vec<_>>()
         })
         .chain(causes)

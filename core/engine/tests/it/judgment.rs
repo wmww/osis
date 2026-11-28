@@ -398,27 +398,27 @@ fn models() -> Vec<Scenario> {
     use Step::*;
     let w = |by, v| Write { by, t: 0, op: 0, k: 0, v };
     let tick = Advance { who: None, ms: 1000 };
-    // A demotes X now, with a frontier of what A received of X's writes
-    let lowering = Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false };
+    // A lowers X now, with a frontier of what A received of X's writes
+    let lowering = Lower { by: 0, t: 0, holder: 1, at: 9, to_read: false };
     vec![
         Scenario {
             name: "pre-removal edit unseen by the remover",
             spec: "spec/permissions.md §5.2",
-            source: "hand-picked: a write the remover had not received when it demoted its writer (unseen: both invalid)",
+            source: "hand-picked: a write the remover had not received when it lowered its writer (unseen: both invalid)",
             steps: vec![w(1, 1), tick.clone(), lowering.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
             name: "pre-removal edit seen by the remover",
             spec: "spec/permissions.md §5.1, §5.2",
-            source: "hand-picked: a write the remover had received when it demoted its writer (seen: the first stands)",
+            source: "hand-picked: a write the remover had received when it lowered its writer (seen: the first stands)",
             steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), lowering.clone(), tick.clone(), w(1, 2)],
             orders: None,
         },
         Scenario {
             name: "removed writer re-granted",
             spec: "spec/permissions.md §5.2",
-            source: "hand-picked: a demoted writer re-granted (re-granted: both stand)",
+            source: "hand-picked: a lowered writer re-granted (re-granted: both stand)",
             steps: vec![w(1, 1), Sync { from: 1, to: 0 }, tick.clone(), lowering.clone(), tick.clone(), w(1, 2), tick.clone(), SetGrant { by: 0, t: 0, holder: 1, role: Some(Role::Write) }],
             orders: None,
         },
@@ -473,10 +473,10 @@ fn rules() -> Vec<Scenario> {
             orders: None,
         },
         Scenario {
-            name: "frontier coverage: two writes before the demotion, one received",
+            name: "frontier coverage: two writes before the lowering, one received",
             spec: "spec/permissions.md §5.1, §5.2",
             source: "hand-picked: W1 by 1 reaches 0, W2 by 1 does not; 0 removes 1 with its frontier (W1 valid, W2 invalid)",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }],
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Lower { by: 0, t: 0, holder: 1, at: 9, to_read: false }],
             orders: None,
         },
         Scenario {
@@ -489,11 +489,11 @@ fn rules() -> Vec<Scenario> {
         Scenario {
             name: "cover drop and uncover",
             spec: "spec/permissions.md §5.2, spec/commits.md §5",
-            source: "hand-picked: W by 1, S by 2 covers it, the node drops W as covered, 2 is demoted before S (S invalid: W counts as never received), W arrives again",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }],
+            source: "hand-picked: W by 1, S by 2 covers it, the node drops W as covered, 2 is lowered before S (S invalid: W counts as never received), W arrives again",
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), Lower { by: 0, t: 0, holder: 2, at: 0, to_read: false }],
             orders: Some(|played, of, _| {
                 let (k, base) = (of.iter().position(|c| *c >= played.base).unwrap(), played.base);
-                // the setup, W, S, W dropped as covered, the demotion; W comes again as fetched
+                // the setup, W, S, W dropped as covered, the lowering; W comes again as fetched
                 // (`replay`)
                 let (w, s, d) = (k, k + 1, k + 2);
                 assert_eq!((of[w], of[s], of[d], of.len()), (base, base + 1, base + 2, k + 3), "one body each");
@@ -592,14 +592,14 @@ fn may_grants() -> Vec<Scenario> {
             name: "may-grant grant unseen by the granter's removal",
             spec: "spec/permissions.md §5.1, §7",
             source: "hand-picked: 1 (write, may-grant) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
-            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, tick.clone(), Lower { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
         Scenario {
             name: "may-grant grant seen by the granter's removal",
             spec: "spec/permissions.md §5.1, §7",
             source: "hand-picked: 1 (write, may-grant) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
-            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, Sync { from: 1, to: 0 }, tick.clone(), Lower { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
         // §2: a grant past its signer's may-grant gets no exemption for its `secrets.0`
@@ -620,7 +620,7 @@ fn may_grants() -> Vec<Scenario> {
 fn remerges() -> Vec<Scenario> {
     use Step::*;
     fn orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-        // 1's put, 2's write, 2's snapshot, 0's write, 0's snapshot, 0's demotion of 2
+        // 1's put, 2's write, 2's snapshot, 0's write, 0's snapshot, 0's lowering of 2
         let at = |c: usize| of.iter().position(|x| *x == played.base + c).unwrap();
         let setup: Vec<Tok> = (0..at(0)).map(Tok::In).collect();
         let list = |cs: &[usize]| setup.iter().copied().chain(cs.iter().map(|c| Tok::In(at(*c)))).collect();
@@ -727,20 +727,20 @@ fn refs_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'
     o
 }
 
-/// For writes then `LinkedDemote`: the setup, the writes, the demotion without its frontier's
+/// For writes then `LinkedLower`: the setup, the writes, the lowering without its frontier's
 /// blobs, with them last and first.
 fn linked_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
     let setup: Vec<Tok> = (0..of.len()).filter(|e| of[*e] < played.base).map(Tok::In).collect();
     let body_of = |c: usize| (0..of.len()).find(|e| of[*e] == c && !refs.contains(e)).unwrap();
     let last = played.packs.len() - 1;
     let write: Vec<Tok> = (played.base..last).map(|c| Tok::In(body_of(c))).collect();
-    let demotion = [Tok::In(body_of(last))];
+    let lowering = [Tok::In(body_of(last))];
     let blobs: Vec<Tok> = refs.iter().map(|e| Tok::In(*e)).collect();
     let cat = |xs: &[&[Tok]]| xs.concat();
     vec![
-        ("without the frontier's blobs", cat(&[&setup, &write, &demotion])),
-        ("the frontier's blobs last", cat(&[&setup, &write, &demotion, &blobs])),
-        ("the frontier's blobs first", cat(&[&setup, &blobs, &write, &demotion])),
+        ("without the frontier's blobs", cat(&[&setup, &write, &lowering])),
+        ("the frontier's blobs last", cat(&[&setup, &write, &lowering, &blobs])),
+        ("the frontier's blobs first", cat(&[&setup, &blobs, &write, &lowering])),
     ]
 }
 
@@ -773,19 +773,19 @@ fn blobs() -> Vec<Scenario> {
             steps: vec![Large { by: 1, t: 0 }],
             orders: Some(made_only),
         },
-        // the demotion's blobs are never delivered: it only waits here
+        // the lowering's blobs are never delivered: it only waits here
         Scenario {
-            name: "demotion with a linked frontier, its blobs not held",
+            name: "lowering with a linked frontier, its blobs not held",
             spec: "spec/commits.md §4, spec/wire.md §4",
             source: "hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays",
-            steps: vec![LinkedDemote { by: 0, t: 0, holder: 1 }],
+            steps: vec![LinkedLower { by: 0, t: 0, holder: 1 }],
             orders: Some(bodies_only),
         },
         Scenario {
             name: "frontier coverage with a linked frontier",
             spec: "spec/commits.md §4, spec/permissions.md §5.1",
-            source: "hand-picked: W by 1 reaches 0, W' does not; 0 removes 1 with a frontier above CHUNK_THRESHOLD; the demotion waits for the frontier's blobs, then the frontier keeps W valid, W' invalid",
-            steps: vec![Write { by: 1, t: 0, op: 1, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 1, k: 0, v: 2 }, tick.clone(), LinkedDemote { by: 0, t: 0, holder: 1 }],
+            source: "hand-picked: W by 1 reaches 0, W' does not; 0 removes 1 with a frontier above CHUNK_THRESHOLD; the lowering waits for the frontier's blobs, then the frontier keeps W valid, W' invalid",
+            steps: vec![Write { by: 1, t: 0, op: 1, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 1, k: 0, v: 2 }, tick.clone(), LinkedLower { by: 0, t: 0, holder: 1 }],
             orders: Some(linked_orders),
         },
     ]
@@ -806,22 +806,22 @@ fn bounds() -> Vec<Scenario> {
         Scenario {
             name: "purge-on-replace writes of one ts",
             spec: "spec/commits.md §5, spec/crdt.md §4.8",
-            source: "order harness, shrunk: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
-            steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
+            source: "order harness, shrunk: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author lowered",
+            steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Lower { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
             orders: None,
         },
         Scenario {
             name: "purge-on-replace body whose own write turns invalid",
             spec: "spec/commits.md §5",
             source: "order harness, shrunk: a purge-on-replace body (bound 30 min) whose own write turns invalid, the bound passed",
-            steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
+            steps: vec![Lower { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
             orders: None,
         },
         Scenario {
             name: "purge-on-replace snapshot of an entry an earlier-stamped undo killed",
             spec: "spec/commits.md §5",
-            source: "order harness, shrunk: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
-            steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
+            source: "order harness, shrunk: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's lowering of B makes the undo invalid",
+            steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Lower { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
             orders: None,
         },
         Scenario {

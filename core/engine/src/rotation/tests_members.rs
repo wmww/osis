@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 use super::tests::{all_boxed, blocked_at, commit_ids, deliver_without_secrets, grant, independent_thing, held_by, leaked, newest_read, openable, rotate_as, rotate_leaving_out, send_skipping, settle, synced};
 use crate::Mutation;
-use crate::flows::Demotion;
+use crate::flows::Lowering;
 use crate::local_peer::LocalPeer;
 use osis_base::{CommitId, Role, Tid, Time};
 use osis_crypto::Epoch;
@@ -71,7 +71,7 @@ fn leaks_after_cascade(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: &
 }
 
 fn removal(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) -> Vec<osis_base::CommitId> {
-    lp.peers[i].engine.demote(&t, &Demotion { holder: d, new: None, retain: None }).unwrap().commits
+    lp.peers[i].engine.lower(&t, &Lowering { holder: d, new: None, retain: None }).unwrap().commits
 }
 
 // spec/crypto.md §4 (holder actors: stale), spec/permissions.md §3 (required rotation; required through a's keyset): a node removed 12 actors below G0 (G11 in G10 ... in G0). No departure is G0's,
@@ -783,7 +783,7 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
         });
         let d = lp.peers[1].engine.tid();
         let start = held_by(&lp, 1, &[m]);
-        lp.peers[1].engine.demote(&m, &Demotion { holder: d, new: None, retain: None }).unwrap();
+        lp.peers[1].engine.lower(&m, &Lowering { holder: d, new: None, retain: None }).unwrap();
         if knows {
             lp.sync_all().unwrap();
         } else {
@@ -875,13 +875,13 @@ fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
     assert!(lp.peers[2].engine.ensure_rotated(&y).unwrap().0.commits.is_empty(), "settled");
 }
 
-// spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing): peer 0 demotes Y's admin
+// spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing): peer 0 lowers Y's admin
 // peer 2 to reader while peer 2, not knowing, grants X read on Y, boxing Y's read epoch to X. At
 // peer 0 the grant is invalid (peer 2 is no admin there): X holds no role on Y, yet the box opens
 // Y's epoch for X's member D. That epoch is one peer 2 holds as a reader and could hand on
 // anyway: peer 0 counts no departure from the box, nor from the raise of a reader author, and
 // rotates nothing for it, so X's member reads Y until something else rotates Y's read
-// (notes/keys-coverage.md, A demoted admin's void re-grant).
+// (notes/keys-coverage.md, A lowered admin's void re-grant).
 #[test]
 fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     let mut lp = synced(3);
@@ -892,7 +892,7 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     lp.peers[0].engine.grant(&x, &d, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let start = held_by(&lp, 1, &[x, y]);
-    lp.peers[0].engine.demote(&y, &Demotion { holder: p2, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&y, &Lowering { holder: p2, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.peers[2].clock.advance(1_000);
     lp.peers[2].engine.grant(&y, &x, &grant(Role::Read)).unwrap();
     let e0 = newest_read(&lp, 2, y).unwrap();
@@ -906,7 +906,7 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
 }
 
 // spec/requirements.md Permissions (a role M holds on A reaches M's holders; a secret once shared
-// cannot be un-shared): the mint admin demotes writer D on G to reader, rotating write to e1 that D
+// cannot be un-shared): the mint admin lowers writer D on G to reader, rotating write to e1 that D
 // lacks, then raises D on M, a writer of G, to write: D writes G through M again and opens e1 by
 // G's box to M. Removing M from G rotates write to e2, which D opens no way.
 #[test]
@@ -920,15 +920,15 @@ fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_
     lp.peers[0].engine.grant(&m, &d, &grant(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let write = |lp: &LocalPeer| lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Write).newest_held().map(|x| x.0)).unwrap();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
     let e1 = write(&lp);
     lp.sync_all().unwrap();
-    assert!(!held_by(&lp, 1, &[g]).contains(&(g, Role::Write, e1)), "the demotion's epoch is closed to D");
+    assert!(!held_by(&lp, 1, &[g]).contains(&(g, Role::Write, e1)), "the lowering's epoch is closed to D");
     lp.peers[0].engine.grant(&m, &d, &grant(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     let mut kept = held_by(&lp, 1, &[g, m]);
     assert!(kept.contains(&(g, Role::Write, e1)), "D, a writer of G through M, opens e1");
-    lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: m, new: None, retain: None }).unwrap();
     let e2 = write(&lp);
     assert_ne!(e1, e2, "M's removal rotates write");
     lp.sync_all().unwrap();
@@ -939,7 +939,7 @@ fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_
 }
 
 // spec/crypto.md §4 (Boxes: an invalid grant's box opens what its author held; Departures: the
-// author's own lowering rotates past it): admin A demotes writer D to reader, rotating write to
+// author's own lowering rotates past it): admin A lowers writer D to reader, rotating write to
 // e1 that D lacks; the mint admin removes A, rotating write to e2; A, not knowing, re-grants D write,
 // boxing e1. Settled, the grant is invalid and D a reader. D opens e1 (A held it and handed it
 // on: a secret once shared cannot be un-shared) but not e2, which every writer encrypts under.
@@ -953,11 +953,11 @@ fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
     lp.sync_all().unwrap();
     let write = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&g).and_then(|e| e.role(Role::Write).newest_held().map(|x| x.0));
     lp.peers[1].clock.advance(1_000);
-    lp.peers[1].engine.demote(&g, &Demotion { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[1].engine.lower(&g, &Lowering { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
     let e1 = write(&lp, 1).unwrap();
     lp.sync(1, 0).unwrap();
     lp.peers[0].clock.advance(2_000);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: a, new: None, retain: None }).unwrap();
     let e2 = write(&lp, 0).unwrap();
     assert_ne!(e1, e2, "A's removal rotates write");
     lp.peers[1].clock.advance(3_000);
@@ -977,7 +977,7 @@ fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
 }
 
 // The same limit through a holder actor (spec/crypto.md §4, Boxes): holder actor M is admin of
-// G; A is admin of M. The mint admin demotes admin D of G to reader, rotating G's admin to e1, which
+// G; A is admin of M. The mint admin lowers admin D of G to reader, rotating G's admin to e1, which
 // boxes M at its keyset k; then removes A from M, rotating M and G past k. A, not knowing,
 // grants D admin of M, boxing k. Settled, the grant is invalid and D a reader of G. D opens e1
 // (through k, which A held and handed on, as A opens it) but nothing made since A's removal.
@@ -993,11 +993,11 @@ fn invalid_grant_on_a_holder_actor_hands_on_what_its_keyset_opens_spec_crypto_4(
     lp.sync_all().unwrap();
     let admin = |lp: &LocalPeer| lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Admin).newest_held().map(|x| x.0));
     lp.peers[0].clock.advance(1_000);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&g, &Lowering { holder: d, new: Some(grant(Role::Read)), retain: None }).unwrap();
     let e1 = admin(&lp).unwrap();
     lp.sync(0, 1).unwrap();
     lp.peers[0].clock.advance(2_000);
-    lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&m, &Lowering { holder: a, new: None, retain: None }).unwrap();
     lp.peers[0].engine.ensure_rotated(&g).unwrap();
     let e2 = admin(&lp).unwrap();
     assert_ne!(e1, e2, "A's removal from M rotates G's admin");
@@ -1200,7 +1200,7 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
     let (mut lp, a, _) = lacking_write();
     let f = lp.peers[5].engine.tid();
     let lacked = lp.peers[1].engine.epochs(&a).unwrap().write.current()[0];
-    lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&a, &Lowering { holder: f, new: None, retain: None }).unwrap();
     assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(m, _, _)| *m == f), "F removed");
     let e = lp.peers[1].engine.epochs(&a).unwrap();
     assert_eq!(e.write.current().len(), 1, "the removal's epoch alone is current");
@@ -1227,7 +1227,7 @@ fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
     lp.sync_all().unwrap();
     assert!(lp.peers[1].engine.epochs(&m).unwrap().admin.newest_held().is_none(), "P lacks M's new keyset secret");
     let epochs = lp.peers[1].engine.epochs(&a);
-    lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&a, &Lowering { holder: f, new: None, retain: None }).unwrap();
     assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(x, _, _)| *x == f), "F removed");
     assert_ne!(lp.peers[1].engine.epochs(&a), epochs, "with its rotation");
     assert!(blocked_at(&mut lp, 1, a).is_empty(), "the departure covered at P");
@@ -1276,7 +1276,7 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     let x1 = newest_read(&lp, 2, x);
     assert!(lp.peers[2].engine.ensure_rotated(&x).unwrap().0.commits.is_empty(), "C's own removal rotates nothing of X");
     assert_eq!(newest_read(&lp, 2, x), x1);
-    lp.peers[2].engine.demote(&x, &Demotion { holder: e, new: None, retain: None }).unwrap();
+    lp.peers[2].engine.lower(&x, &Lowering { holder: e, new: None, retain: None }).unwrap();
     assert_eq!(sealed_at(&mut lp, 2, x, t), Some(t1), "T sealed at the keyset C holds");
     lp.sync(2, 1).unwrap();
     assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads X's new epoch");
@@ -1309,7 +1309,7 @@ fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
     let k1 = newest_read(&lp, 1, m).unwrap();
     assert!(lp.peers[0].engine.epochs(&m).is_none_or(|x| x.read.secret(&k1).is_none()), "X holds none of M's secrets");
     let start = held_by(&lp, 2, &[m, a]);
-    lp.peers[2].engine.demote(&m, &Demotion { holder: e, new: None, retain: None }).unwrap();
+    lp.peers[2].engine.lower(&m, &Lowering { holder: e, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert!(!lp.peers[0].engine.departures(&m).unwrap().is_empty(), "X knows E left M");
     rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Read]), &[]);
@@ -1358,7 +1358,7 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (History box: any holder of the epoch's role adds): W, demoted to read, still
+// spec/crypto.md §4 (History box: any holder of the epoch's role adds): W, lowered to read, still
 // holds the current write epoch and an earlier write secret its history lists not. It adds no
 // write history (that needs write): its re-seal pass writes nothing there, and fails nothing.
 #[test]
@@ -1373,9 +1373,9 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
     lp.sync_all().unwrap();
     rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[]);
     lp.sync_all().unwrap();
-    let rm = lp.peers[0].engine.demote(&g, &Demotion { holder: w, new: Some(grant(Role::Read)), retain: None }).unwrap().commits;
+    let rm = lp.peers[0].engine.lower(&g, &Lowering { holder: w, new: Some(grant(Role::Read)), retain: None }).unwrap().commits;
     deliver_grants_only(&mut lp, 0, 1, g, &rm);
-    assert_eq!(lp.peers[1].engine.core.role_now(&w, &g), Some(Role::Read), "W knows its demotion");
+    assert_eq!(lp.peers[1].engine.core.role_now(&w, &g), Some(Role::Read), "W knows its lowering");
     let e = lp.peers[1].engine.epochs(&g).unwrap();
     assert!(e.write.current().iter().all(|c| e.write.secret(c).is_some()), "W holds the current write epoch");
     let done = lp.peers[1].engine.reseal_after_pass(&g).unwrap();
@@ -1406,7 +1406,7 @@ fn lowered_rotator_rotates_once_spec_crypto_4() {
         lp.sync_all().unwrap();
         n
     }).collect::<Vec<_>>();
-    lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let k = newest_read(&lp, 0, m);
     let first = rotations(&mut lp);
@@ -1804,7 +1804,7 @@ fn a_destruction_that_falls_gives_access_through_it_back_spec_crypto_4() {
         e.commit(m).unwrap().unwrap();
     }
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    lp.peers[0].engine.lower(&t, &Lowering { holder: n1, new: None, retain: None }).unwrap();
     let before = newest_read(&lp, 2, x);
     send_skipping(&mut lp, 1, 2, &BTreeSet::new());
     assert!(lp.peers[2].engine.core.destroyed(&t), "T destroyed at peer 2");
@@ -1931,8 +1931,8 @@ fn the_removers_duties_rotate_above_its_own_removal_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Left out; Stale), spec/permissions.md §3: G {g0, W admin, M}, M {m0, N},
-// N {n0, P admin}. P rotates N while n0 demotes P concurrently, so P's rotation turns invalid once
-// both are held. W holds P's rotation but not the demotion: M's box to N names the keyset P's
+// N {n0, P admin}. P rotates N while n0 lowers P concurrently, so P's rotation turns invalid once
+// both are held. W holds P's rotation but not the lowering: M's box to N names the keyset P's
 // rotation supersedes, stale at W, so W's rotation of G leaves M out and records M's keyset with
 // P's rotation as its cause. Once everything is held P's rotation is invalid, but a rotation
 // stands while held (a keyset held invalid blocks a box naming it as one held valid blocks a box
@@ -1955,7 +1955,7 @@ fn left_out_on_an_invalidated_rotation_ends_with_one_rekey_spec_crypto_4() {
     let before = commit_ids(&mut lp, 1);
     rotate_skipping(&mut lp, 1, n, &BTreeSet::from([Role::Read]), &[]);
     let p_rot = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
-    lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[3].engine.lower(&n, &Lowering { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync(1, 4).unwrap();
     rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
     assert_eq!(sealed_at(&mut lp, 4, g, m), None, "W leaves M out");
@@ -1993,7 +1993,7 @@ fn left_out_on_an_invalidated_removal_rotation_stands_as_a_rotation_spec_crypto_
     let new: Vec<CommitId> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
     let [p_rm] = new.as_slice() else { panic!("one commit: {new:?}") };
     assert!(lp.peers[1].engine.core.ix.held.grant_commit(p_rm).is_some() && super::members::writes_keyset(&lp.peers[1].engine.core, p_rm), "a grant write and a keyset");
-    lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[3].engine.lower(&n, &Lowering { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync(1, 4).unwrap();
     rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
     assert_eq!(sealed_at(&mut lp, 4, g, m), None, "W leaves M out");
@@ -2059,12 +2059,12 @@ fn g0_leaves_m_out(lp: &mut LocalPeer, i: usize, m: Tid, g: Tid, k0: Epoch) -> B
 }
 
 // spec/crypto.md §4 (Left out: a cause stands while its departure stands), model `LO_inv`: Q
-// removes D from M alone while m0 demotes Q concurrently (writes nothing else). g0 gets the
-// removal only, leaves M out of G and records k0 with it. Once the demotion is held everywhere
+// removes D from M alone while m0 lowers Q concurrently (writes nothing else). g0 gets the
+// removal only, leaves M out of G and records k0 with it. Once the lowering is held everywhere
 // the removal is invalid, D never left, and the record counts nothing: M ends boxed at G at
 // every admin, M never rotated.
 #[test]
-fn left_out_ends_with_a_departure_by_a_concurrently_demoted_admin_spec_crypto_4() {
+fn left_out_ends_with_a_departure_by_a_concurrently_lowered_admin_spec_crypto_4() {
     let (mut lp, m, g, k0) = left_out_world();
     let q = lp.peers[4].engine.tid();
     lp.peers[1]
@@ -2489,8 +2489,8 @@ fn a_rotator_departures_cause_is_its_rotation_spec_crypto_4() {
 
 // spec/crypto.md §4 (Left out: a box naming a keyset held invalid has that keyset's rotations
 // as causes; Stale): G {g0, W admin, M}, M {m0, N}, N {n0, P admin}. P rotates N (kn) while n0
-// demotes P concurrently; m0, holding P's rotation and not the demotion, rotates M boxing N at
-// kn. Once the demotion is held kn is held invalid, so M's box to N is stale: W leaves M out of G
+// lowers P concurrently; m0, holding P's rotation and not the lowering, rotates M boxing N at
+// kn. Once the lowering is held kn is held invalid, so M's box to N is stale: W leaves M out of G
 // recording M's keyset with P's rotation, and G ends boxing M once m0 re-keys.
 #[test]
 fn a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4() {
@@ -2511,7 +2511,7 @@ fn a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4() 
     rotate_skipping(&mut lp, 1, n, &read, &[]);
     let p_rot = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
     let kn = newest_read(&lp, 1, n).unwrap();
-    lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
+    lp.peers[3].engine.lower(&n, &Lowering { holder: p, new: Some(grant(Role::Read)), retain: None }).unwrap();
     lp.sync(1, 2).unwrap();
     rotate_skipping(&mut lp, 2, m, &read, &[]);
     assert_eq!(sealed_at(&mut lp, 2, m, n), Some(kn), "m0 boxes N at P's keyset");

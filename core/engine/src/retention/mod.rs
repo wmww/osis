@@ -1710,7 +1710,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
     use crate::engine::{DropFor, Hold, Missing};
-    use crate::flows::Demotion;
+    use crate::flows::Lowering;
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, CommitId, Role, Value, Time};
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1941,16 +1941,16 @@ mod tests {
         let inside = lp.peers[1].engine.package(&inside).unwrap().unwrap();
         let r = lp.peers[2].engine.tid();
         use std::collections::{BTreeMap, BTreeSet};
-        let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
+        let scope = crate::apply::receipt::Loweringscope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
         let f = lp.peers[0].engine.frontier(&scope, Time(1_700_000_000_000)).unwrap();
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(r)) }).unwrap();
         m.frontier(osis_perm::Frontier::new(f.commits));
         lp.advance(10);
-        let demote = lp.peers[0].commit(m).unwrap().unwrap();
-        let demote = lp.peers[0].engine.package(&demote).unwrap().unwrap();
+        let lower = lp.peers[0].commit(m).unwrap().unwrap();
+        let lower = lp.peers[0].engine.package(&lower).unwrap().unwrap();
         check(&mut lp, "every part valid");
-        lp.deliver(3, &demote).unwrap();
+        lp.deliver(3, &lower).unwrap();
         lp.deliver(3, &rogue).unwrap();
         assert!(lp.peers[3].engine.core.ix.invalid.get(&(t, x.clone())).is_some_and(|s| !s.is_empty()));
         check(&mut lp, "an invalid part joined");
@@ -2144,7 +2144,7 @@ mod tests {
         // no addendum of A's would list it
         lp.peers[0].engine.core.addenda_on = false;
         lp.advance(1_000);
-        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        lp.peers[2].engine.lower(&t, &Lowering { holder: w, new: None, retain: None }).unwrap();
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.delta_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
@@ -2156,7 +2156,7 @@ mod tests {
     }
 
     // spec/commits.md §5 live writes, by dot, and a delta stamp marks many positions: C's snapshot,
-    // invalid at C after A's demotion, holds A's write to field 0 (dead here), and of field 1 only
+    // invalid at C after A's lowering, holds A's write to field 0 (dead here), and of field 1 only
     // C's reset of it (invalid too), so field 1's entry, under the same stamp, is live here at a
     // position the snapshot does not hold.
     #[test]
@@ -2186,7 +2186,7 @@ mod tests {
         let mut m = Mutation::new();
         m.op(t, &key, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Value::Int(3)) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, retain: None }).unwrap();
+        lp.peers[0].engine.lower(&t, &Lowering { holder: c, new: None, retain: None }).unwrap();
         lp.sync(0, 1).unwrap();
         let e = &mut lp.peers[1].engine;
         assert_eq!(e.body_valid(&snap, &t, &ak), Some(false), "the snapshot is invalid here");
@@ -2296,7 +2296,7 @@ mod tests {
         let p1 = lp.peers[1].commit(m).unwrap().unwrap();
         let p1 = lp.peers[1].engine.package(&p1).unwrap().unwrap();
         lp.advance(10);
-        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+        let d = lp.peers[0].engine.lower(&t, &Lowering { holder: x, new: None, retain: None }).unwrap();
         let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
         (p1, ds)
     }
@@ -2362,7 +2362,7 @@ mod tests {
         let c1 = set(&mut lp, 0, 1);
         lp.sync_all().unwrap();
         lp.advance(10);
-        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        let d = lp.peers[0].engine.lower(&t, &Lowering { holder: w, new: None, retain: None }).unwrap();
         let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
         let c2 = set(&mut lp, 1, 2);
         let c2p = lp.peers[1].engine.package(&c2).unwrap().unwrap();
@@ -2420,7 +2420,7 @@ mod tests {
         let sw = lp.peers[1].engine.snapshot(&t, &reg).unwrap().unwrap();
         let sw = lp.peers[1].engine.package(&sw).unwrap().unwrap();
         lp.advance(10);
-        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        let d = lp.peers[0].engine.lower(&t, &Lowering { holder: w, new: None, retain: None }).unwrap();
         let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
         lp.deliver(2, &sw).unwrap();
         for d in &ds {
@@ -2603,7 +2603,7 @@ mod tests {
         lp.peers[0].engine.grant(&u, &r, &grant(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
-        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&t, &Lowering { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
         lp.advance(10);
         (lp, t, u, r)
     }
@@ -2652,7 +2652,7 @@ mod tests {
 
     // spec/permissions.md §6 (Invalid deltas: a node keeps a delta of its own commit judged
     // invalid), spec/commits.md §5 (Forgetting): the lowered writer's own write, invalid once it
-    // holds the demotion, stays held across a restart (judging at open knows its account), so it
+    // holds the lowering, stays held across a restart (judging at open knows its account), so it
     // is never forgettable there and a re-grant gives it back from its author.
     #[test]
     fn an_own_invalid_write_stays_held_across_a_restart_spec_perm_6() {
@@ -2676,7 +2676,7 @@ mod tests {
     // where the request holds the right over nothing), spec/permissions.md §6 (A purge request: an invalid one
     // purges nothing): the lowered writer's invalid commit purging its write on `t` (it lost write
     // there) is forgettable; one purging its write on `u`, where it is still admin, drops that
-    // write and is kept, also past a demotion on `u` whose frontier lists it.
+    // write and is kept, also past a lowering on `u` whose frontier lists it.
     #[test]
     fn an_invalid_commits_request_is_forgotten_only_where_it_drops_nothing_spec_commits_5() {
         let (mut lp, t, u, r) = lowered_writer();
@@ -2686,14 +2686,14 @@ mod tests {
         let mut m = Mutation::new();
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::FOREVER)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        // its write as it holds write on `t` and admin on `u`, stamped after the demotion: its
+        // its write as it holds write on `t` and admin on `u`, stamped after the lowering: its
         // part on `t` invalid at peer 0
         let mut m = Mutation::new();
         m.set(t, &y, &Value::Int(1)).unwrap().purge_by(t, &y, osis_schema::PurgeBy::Writer).unwrap();
         m.set(u, &y, &Value::Int(1)).unwrap();
         lp.advance(10);
         let own = lp.peers[1].commit(m).unwrap().unwrap();
-        // then, stamped after the demotion: invalid on `t`
+        // then, stamped after the lowering: invalid on `t`
         let mut m = Mutation::new();
         m.set(t, &x, &Value::Int(2)).unwrap();
         m.purge_commit(own, t, y.clone());
@@ -2710,9 +2710,9 @@ mod tests {
         assert_eq!(e.get(&u, &y).unwrap(), None, "admin on u: its request drops the write there");
         assert!(!e.forgettable(&q_u).unwrap(), "a request dropping a write is kept");
         lp.advance(10);
-        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&u, &Lowering { holder: r, new: Some(ct::Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }), retain: None }).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(!e.forgettable(&q_u).unwrap(), "a demotion whose frontier lists it leaves the purge standing: still kept");
+        assert!(!e.forgettable(&q_u).unwrap(), "a lowering whose frontier lists it leaves the purge standing: still kept");
         e.forget_commits(&[q_t]).unwrap();
         assert_eq!(e.get(&u, &y).unwrap(), None, "forgetting the request that dropped nothing changes no read");
         e.check_index();
@@ -2720,7 +2720,7 @@ mod tests {
 
     // spec/permissions.md §6 (Invalid deltas: dropped as invalid, whatever else asks),
     // spec/commits.md §5 (Forgetting): peer 2 takes a lowered writer's write and its purge of it
-    // before the demotion; with the demotion both are invalid and the purge falls, yet the write
+    // before the lowering; with the lowering both are invalid and the purge falls, yet the write
     // stays dropped as invalid, not missing (no honest node logs it while invalid, so missing it
     // was kept for good): both are forgettable and forgetting them changes no read.
     #[test]
@@ -2737,7 +2737,7 @@ mod tests {
         lp.peers[0].engine.grant(&t, &r2, &grant(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
-        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
+        lp.peers[0].engine.lower(&t, &Lowering { holder: r, new: Some(grant(Role::Read)), retain: None }).unwrap();
         lp.advance(10);
         let (x, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:z.0").unwrap());
         let mut m = Mutation::new();

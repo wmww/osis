@@ -94,13 +94,13 @@ fn link_redeem_and_finalize_spec_permissions_7() {
 }
 
 // spec/permissions.md §1 (mint admin; Path), §5.2: a path through an account's record grant; an
-// admin of the account writes along [account], and loses that with an explicit demotion
+// admin of the account writes along [account], and loses that with an explicit lowering
 #[test]
 fn record_grant_through_an_account_spec_permissions_1() {
     let on12 = |id, author, h| Commit { parts: vec![Part { thing: 12, ..part(REG, PurgeBy::AuthorOrAdmin, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
-    let cs = |demote: bool| {
+    let cs = |lower: bool| {
         let mut v = vec![on12(10, 2, 1), grant_on(5, 2, 1, ACCOUNT, GrantWrite::role(3, Some(Role::Admin)), None), on12(11, 3, 2).along(&[ACCOUNT])];
-        if demote {
+        if lower {
             v.push(grant_on(6, 2, 3, ACCOUNT, GrantWrite::role(3, None), Some(vec![])));
         }
         held(5, v)

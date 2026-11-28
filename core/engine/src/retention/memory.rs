@@ -139,7 +139,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 /// depends on those two alone. The commits dropped from.
 ///
 /// An author keeps its own bodies until one of its own snapshots covers them (notes/ephemeral.md
-/// What follows from memory): a cover drops live bodies, and a snapshot its compactor's demotion
+/// What follows from memory): a cover drops live bodies, and a snapshot its compactor's lowering
 /// does not list falls (spec/permissions.md §5.2), so what it covered would be gone at every
 /// holder; each author then still holds its own writes and logs them again once the fall is
 /// seen.

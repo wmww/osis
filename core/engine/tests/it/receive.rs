@@ -89,7 +89,7 @@ fn pending_until_created_spec_commits_4() {
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
     let me = lp.peers[0].engine.tid();
-    let scope = osis_engine::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
+    let scope = osis_engine::Loweringscope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
     assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "not judged: not received");
     // the author's commits, then the thing's creation
@@ -145,7 +145,7 @@ fn a_removal_ordered_before_a_part_is_evidence_spec_commits_4() {
     m.set(u, &REG, &s("u")).unwrap();
     lp.peers[1].commit(m).unwrap();
     lp.hold(u);
-    lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.lower(&t, &osis_engine::flows::Lowering { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
     let grant = *lp.peers[1].engine.grant(&t, &a, &Grant { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
     let grant = package_for(&mut lp, 1, 2, grant);

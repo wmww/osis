@@ -203,15 +203,15 @@ fn f2_copies_placed_at_logging_leave_a_sync_id_short_when_a_unit_changes() {
     assert_eq!(fails(&w, &Rule::fixed()), vec![]);
 }
 
-/// Keysets carry whole demotions (notes/write-path-design.md §2, D2; notes/a3-spec/README.md Open
+/// Keysets carry whole lowerings (notes/write-path-design.md §2, D2; notes/a3-spec/README.md Open
 /// 8): X removes K from A; Y, D's admin, syncing A and D, rotates D, its keyset carrying the
 /// removal (A writes D); the stolen K then writes D through [A]. From the rotation on, D holds the
 /// removal as evidence of the keyset, before any body needs it, and D's reader judges the keyset
 /// held and K's write invalid. The control (`Rule::keysets` off) fails P11 and P1 at the rotation:
-/// D's reader holds a keyset without the demotion it carries, pending where the node holding it
+/// D's reader holds a keyset without the lowering it carries, pending where the node holding it
 /// all judges it valid.
 #[test]
-fn keysets_a_rotation_carries_the_demotions_its_writer_holds() {
+fn keysets_a_rotation_carries_the_lowerings_its_writer_holds() {
     let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, k) = (w.node(true, &[A]), w.node(true, &[A, D]), w.node(false, &[]));
@@ -355,7 +355,7 @@ fn seeds(n: u64) -> std::ops::Range<u64> {
 fn search(family_step: usize, random_worlds: u64) {
     let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>, usize, usize) + Sync>> = vec![];
     let rule = Rule::fixed();
-    // the failures, whether the world has the gap, its keysets carrying a demotion
+    // the failures, whether the world has the gap, its keysets carrying a lowering
     let run = move |w: World| roles_model::paths::judging_once(&w.w, || (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()), w.keysets.values().filter(|c| !c.is_empty()).count()));
     for i in (0..FAMILY).step_by(family_step) {
         jobs.push(Box::new(move || {
@@ -377,9 +377,9 @@ fn search(family_step: usize, random_worlds: u64) {
         }
     }
     // the gap, counted (issues/removed-key-writes-show-far.md)
-    eprintln!("{} worlds; {gap} with the gap; {carrying} keysets carrying a demotion", jobs.len());
+    eprintln!("{} worlds; {gap} with the gap; {carrying} keysets carrying a lowering", jobs.len());
     assert!(bad.is_empty(), "{} worlds fail, first: {}", bad.len(), bad[0]);
-    assert!(carrying > 0, "no keyset carries a demotion: raise the rotation rate in `random`");
+    assert!(carrying > 0, "no keyset carries a lowering: raise the rotation rate in `random`");
 }
 
 #[test]

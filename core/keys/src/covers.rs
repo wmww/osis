@@ -89,7 +89,7 @@ impl GrantLog {
 }
 
 impl Departure {
-    /// Holder `holder` of A removed or demoted below `from`, up to admin; no grant shows it.
+    /// Holder `holder` of A removed or lowered below `from`, up to admin; no grant shows it.
     pub fn holder(holder: Tid, from: Role) -> Departure {
         Departure { holder, from, upto: Role::Admin, grant: None }
     }
@@ -153,8 +153,8 @@ impl Departure {
 /// this node has not received), and judges void every later write this node holds that would
 /// raise it back (a void name is met only where its write applies nothing). A write that does
 /// not count (its author held less than write at its point) is not pinned, so a reader's writes
-/// force no rotation, and a party demoted to reader whose void re-grant boxed the holder keeps
-/// that epoch until something else rotates the role (notes/keys-coverage.md, A demoted admin's
+/// force no rotation, and a party lowered to reader whose void re-grant boxed the holder keeps
+/// that epoch until something else rotates the role (notes/keys-coverage.md, A lowered admin's
 /// void re-grant).
 pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
     let Some(grant) = &d.grant else { return false };
@@ -218,7 +218,7 @@ pub fn reseal_missing(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, hold
 mod tests {
     use super::*;
 
-    // spec/crypto.md §4: a departure is a removal or a demotion below r; it concerns the roles it left.
+    // spec/crypto.md §4: a departure is a removal or a lowering below r; it concerns the roles it left.
     #[test]
     fn departures() {
         let m = Tid::from_bytes([1; 15]);
