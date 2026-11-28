@@ -1,0 +1,4 @@
+# sheave-c30-mediums
+> Summary: gate-selected stages run by hand failed on main's unlisted failures; attributing them took three rebuilds.
+
+- The stages `tools/gate.sh --plan` selected (properties, sim sweep), run by hand before the last land, failed widely: every sim scenario on every seed, `arrival_order_holds_alike_*`, `deep_departure_holds_*`, `held_set_decides_plain` (a coverage floor), `histories_hold_their_closure_plain`. None was in tools/known_failures.txt. Each was main's (replayed on origin/main and on the base before this job's commits), and main fixed or listed them shortly after. Telling a worker's failures from main's cost three detached rebuilds of the worktree. Would have prevented it: a main-health line (the last full gate's result on main, or known_failures kept current with each landing that leaves main red) a worker can read before running stages.
