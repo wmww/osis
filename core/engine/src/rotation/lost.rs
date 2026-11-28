@@ -65,8 +65,12 @@ pub(crate) fn forget_timed(tx: &mut Tx<'_>, a: &Tid) -> Result<()> {
 
 /// Drops the timed-loss records of actors read again or no longer held.
 fn prune_timed(tx: &mut Tx<'_>) -> Result<()> {
-    let core = &*tx.core;
-    let gone: Vec<Tid> = core.ix.timed_lost.keys().filter(|a| !over_held(core, a)).copied().collect();
+    let mut gone = Vec::new();
+    for a in tx.core.ix.timed_lost.keys().copied().collect::<Vec<_>>() {
+        if !over_held(tx, &a)? {
+            gone.push(a);
+        }
+    }
     for a in gone {
         tx.txn.remove_local(&[TIMED_LOST, a.as_bytes()].concat(), osis_store::Shred::No)?;
         tx.core.ix.timed_lost.remove(&a);
@@ -185,16 +189,33 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
-/// sync secret below sync (`holds_at`), any other below read (`may_hold`). A sync secret of a thing
-/// the node reads no grant of (no timeline, or sync secrets alone held, `Core::holds_sync_alone`:
-/// what it holds of the roster is from when it read, and a claim's later grant is beyond it) is
-/// judged by no role: kept unread, it follows only its own entries and the steps registered with
-/// it (spec/sync.md §3 Kept sync IDs), its removal the step past its keys (spec/sync-judgement.md
-/// §6 Stops).
-fn over_held(core: &Core, a: &Tid) -> bool {
-    let Some(e) = core.ix.secrets.get(a) else { return false };
-    let judged = core.timelines().get(a).is_some() && !core.holds_sync_alone(a);
-    ROLES.iter().any(|r| e.role(*r).holds_any() && !if *r == Role::Sync { !judged || holds_sync(core, a) } else { holds_at(core, a, Role::Read) })
+/// sync secret below sync (`holds_at`), any other below read (`may_hold`). A sync secret the node
+/// holds with no role giving it is judged by its roles only where its epoch does not cover every
+/// departure of the node's own things from `a` known here (spec/crypto.md §4 Covers): one that
+/// covers them is what a claim made after those departures gives, beyond the roster the node
+/// read (a sync grant it cannot read), so it is kept unread, following only its own entries and
+/// the steps registered with it (spec/sync.md §3 Kept sync IDs, spec/permissions.md §3 Lost
+/// access), its removal the step past its keys (spec/sync-judgement.md §6 Stops). With no
+/// timeline of `a` nothing judges it. A function of what is held: which secrets the node took
+/// before a departure applied (a grant and its removal applied in one release, or apart) never
+/// decides it.
+fn over_held(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
+    let core = &*tx.core;
+    let Some(e) = core.ix.secrets.get(a) else { return Ok(false) };
+    if ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any() && !holds_at(core, a, Role::Read)) {
+        return Ok(true);
+    }
+    if !e.role(Role::Sync).holds_any() || core.timelines().get(a).is_none() || holds_sync(core, a) {
+        return Ok(false);
+    }
+    let held: Vec<osis_crypto::Epoch> = e.role(Role::Sync).held().map(|(k, _)| k).collect();
+    let own: Vec<super::Departure> = super::departures(tx, a)?.into_iter().filter(|d| was_ours(tx.core, &d.holder)).collect();
+    for k in &held {
+        if super::uncovered(tx, a, Role::Sync, k, &own)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether all that ended the node's (or a held link key's) role on `a` is an `until` passing:
@@ -324,16 +345,22 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 /// lost access holding it for good; reading-only candidates go with the commit that gave them.
 /// Reading-only secrets of an actor (spec/permissions.md §3) are no loss of it while their source
 /// commit may still be judged: a grant it may yet get.
-fn judge(core: &Core, cands: Vec<Tid>) -> Vec<Tid> {
-    let unread: Vec<Tid> = cands.into_iter().filter(|a| over_held(core, a)).collect();
-    if unread.is_empty() {
-        return unread;
+fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
+    let mut unread = Vec::new();
+    for a in cands {
+        if over_held(tx, &a)? {
+            unread.push(a);
+        }
     }
+    if unread.is_empty() {
+        return Ok(unread);
+    }
+    let core = &*tx.core;
     let sourced: Vec<Tid> = core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| core.waits.read_any(&u.commit))))).map(|(t, _)| *t).collect();
     let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
     let held: Vec<Tid> = unread.iter().filter(|k| contested(core, k)).copied().collect();
     let kept = |a: &Tid| (!checked(a) && sourced.iter().any(|x| reaches(core, x, a))) || held.iter().any(|x| reaches(core, x, a));
-    unread.into_iter().filter(|a| !kept(a)).collect()
+    Ok(unread.into_iter().filter(|a| !kept(a)).collect())
 }
 
 /// This node's own self-removals (`departures_with_own`) from `a` or from an actor holding a role
@@ -619,7 +646,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
 /// (`judge`), with no own self-removal behind it still waiting (`removal_done` drops those) and
 /// not by an `until` passing alone (heard out first, `Leaving::timed`).
 fn due_now(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
-    if !loss_seen(tx.core, a) || judge(tx.core, vec![*a]).is_empty() || lost_by_time(tx.core, a) {
+    if !loss_seen(tx.core, a) || judge(tx, vec![*a])?.is_empty() || lost_by_time(tx.core, a) {
         return Ok(false);
     }
     Ok(!own_leaving(tx, a)?.iter().any(|c| tx.core.ix.held_wait.contains(c)))
@@ -628,7 +655,7 @@ fn due_now(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
 /// Whether held actor `a` is lost by an `until` passing alone, no own self-removal behind it
 /// (`Leaving::timed`).
 fn timed_now(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
-    Ok(!judge(tx.core, vec![*a]).is_empty() && lost_by_time(tx.core, a) && own_leaving(tx, a)?.is_empty())
+    Ok(!judge(tx, vec![*a])?.is_empty() && lost_by_time(tx.core, a) && own_leaving(tx, a)?.is_empty())
 }
 
 /// The held copies' marks judged now differ from the marks kept (`keeps`): a role commit moved
@@ -659,7 +686,7 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Vec<Tid>> {
             (due, copies_moved(tx.core))
         }
     };
-    let lost = judge(tx.core, cands);
+    let lost = judge(tx, cands)?;
     let dropped = match scope {
         LostScope::Kept(xs) => xs,
         _ => &[],
@@ -717,7 +744,7 @@ impl Engine {
     pub fn lost_leaving(&mut self) -> Result<Leaving> {
         self.run(|tx| {
             let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-            let lost = judge(tx.core, all);
+            let lost = judge(tx, all)?;
             let mut out = Leaving::default();
             let again = |out: &mut Leaving, t: u64| out.recheck_at = Some(out.recheck_at.map_or(t, |x| x.min(t)));
             for a in lost {
@@ -894,13 +921,13 @@ pub(crate) fn secrets_brief(e: &ActorEpochs, keep_sync: bool) -> String {
 /// side effects, clause by clause (`due_now`, `timed_now`).
 #[cfg(debug_assertions)]
 pub(crate) fn explain_due(tx: &mut Tx<'_>, a: &Tid) -> Result<String> {
+    let Some(e) = tx.core.ix.secrets.get(a).cloned() else { return Ok("not due: no secrets of it held".into()) };
+    let over = over_held(tx, a)?;
+    let lost = !judge(tx, vec![*a])?.is_empty();
     let core = &*tx.core;
-    let Some(e) = core.ix.secrets.get(a) else { return Ok("not due: no secrets of it held".into()) };
-    let over = over_held(core, a);
     let seen = loss_seen(core, a);
-    let lost = !judge(core, vec![*a]).is_empty();
     let timed = lost_by_time(core, a);
-    let mut out = format!("held {}; over-held (a secret no role covers) {over}; loss seen {seen}; judged lost {lost}", secrets_brief(e, false));
+    let mut out = format!("held {}; over-held (a secret no role covers) {over}; loss seen {seen}; judged lost {lost}", secrets_brief(&e, false));
     if lost {
         out.push_str(&format!("; by an until alone {timed}"));
     }

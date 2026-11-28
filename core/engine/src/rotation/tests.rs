@@ -484,11 +484,35 @@ fn arrival_replay(s: u64) -> String {
     format!("OSIS_ARRIVAL_START={s} OSIS_ARRIVAL_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests::arrival_order_holds_alike_large_spec_permissions_3")
 }
 
-/// One seed of `arrival_order_holds_alike_plain_spec_permissions_3`.
-fn arrival_order(seed: u64) {
-    const ORDERS: usize = 4;
-    {
-        let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (seed + 1).wrapping_mul(0x2545_f491_4f6c_dd1d));
+/// A step of an arrival-order history (`Arrival::play`): peer `by` grants N read, removes N,
+/// rotates read and write boxing A, B, M and N, or removes M; peer `w` writes (at the step's
+/// index); a sync between two peers.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    GrantN(usize),
+    RemoveN(usize),
+    Rotate(usize),
+    RemoveM(usize),
+    Write(usize),
+    Sync(usize, usize),
+}
+
+/// The world of `arrival_order_holds_alike_plain_spec_permissions_3`: admins A (0) and B (1) and
+/// writer M (2) of `g` play the steps and settle; N (3) and O (4, never granted) are to receive
+/// every commit A sends each (`lists`, by commit ID; `all`, their union in commit order,
+/// `first_g` the index of `g`'s oldest).
+struct Arrival {
+    lp: LocalPeer,
+    g: Tid,
+    /// Whether N is a reader where every commit is held.
+    n_in: bool,
+    lists: Vec<BTreeMap<osis_base::CommitId, crate::local_peer::Package>>,
+    all: Vec<osis_base::CommitId>,
+    first_g: usize,
+}
+
+impl Arrival {
+    fn play(steps: &[Step]) -> Arrival {
         let mut lp = synced(5);
         let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
         let g = independent_thing(&mut lp, 0);
@@ -498,40 +522,14 @@ fn arrival_order(seed: u64) {
             lp.sync(0, b).unwrap();
         }
         let n = tids[3];
-        let (mut n_in, mut m_in) = (false, true);
-        let mut log = Vec::new();
-        for step in 0..7 {
-            let by = rng.next(2) as usize;
-            match rng.next(6) {
-                0 | 1 if !n_in => {
-                    lp.peers[by].engine.grant(&g, &n, &grant(Role::Read)).unwrap();
-                    n_in = true;
-                    log.push(format!("{by} grants N"));
-                }
-                0 => {
-                    lp.peers[by].engine.demote(&g, &Demotion { holder: n, new: None, retain: None }).unwrap();
-                    n_in = false;
-                    log.push(format!("{by} removes N"));
-                }
-                1 | 2 => {
-                    let r = lp.peers[by].engine.rotate_boxing_only(&[g], &[Role::Read, Role::Write], &tids[..4]).unwrap();
-                    log.push(format!("{by} rotates ({})", r.is_some()));
-                }
-                3 if m_in => {
-                    lp.peers[by].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
-                    m_in = false;
-                    log.push(format!("{by} removes M"));
-                }
-                _ => {
-                    let w = if m_in && rng.next(2) == 0 { 2 } else { by };
-                    put_on(&mut lp, w, g, &format!("k{step}"), step);
-                    log.push(format!("{w} writes"));
-                }
-            }
-            let (a, b) = (rng.next(3) as usize, rng.next(3) as usize);
-            if a != b {
-                lp.sync(a, b).unwrap();
-                log.push(format!("sync {a}->{b}"));
+        for (i, st) in steps.iter().enumerate() {
+            match *st {
+                Step::GrantN(by) => drop(lp.peers[by].engine.grant(&g, &n, &grant(Role::Read)).unwrap()),
+                Step::RemoveN(by) => drop(lp.peers[by].engine.demote(&g, &Demotion { holder: n, new: None, retain: None }).unwrap()),
+                Step::Rotate(by) => drop(lp.peers[by].engine.rotate_boxing_only(&[g], &[Role::Read, Role::Write], &tids[..4]).unwrap()),
+                Step::RemoveM(by) => drop(lp.peers[by].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap()),
+                Step::Write(w) => put_on(&mut lp, w, g, &format!("k{i}"), i as i64),
+                Step::Sync(a, b) => lp.sync(a, b).unwrap(),
             }
         }
         // the authors settle among themselves (rotations due, re-seals)
@@ -569,54 +567,94 @@ fn arrival_order(seed: u64) {
                 all.push(pk.id);
             }
         }
-        let lists: Vec<BTreeMap<osis_base::CommitId, crate::local_peer::Package>> = sent.into_iter().map(|v| v.into_iter().map(|p| (p.id, p)).collect()).collect();
+        let lists = sent.into_iter().map(|v| v.into_iter().map(|p| (p.id, p)).collect()).collect();
         let first_g = all.iter().position(|id| lp.peers[0].engine.header(id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == g))).unwrap();
-        let deliver = |lp: &mut LocalPeer, order: &[usize]| {
-            for (i, list) in [3, 4].into_iter().zip(&lists) {
-                // the grants' signals, which travel apart from the commits
-                lp.pass_fires(i).unwrap();
-                for _ in 0..=all.len() {
-                    let mut applied = false;
-                    for pk in order.iter().filter_map(|j| list.get(&all[*j])) {
-                        let r = lp.peers[i].receive(&pk.bytes, pk.blobs.clone());
-                        if let Err(e) = &r {
-                            assert_ne!(osis_base::Classified::class(e), osis_base::ErrorClass::Local, "receiving fails the node: {e}");
-                        }
-                        applied |= matches!(r, Ok(crate::Ingested::Applied(_)));
-                        // the lost-access trigger, as node-sync runs it every step
-                        lp.peers[i].engine.role_duties().unwrap();
+        Arrival { lp, g, n_in, lists, all, first_g }
+    }
+
+    /// A copy of the world, N and O given every commit in `order` (indices into `all`), each
+    /// again, as node-sync fetches what it threw out, until nothing applies; the lost-access
+    /// trigger run after each.
+    fn deliver(&mut self, order: &[usize]) -> LocalPeer {
+        let mut lp = self.lp.copy().unwrap();
+        for (i, list) in [3, 4].into_iter().zip(&self.lists) {
+            // the grants' signals, which travel apart from the commits
+            lp.pass_fires(i).unwrap();
+            for _ in 0..=self.all.len() {
+                let mut applied = false;
+                for pk in order.iter().filter_map(|j| list.get(&self.all[*j])) {
+                    let r = lp.peers[i].receive(&pk.bytes, pk.blobs.clone());
+                    if let Err(e) = &r {
+                        assert_ne!(osis_base::Classified::class(e), osis_base::ErrorClass::Local, "receiving fails the node: {e}");
                     }
-                    if !applied {
-                        break;
-                    }
+                    applied |= matches!(r, Ok(crate::Ingested::Applied(_)));
+                    // the lost-access trigger, as node-sync runs it every step
+                    lp.peers[i].engine.role_duties().unwrap();
+                }
+                if !applied {
+                    break;
                 }
             }
-        };
-        let held = |lp: &LocalPeer, i: usize| -> BTreeSet<Key> { held_secrets(&lp.peers[i], &[g]).into_keys().collect() };
-        let mut base = lp.copy().unwrap();
-        deliver(&mut base, &(0..all.len()).collect::<Vec<_>>());
-        let n_held = held(&base, 3);
-        assert!(held(&base, 4).is_empty(), "seed {seed}, in order: O holds secrets\n{log:?}");
-        // a reader holds every current read epoch, a removed one nothing
-        let cur_read: BTreeSet<Key> = base.peers[0].engine.epochs(&g).unwrap().read.current().into_iter().map(|e| (g, Role::Read, e)).collect();
-        assert!(if n_in { cur_read.is_subset(&n_held) } else { n_held.is_empty() }, "seed {seed}, in order: N (a reader {n_in}) holds otherwise than its role gives\n{log:?}");
-        for k in 0..ORDERS {
-            let mut order: Vec<usize> = (0..all.len()).collect();
-            for x in (1..order.len()).rev() {
-                order.swap(x, rng.next(x as u64 + 1) as usize);
-            }
-            if k % 2 == 1 {
-                let cut = first_g + 1 + rng.next(3) as usize;
-                order.sort_by_key(|j| *j < cut);
-            }
-            let mut w = lp.copy().unwrap();
-            deliver(&mut w, &order);
-            let got = held(&w, 3);
-            // the property on the seed line, which the gate's known lines match
-            let what = format!("seed {seed} order {k} {order:?}, N in {n_in}");
-            assert_eq!(got, n_held, "{what}: N holds otherwise than in order\n{log:?}");
-            assert!(held(&w, 4).is_empty(), "{what}: O holds secrets\n{log:?}");
         }
+        lp
+    }
+
+    /// The secrets of `g` peer `i` of `lp` holds.
+    fn held(&self, lp: &LocalPeer, i: usize) -> BTreeSet<Key> {
+        held_secrets(&lp.peers[i], &[self.g]).into_keys().collect()
+    }
+}
+
+/// One seed of `arrival_order_holds_alike_plain_spec_permissions_3`.
+fn arrival_order(seed: u64) {
+    const ORDERS: usize = 4;
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (seed + 1).wrapping_mul(0x2545_f491_4f6c_dd1d));
+    let (mut n_in, mut m_in) = (false, true);
+    let mut steps = Vec::new();
+    for _ in 0..7 {
+        let by = rng.next(2) as usize;
+        steps.push(match rng.next(6) {
+            0 | 1 if !n_in => {
+                n_in = true;
+                Step::GrantN(by)
+            }
+            0 => {
+                n_in = false;
+                Step::RemoveN(by)
+            }
+            1 | 2 => Step::Rotate(by),
+            3 if m_in => {
+                m_in = false;
+                Step::RemoveM(by)
+            }
+            _ => Step::Write(if m_in && rng.next(2) == 0 { 2 } else { by }),
+        });
+        let (a, b) = (rng.next(3) as usize, rng.next(3) as usize);
+        if a != b {
+            steps.push(Step::Sync(a, b));
+        }
+    }
+    let mut w = Arrival::play(&steps);
+    let base = w.deliver(&(0..w.all.len()).collect::<Vec<_>>());
+    let n_held = w.held(&base, 3);
+    assert!(w.held(&base, 4).is_empty(), "seed {seed}, in order: O holds secrets\n{steps:?}");
+    // a reader holds every current read epoch, a removed one nothing
+    let cur_read: BTreeSet<Key> = base.peers[0].engine.epochs(&w.g).unwrap().read.current().into_iter().map(|e| (w.g, Role::Read, e)).collect();
+    assert!(if w.n_in { cur_read.is_subset(&n_held) } else { n_held.is_empty() }, "seed {seed}, in order: N (a reader {}) holds otherwise than its role gives\n{steps:?}", w.n_in);
+    for k in 0..ORDERS {
+        let mut order: Vec<usize> = (0..w.all.len()).collect();
+        for x in (1..order.len()).rev() {
+            order.swap(x, rng.next(x as u64 + 1) as usize);
+        }
+        if k % 2 == 1 {
+            let cut = w.first_g + 1 + rng.next(3) as usize;
+            order.sort_by_key(|j| *j < cut);
+        }
+        let got = w.deliver(&order);
+        // the property on the seed line, which the gate's known lines match
+        let what = format!("seed {seed} order {k} {order:?}, N in {}", w.n_in);
+        assert_eq!(w.held(&got, 3), n_held, "{what}: N holds otherwise than in order\n{steps:?}");
+        assert!(w.held(&got, 4).is_empty(), "{what}: O holds secrets\n{steps:?}");
     }
 }
 
@@ -3119,4 +3157,25 @@ fn a_holders_keyset_makes_a_pass_due_only_where_it_is_left_out_spec_permissions_
     let before = at(&lp);
     rekey(&mut lp);
     assert!(at(&lp) > before, "m left out of g: its keyset's arrival makes a pass of g due");
+}
+
+// spec/permissions.md §3 (Lost access; No secret taken back), spec/crypto.md §4 (Covers): B
+// grants N read, A (not knowing it) rotates read boxing N while B removes N, and the authors
+// settle (A rotating again leaving N out). N receives it all in order, or with `g`'s creation,
+// keyset and B's admin grant last: then everything else waits, and N's grant applies in the same
+// release as its removal, after rotations that removed its read boxes and left its sync boxes, so
+// N reads only sync secrets while briefly a reader. Either way N holds no secret of `g`: those
+// sync secrets, held alone, cover no departure of N's, so its lost access drops them (failed: a
+// node holding sync secrets alone was judged by no role, so N kept them).
+#[test]
+fn a_removed_reader_holds_nothing_in_either_arrival_order_spec_permissions_3() {
+    use Step::*;
+    let mut w = Arrival::play(&[GrantN(1), Sync(1, 0), RemoveN(1), Rotate(0), Sync(0, 1)]);
+    assert!(!w.n_in, "N removed");
+    let cut = w.first_g + 3;
+    for (name, order) in [("in order", (0..w.all.len()).collect::<Vec<_>>()), ("g's first commits last", (cut..w.all.len()).chain(0..cut).collect())] {
+        let got = w.deliver(&order);
+        let held: Vec<_> = w.held(&got, 3).into_iter().map(|k| (k.1, k.2.n())).collect();
+        assert!(held.is_empty(), "{name}: N holds {held:?}");
+    }
 }

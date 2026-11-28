@@ -12,5 +12,4 @@ held-model/props::late_commit_converges_after_repair_large_spec_commits_5 rate:O
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=527365123461,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+ reads thing \d+ unlike the reference
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=940149075780,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+: entries waiting for a read secret, not parked
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=62853083561,OSIS_SYNC_SEEDS=1 issues/differential-full-size-classes.md panicked: node \d+'s sync set holds thing \d+ as None, the model Some\(Stub\)
-osis-engine/rotation::tests::arrival_order_holds_alike_large_spec_permissions_3 rate:OSIS_ARRIVAL_START=62853083563,OSIS_ARRIVAL_SEEDS=1 issues/arrival-order-secrets-differ.md N holds otherwise than in order
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=777621519925,OSIS_SEQ_COLD_SEEDS=1 issues/seq-cold-placement.md panicked: step \d+
