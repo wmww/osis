@@ -61,6 +61,7 @@ Things I've noticed tend to cause problems, and what to do instead. Care should 
 
 ### API
 - DON'T: leak implementation details and concepts to the public-facing API. DO: build the API terminology and documentation out of the public-facing abstract model and terms, so that's all someone has to understand to correctly use osis.
+- DON'T: return extra data we don't promise. Specifically never expose (directly or indirectly) history kept internally but not guaranteed. DO: provide a well-defined view the osis data, which implementation details and random chance does not effect.
 - DON'T: add a function/arg/etc just because someone wanted to do it once or it makes sense for one example. DO: have a coherent API design philosophy, and fit the API to it. Decouple things that want to be decoupled. Provide a single way to do most things, even if that increases verbosity in some cases. The API being sane, slim, consistent and hard to hold wrong is more important than user code being short or pretty.
 
 ### General coding
@@ -68,6 +69,7 @@ Things I've noticed tend to cause problems, and what to do instead. Care should 
 - DON'T: build out complex mechanisms to solve a specific problem without considering how they fit into the bigger design. DO: build and maintain the right utilities with the right interfaces, and consistently use them across the project as-needed.
 - DON'T: create special cases or "fix" a bug where it appears. DO: trace the underlying difference between implementation and design philosophy (or flaw in the design philosophy) that lead to it.
 - DON'T: blindly fall back to intuitions about how a particular feature/system is generally implemented or expected to behave. DO: consider how it fits within the larger osis design philosophy, and what characteristics osis needs from it.
+- DON'T: favor options incorrectly perceived to be "safer". Depending on context, failing to promptly and irreversibly purge data, or even just failing to reclaim storage that should not be held can be just as significant a flaw as incorrectly deleting something. DO: make osis reliably uphold its promises and generally behave reasonably.
 
 ### Testing
 - DON'T: have tests that test nothing interesting, that will never fail, or that test implementation behavior where a failure is more likely to imply an intentional change than a mistake.
