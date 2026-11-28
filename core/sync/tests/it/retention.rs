@@ -103,7 +103,6 @@ fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
 // holds u, carries u's `sync.0` write under u's sync ID only, never under t's, so the quiet
 // check (a caught-up reader of t's sync ID lacks no body a holder there must hold) passes.
 #[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn a_released_things_sync_id_write_stays_off_its_mint_admins_sync_id_spec_sync_ids_2() {
     use crate::harness::history::Holder;
     let mut w = world_of(0, 2, 2);

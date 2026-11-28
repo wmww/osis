@@ -4835,7 +4835,6 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
 // set; the history's `Removals`, held as a set of its own with the setup (`Played::own_sets`),
 // is judged all the same.
 #[test]
-#[ignore = "sync rewrite: held-model over a fire's evidence copies"]
 fn removals_judged_whatever_else_waits() {
     use Step::*;
     let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
@@ -5207,7 +5206,6 @@ fn a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_
 // at the reset and, out of history hours later, a node drops it under a writer's snapshot; held-model
 // agrees it is no live body.
 #[test]
-#[ignore = "sync rewrite: held-model over a fire's evidence copies"]
 fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
     use Step::*;
     let a = |s| Aim(Box::new(s));

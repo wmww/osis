@@ -805,7 +805,6 @@ fn deposit_items_to_a_peer_back(removed: bool) -> u64 {
 // node keeping S unread goes there as it is back; written after that node's right ended while it
 // was away, it goes nowhere.
 #[test]
-#[ignore = "sync rewrite: a joiner's leave and deposit counts"]
 fn a_deposit_after_a_removal_while_away_goes_nowhere_spec_sync_inbox_3() {
     assert!(deposit_items_to_a_peer_back(false) >= 1, "owed: it goes as the peer is back");
     assert_eq!(deposit_items_to_a_peer_back(true), 0, "removed while away: nothing goes");

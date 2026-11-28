@@ -100,7 +100,6 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
 // once it holds K's edge on the link's target removed: node 0 takes K off its profile; node 1's
 // account leaves K, at node 1 and at node 0.
 #[test]
-#[ignore = "sync rewrite: a joiner's leave and deposit counts"]
 fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
@@ -117,7 +116,6 @@ fn a_joiner_leaves_k_once_k_left_the_target_spec_permissions_7() {
 // edge on its profile an `until` a minute ahead; once it passes, by time alone, node 1's account
 // leaves K.
 #[test]
-#[ignore = "sync rewrite: a joiner's leave and deposit counts"]
 fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
@@ -275,7 +273,6 @@ fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_
 // acted for no more) and syncs K read through D's strong to it: what node 0 writes
 // on K after reaches it. Redeeming the link again, L long gone, is done and writes no second join.
 #[test]
-#[ignore = "sync rewrite: a joiner's leave and deposit counts"]
 fn a_held_join_forgets_the_link_and_k_stays_synced_spec_permissions_7() {
     let mut w = two_nodes();
     let (p0, a0, a1) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap(), w.node(1).account.unwrap());

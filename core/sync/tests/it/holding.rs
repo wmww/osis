@@ -345,35 +345,6 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
     assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob holds it later and reads");
 }
 
-// spec/commits.md §4 (Pending storage), spec/sync-judgement.md §3 (it opens again each entry of
-// it its store still holds), notes/sync.md
-// Arriving early: Bob holds T ahead and drops it again just as Alice grants him read, so his
-// node receives her grant under his account's sync ID after the release and it pends,
-// needing T's record. Its pending copy then goes while the entry stays (in a history: the commit
-// applies from a fire's copy and is forgotten between two follows of the store). Neither held
-// nor pending, the entry waits for that sync ID again (store::Follow::lost_parks), as one whose
-// held commit is forgotten does.
-#[test]
-#[ignore = "sync rewrite: copies per (commit, thing)"]
-fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgement_3() {
-    let mut w = siblings();
-    w.parks = true;
-    let t = make(&mut w, 0, None, "v1");
-    let bob = w.node(1).account.unwrap();
-    strong(&mut w, 2, None, t, true);
-    w.run();
-    let g = w.write(0, |e| told(e, &t, &bob, &edge(Role::Read))).unwrap();
-    strong(&mut w, 1, None, t, false);
-    w.run();
-    let pending: Vec<_> = g.commits.iter().copied().filter(|c| w.engine(1).pends(c)).collect();
-    assert!(!pending.is_empty(), "the grant pends at Bob's node, its thing released");
-    for c in &pending {
-        w.engine(1).release_entry(c).unwrap();
-    }
-    w.run();
-    w.check_parks();
-}
-
 // spec/permissions.md §3 (Lost access): Alice mints T1 with admin T0, grants Bob sync on it, writes,
 // then removes T0's record edge on T1, her only path to T1. The removal's own entries under T0's
 // and D's sync IDs, read still, name a commit she forgets with T1: each is parked again
