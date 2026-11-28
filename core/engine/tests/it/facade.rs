@@ -300,7 +300,7 @@ fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     e.proving().unwrap().provers.iter().map(|p| p.record.tid()).filter(|t| *t != me).collect()
 }
 
-// spec/permissions.md §2 (`until` 0 for nothing else): a grant, or a demotion to a grant, with
+// spec/permissions.md §2 (`until` 0 for nothing else): a grant, or a lowering to a grant, with
 // `until` 0 is refused: it says retain, which only a removal says; nothing is written.
 #[test]
 fn until_zero_is_only_a_removals_spec_permissions_2() {
@@ -311,7 +311,7 @@ fn until_zero_is_only_a_removals_spec_permissions_2() {
     assert!(matches!(e.grant(&t, &ps[1], &zero), Err(osis_engine::Error::Misuse(_))));
     assert!(!e.roster(&t).contains_key(&ps[1]));
     e.grant(&t, &ps[1], &grant_of(Role::Write)).unwrap();
-    assert!(matches!(e.demote(&t, &Demotion { holder: ps[1], new: Some(zero), retain: None }), Err(osis_engine::Error::Misuse(_))));
+    assert!(matches!(e.lower(&t, &Lowering { holder: ps[1], new: Some(zero), retain: None }), Err(osis_engine::Error::Misuse(_))));
     assert_eq!(e.roster(&t).get(&ps[1]).map(|g| g.role), Some(Role::Write));
 }
 

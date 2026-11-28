@@ -520,6 +520,20 @@ DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
     "Reason::Edge": r"\bReason::Edge\b",
 }.items()}
 
+# a lowering and a removal (notes/terms.md); "demote" keeps crdt's cycle-break sense there, and the
+# revocation lines Tess has not reworded stay (issues/deprecated-terms.md, Still in the repo)
+ROLE_WORDS = {w: re.compile(p, re.A) for w, p in {
+    "demote": r"(?i)demot(e|es|ed|er|ers|ing)(?![a-z])",
+    "demotion": r"(?i)demotions?",
+    "revoke": r"(?i)revok(e|es|ed|er|ers|ing)(?![a-z])",
+    "revocation": r"(?i)revocations?",
+}.items()}
+DEMOTE_CRDT = ("core/crdt/", "core/test/crdt-model/", "spec/crdt.md", "notes/crdt.md")
+ROLE_WORDS_PENDING = {
+    "README.md": ("may be granted and revoked",),
+    "spec/requirements.md": ("Revoking the author on one thing", "removing a reference revokes none", "One joiner is revoked only together"),
+}
+
 # Words of what the stub design replaced (notes/stubs.md; issues/deprecated-terms.md, Gone): refused
 # as DEAD_WORDS are, but Entry.tla, the checked rejected alternative, keeps them.
 STUB_DEAD_WORDS = {w: re.compile(p, re.A) for w, p in {
@@ -577,7 +591,8 @@ STATED_LIMIT = re.compile(r"(?i)\bstated[ _-]limits?\b", re.A)
 
 DEAD = [(w, p, prefilter(p), ()) for w, p in DEAD_WORDS.items()] + \
     [(w, p, prefilter(p), STUB_DEAD_WORDS_OK) for w, p in STUB_DEAD_WORDS.items()] + \
-    [("stated limit", STATED_LIMIT, prefilter(STATED_LIMIT), ("notes/principles.md",))]
+    [("stated limit", STATED_LIMIT, prefilter(STATED_LIMIT), ("notes/principles.md",))] + \
+    [(w, p, prefilter(p), DEMOTE_CRDT if w.startswith("demot") else ()) for w, p in ROLE_WORDS.items()]
 
 
 def dead_words():
@@ -589,10 +604,10 @@ def dead_words():
         text = read(os.path.join(ROOT, rel))
         low = text.lower()
         # a file's lines are scanned only with the words its whole text may hold (one fast search each)
-        pats = [(w, p) for w, p, pre, ok in DEAD if rel not in ok and (pre is None or pre.search(low))]
+        pats = [(w, p) for w, p, pre, ok in DEAD if not rel.startswith(ok) and (pre is None or pre.search(low))]
         for n, line in enumerate(text.split("\n") if pats else [], 1):
             for word, pat in pats:
-                if pat.search(line):
+                if pat.search(line) and not any(k in line for k in ROLE_WORDS_PENDING.get(rel, ())):
                     yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
 
 
