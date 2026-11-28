@@ -1,5 +1,5 @@
 # The engine places a grant write in its commit by its own thing's path alone
-> Summary: spec/permissions.md §5.1 step 1 places a commit's grant writes on an edge of a path the commit states for any thing it writes after its others; the engine's path wait (`validity::write_place`) reads only the path stated for the write's own thing, so a write on a record grant down to another thing the commit writes by a non-edge part sits apart from the walk's place for it. Recommendation: place by every thing the commit writes.
+> Summary: spec/permissions.md §5.1 step 1 places a commit's grant writes on a grant of a path the commit states for any thing it writes after its others; the engine's path wait (`validity::write_place`) reads only the path stated for the write's own thing, so a write on a record grant down to another thing the commit writes by a non-grant part sits apart from the walk's place for it. Recommendation: place by every thing the commit writes.
 > Priority: low
 > Tags: engine, perm
 

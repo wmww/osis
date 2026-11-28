@@ -14,4 +14,4 @@ To design:
 - The count of readers shows unless padded.
 - An intermediary thing per recipient is no answer (an independent thing each).
 
-Checked against notes/write-path-design.md §2 (Readers hidden from each other): no conflict with validity, evidence or the public thing, since every edge a content path names is writer-level. Two points: an act made at read through a holder shows that reader-level edge to the target's readers as evidence (leave such acts to writers, or accept that their author shows); where a reader-level act brings a removal's copy into a unit, seal it for writers.
+Checked against notes/write-path-design.md §2 (Readers hidden from each other): no conflict with validity, evidence or the public thing, since every grant a content path names is writer-level. Two points: an act made at read through a holder shows that reader-level grant to the target's readers as evidence (leave such acts to writers, or accept that their author shows); where a reader-level act brings a removal's copy into a unit, seal it for writers.

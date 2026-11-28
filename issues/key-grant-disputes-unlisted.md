@@ -1,5 +1,5 @@
 # Disputes over a key's grant are not listed
-> Summary: `osis` `Dispute::of` drops an admin dispute whose holder is a key (a `signers.0` edge, osis_base `Holder::Key`): the API names holders as things only, so such a dispute shows nowhere and its side cannot be chosen. Its engine side is built (`Engine::disputes`, `choose` take any `Holder`).
+> Summary: `osis` `Dispute::of` drops an admin dispute whose holder is a key (a `signers.0` grant, osis_base `Holder::Key`): the API names holders as things only, so such a dispute shows nowhere and its side cannot be chosen. Its engine side is built (`Engine::disputes`, `choose` take any `Holder`).
 > Priority: low
 > Tags: osis
 

@@ -5,4 +5,4 @@
 
 Ignored on this issue (osis-engine `it`): `closure::waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5` (no pull anew on entry; not probed further).
 
-A thing minted with admin the node root and made independent is never entered: no own or read thing holds an edge on it, so nothing carries it (spec/sync-set.md §2 First entry). Nothing in the product makes one.
+A thing minted with admin the node root and made independent is never entered: no own or read thing holds a grant on it, so nothing carries it (spec/sync-set.md §2 First entry). Nothing in the product makes one.

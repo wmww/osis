@@ -4,4 +4,4 @@
 > Tags: osis, security
 
 - Reach: the caller needs the LinkId from another node (`links()` here does not list a link without its seed). Before the seed went with the link's end, an unknown seed was `Invalid`.
-- Wanted: "ended" judged from something that says the link no longer works (L's edge gone from K, or a record of the end), not from the seed's absence; or `Invalid` ("not here yet") while K still has a live may-grant edge.
+- Wanted: "ended" judged from something that says the link no longer works (L's grant gone from K, or a record of the end), not from the seed's absence; or `Invalid` ("not here yet") while K still has a live may-grant grant.

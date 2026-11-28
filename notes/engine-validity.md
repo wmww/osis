@@ -14,13 +14,13 @@ Validity is a function of the held set, never of arrival order: an invalid delta
 - Every delta on the things below a new record (`Core::stale_things`).
 - Commits whose void, required-role or overreach inputs changed (`stale_commits`).
 - Everything after a rebuild at open (`stale_all`).
-- Besides validity: the holders upstream of a changed edge and the things below its target (`Held::upstream`, `Held::reach`) feed purge rights (`stale_authors`, `stale_under`), compaction wakes and covers owed.
+- Besides validity: the holders upstream of a changed grant and the things below its target (`Held::upstream`, `Held::reach`) feed purge rights (`stale_authors`, `stale_under`), compaction wakes and covers owed.
 
 No delta's validity depends on its thing's `retention^.0` setting: a setting is judged as an admin-only delta and only moves what history keeps (notes/engine-retention-history.md). A rollback restores validity flags with the journal.
 
 `rejudge_all` repeats while a rebuild left something stale (a part `retention::uncover` made missing); it ends, as `uncover` never turns parts back.
 
-Rejected: re-judging every held delta per role commit (O(held commits) each), or every commit on a changed edge (a long role history would re-judge all its holder's writes per arrival); a grant re-judges no content commit (`scale::grant_is_flat_in_content_commits`).
+Rejected: re-judging every held delta per role commit (O(held commits) each), or every commit on a changed grant (a long role history would re-judge all its holder's writes per arrival); a grant re-judges no content commit (`scale::grant_is_flat_in_content_commits`).
 
 ### Cost per commit
 - A voided commit is re-judged alone.

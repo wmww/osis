@@ -17,7 +17,7 @@ Every entry needs both tests read side by side before it goes. `tools/spec_map.p
 ## Helpers to add or unify
 | helper | replaces | where |
 |---|---|---|
-| one forger of a commit "as received" with the thing's real delete keys and a path whose edges are held | made-up delete keys in about six helpers; hostile commits along paths nobody granted | engine and sync test helpers |
+| one forger of a commit "as received" with the thing's real delete keys and a path whose grants are held | made-up delete keys in about six helpers; hostile commits along paths nobody granted | engine and sync test helpers |
 | osis-sync streams `Pair` helpers: restart b and rejoin (restart, close, join each), release and retake of a side's record, count of Pulls joining S from the start | 8, 7 and 14 hand-written sites | sync `tests/it/streams.rs` |
 | one builder of crdt `Commits` tables | nested `l(vec![...])` literals in about a dozen crdt test files | crdt tests |
 

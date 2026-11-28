@@ -4,7 +4,7 @@
 > Tags: engine, crdt, perm, spec, tests
 
 ## The rule (Tess)
-- spec/requirements.md Scale: a thing grows with role changes on it or on what its writers act through (evidence copies follow role churn on the edges its writers go through).
+- spec/requirements.md Scale: a thing grows with role changes on it or on what its writers act through (evidence copies follow role churn on the grants its writers go through).
 - Purge requests are listed in every removal of their author while held, and purge-carrying commits stay held, mostly for good (notes/growth.md): 32 B per request per removal, accepted.
 - Requirements saying otherwise are wrong and get fixed; code not meeting it is wrong and gets fixed; tested by counting stored bytes at n and 10n writes. What cannot be fixed without a significant trade-off goes to Tess with the trade-off stated. Purging is a different matter.
 
