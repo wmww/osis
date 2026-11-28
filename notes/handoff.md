@@ -1,5 +1,5 @@
 # Handoff
-> Summary: For the next coordinator: where main stands with the sync rewrite in it, the one ordered route from here (slimming, a light dogfood pass, then known issues), what not to build on the way, what waits on Tess, and the open small items. Kept current as work moves.
+> Summary: For the next coordinator: where main stands (the stub rewrite and opening by claims in), the one ordered route from here (the alpha candidate, the structural items, a light dogfood pass, then known issues), what waits on Tess, old words, what not to build, and parked items. Kept current as work moves.
 
 ## Tess's direction (standing)
 - Stay focused and moving; simple and correct. Modify plans and process freely.
@@ -7,17 +7,19 @@
 - Talk to her in plain words: no stage/brief/Open numbers.
 
 ## State
-- **Coordinator**: Sheave, on the stub rewrite. Agents run on main (no kept branches); every job is reviewed and gated as it lands (notes/coordination.md).
-- **Reviewed and gated**: everything on main, the final gate over the whole tree included. Slimming landed: no pull anew for a thing another node makes (attach left, issue attach-pulls-unit-anew), index rows repeating stored facts, one stored form per commit (~35% storage), a blob's bytes once per connection, no entry streamed back to its sender (a dependent make's return way 403 → 180 B), memory per commit 128 → 70 KB (issue memory-per-commit). The full-size differential: 25 of 200 (issue differential-full-size-classes).
+- **Coordinator**: Sheave, on the alpha candidate (notes/priorities.md, First). Agents run on main (no kept branches); every job is reviewed and gated as it lands (notes/coordination.md).
+- **On main**: the stub rewrite (grants with the granted thing; signal → reference → sync → permissions; a node follows any stub: notes/stubs.md), sync IDs fixed at minting, opening by claims (claims in commits, one open rule, Head, claim pages: notes/sync-opens.md, notes/sync-access.md), the local part's log, one read path for the secrets index, cards as one entry per node, stream reports in one window; notices are gone. Slimming's built jobs are listed in notes/priorities.md item 4. The full-size differential fails 7 of 100 seeds, in classes (issues/differential-full-size-classes.md); every red on main is a line in tools/known_failures.txt with its issue (notes/priorities.md, Failing on main).
 
-## First: the stub rewrite (Tess: go-ahead)
-Reference-driven stubs are on main (Tess's model: grants belong to the granted thing; signal → reference → sync → permissions; a grant nobody is told of is valid). Sync IDs are fixed at minting. Opening by entries is on main (notes/stubs.md, notes/sync-access.md, notes/sync-opens.md); the full-size differential's classes are issues/differential-full-size-classes.md. What else is decided and owed: notes/stub-rewrite.md. Sheave coordinates it.
-- **Waiting on Tess**: issues/demoted-writer-deletes-at-stores.md (an open design problem: both options broken, a design pass later); issues/shared-things-refuse-readers-stranded-notices.md has its plan (after the alpha). Also: a reader of a unit now learns its own chain's holders of a thing it reaches at sync (sync-only chains, cff52205b); Sheave reads that as spec/requirements.md's "who granted it", but a strict reading of a sync holder learning no role grants wants her word. And spec/permissions.md §5.1 (7d5b9dcec): a recorded dispute side now ends when the node no longer holds that removal commit, so releasing a thing returns its storage to a fresh node's and a node syncing it again judges the dispute afresh; Sheave reads "sides stick" as while the thing is held.
+## Waiting on Tess
+- Every tess-call issue, listed in notes/priorities.md, Parked on Tess; the model questions first.
+- **Chain holders at sync**: a reader of a unit learns its own chain's holders of a thing it reaches at sync (notes/stub-rewrite.md, Decided). Sheave reads that as spec/requirements.md's "who granted it"; a strict reading of a sync holder learning no role grants wants her word.
+- **Dispute sides end with the removal held**: spec/permissions.md §5.1, a recorded dispute side ends when the node no longer holds that removal commit, so releasing a thing returns its storage to a fresh node's and a node syncing it again judges the dispute afresh. Sheave reads "sides stick" as while the thing is held.
+- issues/shared-things-refuse-readers-stranded-notices.md has its plan, for after the alpha.
 
 ## The route (Tess)
 Target: osis basically works, the big pieces in place, the architecture sensible and mostly settled; what is left is fixes, tweaks and verification. In order:
-1. **The stub rewrite above.**
-2. **Architectural slimming** (notes/priorities.md Slimmer things; jobs in notes/slim-design.md): the rest in slim-design's order, after the stub rewrite where they touch it.
+1. **The alpha candidate** (notes/priorities.md, First: main red only with listed failures, the differential's classes, a dogfood smoke pass, one full gate). Record its hash here once reached: the point to back out to.
+2. **The structural items** of notes/priorities.md, Core, in order: the stub rewrite's tail, dependent and independent things, reads never waiting on applies, slimming's remaining jobs (notes/slim-design.md).
 3. **A light local dogfood pass** (chat between accounts, pairing, removing a node): testing finds problems; fix each at its level (mistake, architecture, or the model), never a workaround; where building it right is unclear, a design pass or a question for Tess. Many QA passes come later, before release.
 4. Then known issues, more dogfooding, and simplification beside them.
 
@@ -31,9 +33,6 @@ Two agents on workflow and cleanup throughout (notes/coordination.md, Job mix): 
 ## Not to build on the way
 - **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (notes/stubs.md, Rejected).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
-
-## Waiting on Tess
-Every tess-call issue, listed in notes/priorities.md, Parked on Tess. The model questions come first: destroyed-holder-write-authority, destroyed-mint-admin-dependents, held-model-late-commit-read-lost, start-cost-grows-with-held.
 
 ## Parked
 - `windlass-wiring-1` on GitHub has nothing to land (a debug shadow of a walk since deleted). Delete it when Tess says.
