@@ -1,5 +1,5 @@
 # Sync differential: failure classes beyond the gate's seeds
-> Summary: the sync differential at full size: 4 of 100 seeds fail (15, 35, 45, 99); classes: a store left at an older step (45), must-hold bodies with no entry at quiet (35), 15 and 99 not shrunk anew; entries waiting for a read secret, not parked (small size).
+> Summary: the sync differential at full size: 3 of 100 seeds fail (15, 45, 99); classes: a store left at an older step (45), 15 and 99 not shrunk anew; entries waiting for a read secret, not parked (small size).
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -8,15 +8,11 @@ Seeds move whenever commit bytes or delivery order change: work from the scripts
 | Class | Seeds (full size) |
 |---|---|
 | A store kept unread at an older step than its readers' head | 45 |
-| Must-hold bodies with no entry at quiet | 35 |
 | Not shrunk anew (their shrunk scripts pass on main) | 15, 99 |
 | Entries waiting for a read secret, not parked | none at full size; small size `OSIS_SYNC_START=940149075780` |
 
 ## A store at an older step (45)
 Full size only (not shrunk): node 1 keeps thing 0 unread at a step 3 deep while its readers' head is 5 deep, holding sync[4] by a claim (`node 1 keeps thing 0 unread at step .. (3 deep), its readers' head is 5 deep`). No reader registers the later steps there. The steps past node 1's key are registered only by a member at a store source (spec/sync-ids.md §6 Walk), and node 1 opens S only at a head it holds a key or claim for.
-
-## Must-hold bodies with no entry at quiet (35)
-`New(0), Pair(3), Partition(3, 1), Run, Give(4, 0, Holder::Node(1), Syncs), Give(3, 0, Holder::Node(1), Syncs), Inbox(4, Some(0)), Partition(3, 0), Run`: node 3 reads thing 0 with no source at all and lacks two bodies S must hold (`sources: {}`, `unheld: Some(4)`). Node 4 (node 3's account, paired) holds it and is reachable; nodes 3 and 4 each granted node 1 sync while partitioned. Not diagnosed.
 
 ## Not shrunk anew (15, 99)
 Their shrunk scripts (a disk failure on a node paired with the reader; a Head lost to the pair rule) pass on main, the seeds still fail at full size with the same probe lines ("node 2 reads thing 0 unlike the reference"; "node 1's sync set holds thing 0 as Some(Stub), the model Some(Unread)"). Shrink each again; 15 shrinks to about 20 steps within the candidate budget.

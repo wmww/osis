@@ -661,3 +661,18 @@ fn a_head_unanswered_on_a_released_connection_is_asked_again_spec_sync_opens_5()
     use crate::harness::script::*;
     holds_on(0, 3, 4, &[New(2), Give(2, 0, Holder::Node(1), Syncs), Strong(1, None, 0), Give(2, 0, Holder::Node(1), Syncs), Disk(2, 0, Fail)], String::new(), false);
 }
+
+// spec/sync-status.md §1 (Complete pass: with a peer to be waited for, it ends at `PASS_WAIT_MS`),
+// spec/sync-judgement.md §3 (Own store: another's body logged once a complete pass begun after it
+// moved ended): node 3 of node 0's account, cut off from node 1 and never linked to its paired
+// node 4, grants node 1 sync on thing 0; node 4 moves the account's inbox to thing 0; node 3 is
+// cut off from node 0. Node 3 judges the inbox's commits must-hold under thing 0's sync ID while
+// its pass there waits for peers it cannot reach, and logs them once a pass begun after them
+// ends: quiet waits out the passes begun while it waited (failed while quiet waited one pass out:
+// node 3 held them unlogged at quiet). The differential's world: five nodes over three accounts
+// is the smallest this was found at (about 25 s).
+#[test]
+fn a_pass_begun_while_quiet_waits_one_out_is_waited_out_spec_sync_status_1() {
+    use crate::harness::script::*;
+    holds_on(0, 3, 4, &[New(0), Pair(3), Partition(3, 1), Run, Give(3, 0, Holder::Node(1), Syncs), Inbox(4, Some(0)), Partition(3, 0), Run], String::new(), false);
+}

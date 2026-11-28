@@ -1262,18 +1262,20 @@ impl World {
     /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake
     /// within `horizon_ms` or held-back input (at any time; no wake past the horizon fires on
     /// its way), until neither is left. A complete pass still under way
-    /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, once.
+    /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, and again
+    /// while the last wait delivered anything (a pass begun meanwhile); a pass begun again by its
+    /// node's wakes alone is never-quiet, and ends the run.
     pub fn run(&mut self) {
         self.run_from = self.deliveries;
         self.delivered.clear();
         let mut horizon = Time(self.now().0.saturating_add(self.horizon_ms));
-        let mut waited = false;
+        let mut waited = None;
         loop {
             self.flush();
             match self.net.next_quiet(horizon) {
                 Some(at) => self.fire(at, horizon),
-                None if !waited && self.passes_under_way() => {
-                    waited = true;
+                None if waited != Some(self.deliveries) && self.passes_under_way() => {
+                    waited = Some(self.deliveries);
                     horizon = Time(self.now().0.saturating_add(osis_proto::limits::PASS_WAIT_MS));
                 }
                 None => break,
