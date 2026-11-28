@@ -153,7 +153,8 @@ fn marking() -> impl osis_keys::Held {
 // write by write. M a reader (start), removed by L (1) and raised by G (2, applying nothing,
 // counting): pinned only by names holding L applied and G void; G alone (its rotator never held
 // L, so boxed M) or L alone (a node judging G valid re-seals M) pins nothing. A write that does
-// not count (its author a reader at its point) is not pinned: the stated limit. With no write
+// not count (its author a reader at its point) is not pinned: a reader forces no rotation
+// (notes/keys-coverage.md, A demoted admin's void re-grant). With no write
 // giving M the role applied (start none), the void tail alone pins (the start holds M out
 // everywhere). A second removal F (9) applying nothing here pins only where it would apply over
 // the grant before L (a second finalize of the grant L ended), named applied by a rotator that

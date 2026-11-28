@@ -175,7 +175,7 @@ Deliver(n) == \E c \in cs : c.id \notin held[n] /\ held' = [held EXCEPT ![n] = @
 \* established secrets n holds
 HonestRots == Cardinality({c \in cs : c.kind = "rot" /\ c.author \in Honest})
 \* a rotator holds the role in its own view (one that does not makes no valid rotation; a box it
-\* writes anyway carries only what it held, a stated limit)
+\* writes anyway opens for its holder with any secret it held: spec/crypto.md §4 Boxes)
 Rotate(n) ==
   /\ (NeedRot(n) \/ Withdraw(n)) /\ HonestRots < MaxE /\ Role(n, n) = ADMIN
   /\ LET id == "R" \o ToString(Len(eps))

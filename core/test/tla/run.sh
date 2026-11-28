@@ -104,10 +104,10 @@ instances=(
   "tail rotation Tail T_chain.cfg pass"          # ... (an invalidator voided by another: validity not monotone)
   "tail rotation Tail T_chain_commit.cfg fail"   # negative control: an applied name met by holding its commit
   "tail rotation Tail T_fin_takes.cfg fail"      # negative control: an applied name met only where it takes (Live)
-  "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's write does not count
+  "cover rotation Cover C_regrant_reader.cfg fail" # a reader's re-grant counts nowhere: its box opens for M until another cause rotates
   "cover rotation Cover C_leaver_keyless.cfg fail" # negative control: a leaver holding through a keyless grant counted (Holds)
   "withdrawn rotation Withdrawn W_met.cfg pass"         # a withdrawn epoch's secret goes nowhere: no leak (spec/crypto.md §4 Uses)
-  "withdrawn rotation Withdrawn W_met_live.cfg fail"    # the stated limit: M and later holders never get it
+  "withdrawn rotation Withdrawn W_met_live.cfg fail"    # where W is void e_R's names are unmet: neither M nor later holders get it
   "withdrawn rotation Withdrawn W_refuted.cfg fail"     # negative control: passing a refuted epoch on leaks where a re-grant is unseen
   "withdrawn rotation Withdrawn W_wait.cfg fail"        # negative control: waiting for the re-granter leaks where another admin's demotion is unseen
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
@@ -160,13 +160,13 @@ instances=(
   "firekey rotation FireKey FK_seen.cfg fail:NoLeakStrict"   # negative control: the step names the keyset its issuer held, registering its own newest epoch (a copy of the knowing epoch)
   "firekey rotation FireKey FK_partial.cfg fail:temporal"    # negative control: as FK_seen, honest: a keys.0 delta held before its boxes leaves the old epoch in force for good
   "firekey rotation FireKey FK_fork.cfg fail:NoLeakStrict"   # finding F2: an honest fork not knowing the removal masks the knowing keyset (README)
-  "firekey rotation FireKey FK_mask.cfg fail:NoLeakAll"      # stated limit: a W2 keyset masks the knowing keyset (README)
+  "firekey rotation FireKey FK_mask.cfg fail:NoLeakAll"      # a writer's keyset stamped after the knowing rotation decides what O seals to (README)
   "kemkeys rotation KemKeys KK_due.cfg pass"            # KEM keys only where sealed to (spec/crypto.md §3 Published KEM keys): a KEM-less current keyset the rule now asks for makes M's rotation due; M boxed again for good, nothing leaks
   "kemkeys rotation KemKeys KK_due_nocheck.cfg pass"    # ... without the granter's check: the due rotation alone brings M in
   "kemkeys rotation KemKeys KK_stale.cfg pass"          # ... the granter starting from a stale card
   "kemkeys rotation KemKeys KK_written.cfg fail:temporal" # negative control: KEM keys decided when written only: a keyset written before M's rotator learns the grant leaves M out of A for good
   "kemkeys rotation KemKeys KK_fallback.cfg fail:NoLeak"  # negative control: Seal falls back below a KEM-less newest keyset, the removed party (or the public) opens content
-  "kemkeys rotation KemKeys KK_stale_all.cfg fail:NoLeakAll" # stated limit: a stale card's keyset is sealed to until M's newer keyset reaches the granter
+  "kemkeys rotation KemKeys KK_stale_all.cfg fail:NoLeakAll" # a stale card's keyset, made without knowing the removal, is sealed to until M's newer keyset reaches the granter
   "kemkeys rotation KemKeys KK_untold.cfg fail:temporal"  # finding: "due" with M's rotator never told of the grant (no signal or stub): a KEM-less keyset leaves M out of A for good
   "kemkeys rotation KemKeys KK_sticky_untold.cfg pass"    # ... a keyset carrying a KEM key wherever the one it supersedes does: M boxed for good, untold
   "kemkeys rotation KemKeys KK_sticky_stale.cfg pass"     # ... from a stale card
@@ -278,7 +278,7 @@ instances=(
   "nethold net MCHold HN_full.cfg fail"            # negative control: a full store waits for a carrier it refuses
   "nethold net MCHold HN_invalid.cfg fail"         # negative control: a snapshot dropped as invalid blocks establishment
   "nethold net MCHold HN_ownlog.cfg fail"          # negative control: the author keeps a covered body in its log (Settles)
-  "nethold net MCHold HL_capjunk.cfg fail"         # stated limit: an invalid body holds a full store's room
+  "nethold net MCHold HL_capjunk.cfg fail"         # an invalid body is never deleted at peers, so it holds a full store's room
   "nethold net MCHold HN_standhead.cfg pass"       # rule not needed here: stand ground without the head
   "nethold net MCHold HN_snap.cfg pass"            # rule not needed here: no unheld-snapshot clause
   "nethold net MCHold H_keep.cfg pass"            # b kept: must-hold whatever covers it

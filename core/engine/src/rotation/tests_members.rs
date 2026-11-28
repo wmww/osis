@@ -37,7 +37,8 @@ fn rotate_skipping(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, s
 /// old secrets `start` beyond what boxes to `d` itself give it (through every actor of `gs`),
 /// once each writer rotated what is due before encrypting (`ensure_rotated`), synced, until none
 /// is: the leak oracle of writers holding every knowing keyset (before that, a writer that has
-/// not received a holder actor's knowing rotation is within the stated limit).
+/// not received a holder actor's knowing rotation seals at the keyset it holds, which `d` may
+/// open: spec/crypto.md §4 Holder actors).
 fn leaks_after_cascade(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: &Opened) -> Vec<(Tid, Role)> {
     for _ in 0..8 {
         let mut n = 0;
@@ -464,7 +465,8 @@ fn ignorant_fork_anchored_until_merge_spec_crypto_4() {
 // spec/crypto.md §4 (Forks stand; Stale): merge; model `D0_member_anchor`: m1 removes D (kk1) and rotates M
 // again (kk2, n 3). Z, not knowing, forks M from before (F, n 2): it loses the (n, nonce) order
 // to kk2 at m1, so only merge supersedes it. A gets F first and seals M there (D opens it: the
-// stated limit, a keyset written without knowing the removal). m1, holding F, rotates while F
+// keyset written without knowing the removal is sealed to, and the removed party opens what is
+// so sealed until M's knowing keyset reaches A: spec/crypto.md §4 Holder actors). m1, holding F, rotates while F
 // is current and misses D's departure; A's box at F is then stale and A moves: D opens nothing
 // new. Without merge F stays current, A anchored on it never moves.
 #[test]
@@ -664,7 +666,8 @@ fn each_fork_missing_a_different_removal_leaves_holder_out_spec_crypto_4() {
 
 // spec/crypto.md §4 (Held keyset; Descends; Stale): a forged keyset is held invalid; model `D0_member_forge`: D, an admin of M, forges M's keyset X_d (listing kk) after its removal. R
 // (peer 0) lacks the removal: X_d is valid there, descends from kk, and R seals A at it (D
-// opens R's epoch: the stated limit). W (peer 4) holds the removal and X_d: X_d is invalid
+// opens R's epoch: a keyset the removed party forged is sealed to where the removal has not
+// arrived, spec/crypto.md §4 Holder actors). W (peer 4) holds the removal and X_d: X_d is invalid
 // there, so R's box at it is stale and W rotates before encrypting, never sealing at X_d. Once
 // the removal reaches R, X_d leaves R's held keysets and R rotates too.
 #[test]
@@ -693,7 +696,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
     let mut d_m = osis_keys::ActorEpochs::default();
     d_m.read.set_secret(x_d, s_d);
     d_m.read.set_established(x_d, osis_keys::Provenance::Derived);
-    assert!(super::tests::opens_through(&mut lp, 0, a, m, &d_m).read.reading_secret(&e).is_some(), "the stated limit: D opens R's epoch");
+    assert!(super::tests::opens_through(&mut lp, 0, a, m, &d_m).read.reading_secret(&e).is_some(), "R, lacking the removal, seals at D's forged keyset: D opens R's epoch");
     // W holds everything
     for i in [0, 1, 2] {
         send_skipping(&mut lp, i, 4, &BTreeSet::new());
@@ -717,8 +720,8 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
 // spec/crypto.md §4 (Carried), model `Carry`: a node learning an epoch learns the keysets its boxes name with it: peer 0 seals A's holder M at m1's knowing keyset kk and places kk's
 // commit under A's sync ID with its rotation. W (peer 4, A's other admin) gets peer 0's commits
 // but not kk's (a peer withholding the carried commit): kk is no anchor there (not held), so W's
-// next rotation of A seals M at k0, which D opens (the stated limit: W holds no knowing keyset
-// of M). Peer 0 finds that box stale and moves A back to kk; once kk's commit reaches W, W
+// next rotation of A seals M at k0, which D opens (spec/crypto.md §4 Carried: a node holding a
+// box's keyset without its body seals at the older keyset it holds). Peer 0 finds that box stale and moves A back to kk; once kk's commit reaches W, W
 // seals at kk. D opens nothing a writer holding kk encrypts under.
 #[test]
 fn lacking_carried_keyset_spec_crypto_4() {
@@ -737,7 +740,7 @@ fn lacking_carried_keyset_spec_crypto_4() {
     lp.peers[4].clock.advance(60_000);
     rotate_leaving_out(&mut lp, 4, a, &read, &[]);
     assert_eq!(sealed_at(&mut lp, 4, a, m), Some(k0), "W, lacking the anchor, seals at the keyset D opens");
-    assert_eq!(leaked(&mut lp, 4, &[m, a], d, start.clone()), vec![a], "the stated limit: D reads W's epoch");
+    assert_eq!(leaked(&mut lp, 4, &[m, a], d, start.clone()), vec![a], "W, lacking the carried keyset, seals where D reads: D reads W's epoch");
     send_skipping(&mut lp, 4, 0, &BTreeSet::new());
     assert!(blocked_at(&mut lp, 0, a).contains(&Role::Read), "W's box at k0 is stale where kk is held");
     lp.peers[0].engine.ensure_rotated(&a).unwrap();
@@ -877,7 +880,8 @@ fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
 // peer 0 the grant is invalid (peer 2 is no admin there): X holds no role on Y, yet the box opens
 // Y's epoch for X's member D. That epoch is one peer 2 holds as a reader and could hand on
 // anyway: peer 0 counts no departure from the box, nor from the raise of a reader author, and
-// rotates nothing for it (the stated limit).
+// rotates nothing for it, so X's member reads Y until something else rotates Y's read
+// (notes/keys-coverage.md, A demoted admin's void re-grant).
 #[test]
 fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     let mut lp = synced(3);
@@ -2129,7 +2133,8 @@ fn boxing_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid, k: Epoch) -> Vec<Epoc
 // is held; Left out: a keyset M is left out at is blocked by a box), model `LO_voidunheld`: m0 removes D
 // from M alone; g0 alone gets the removal and leaves M out of G recording k0, the cause logged
 // with its rotation. W, G's other admin, reading no secret of M and lacking the removal, rotates
-// G beside it, sealing M at k0 (the stated limit). W then gets g0's rotation without the removal:
+// G beside it, sealing M at k0, which D opens (spec/crypto.md §4 Holder actors: until a keyset of
+// M made knowing the removal reaches W, W seals M at the keyset it holds). W then gets g0's rotation without the removal:
 // the record is not judged void for want of its cause, so W's own epoch, boxing M at k0, is
 // blocked by a box and W rotates G leaving M out, sealing nothing at k0 since; once the removal
 // arrives it stands, and W still does not. M's rotator re-keys (the recorded keyset is current),

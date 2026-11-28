@@ -139,9 +139,10 @@ KeyMap == [G \in SUBSET GAll |-> LET E == KeyedTo(G, Len(Grants)) IN
 KeyIn(G, a) == KeyMap[G][a]
 GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 
-\* spec/crypto.md §4 Holder actors, Carried (the stated limit): a rotation may
-\* be learned before the keysets its boxes name (carried as separate blobs);
-\* FALSE: they come along
+\* spec/crypto.md §4 Holder actors, Carried: a rotation may be learned before
+\* the keysets its boxes name (carried as separate blobs), and the next
+\* sealing of that actor takes the older keyset held, which a party removed
+\* from it may open; FALSE: they come along
 Late == FALSE
 \* pf: the keysets a rotation seals each holder actor at, read only by the
 \* rejected AsOf rule below (Stale reads boxes alone, spec/crypto.md \S 4)
@@ -692,7 +693,9 @@ NotIn(x, a) == {dp \in Known(x) : dp[2] = a \/ dp[2] \notin KClos(a)}
 \* the actors on key paths from h up to a, h included
 Chain(a, h) == {c \in KClos(a) : c = h \/ h \in KClos(c)}
 
-\* the stated limit at any depth: x holds, for every holder actor h of a, a
+\* a departure below a holder actor reaches a's sealing only through that
+\* actor's keysets, at any depth (spec/crypto.md §4 Holder actors): x holds,
+\* for every holder actor h of a, a
 \* keyset of h the removed node does not open that lists every honest
 \* keyset of h it opens (M's knowing keyset reached x, through h's)
 Beaten(x, a, dp) ==
@@ -802,7 +805,8 @@ NoLeakMember == \A c \in wr : \A dp \in c.p2 : ~Opens(RD(dp[1], c.a), c)
 \* and the writer held every re-seal box of the epoch (an ignorant boxer's
 \* box it has not seen is the residual of notes/holder-actors.md, as today)
 NoLeakMemberAll == \A c \in wr : \A dp \in c.p3 : ~Opens(RD(dp[1], c.a), c)
-\* rule 4 with a hidden grant, the stated limit: a node removed from a or
+\* rule 4 with a hidden grant (a node lacking a cycle's earlier grant may
+\* seal into it: spec/crypto.md §4 Holder actors): a node removed from a or
 \* from an actor with no key path to a reads no content written knowing the
 \* removal once every node holds
 \* every grant (p4), and the writer also holds every keyset and re-seal (p5)
@@ -810,7 +814,7 @@ NoLeakKnown == \A c \in wr : \A dp \in c.p4 : ~Opens(RD(dp[1], c.a), c)
 NoLeakKnownAll == \A c \in wr : \A dp \in c.p5 : ~Opens(RD(dp[1], c.a), c)
 \* removed-member writer: a node removed from an actor below a reads no
 \* content of a written by a writer its removal's knowing keysets reached
-\* (the stated limit, Beaten) ...
+\* (Beaten) ...
 NoLeakLimit == \A c \in wr : \A dp \in c.p6 : ~Opens(RD(dp[1], c.a), c)
 \* ... or at least once every node has settled (the window ends at all)
 NoLeakSettled == \A c \in wr : \A dp \in c.p7 : ~Opens(RD(dp[1], c.a), c)

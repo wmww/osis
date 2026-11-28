@@ -367,12 +367,13 @@ impl Run {
     }
 
     /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator lacking
-    /// `k`'s secret and holding the commits `held`, is within the stated limits for departed
-    /// peer `d` (spec/crypto.md §4), read from the history at `o`. Seal leaves `m` out where `k`'s
+    /// `k`'s secret and holding the commits `held`, is one departed peer `d` may open by spec/crypto.md
+    /// §4, read from the history at `o`. Seal leaves `m` out where `k`'s
     /// rotation boxes a keyset of a holder actor of `m` that a keyset the rotator held
     /// supersedes (Stale), so a departure below `m` reaches the box only until such a keyset
-    /// does (the limit for a departure from a holder actor of M). A departure from `m` itself is
-    /// judged by order alone (the limit for an epoch whose secret the node lacks): within it
+    /// does (Holder actors: a departure from a holder actor of M reaches M's sealing only by
+    /// stale boxes). A departure from `m` itself is judged by order alone (Encrypting under: an
+    /// epoch whose secret the node lacks), so `d` may open the box
     /// unless the rotator held `d`'s departure from `m` (`tail_departure_point`: the write a covering epoch must name)
     /// and `k`'s rotation is ordered before it. Boxes a later grant or re-seal of `m` writes at
     /// `k`, keysets held invalid or tainted (Stale too) and superseding keysets held only by a
@@ -1312,8 +1313,9 @@ fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
 // (peer 0's) a read holder of G (peer 0's), A (peer 1) admin of M. Peer 0 demotes A to reader of
 // M; A, unaware, grants X (peer 2) read of M after it, boxing M's read epoch. The grant applies
 // nothing and does not count, and A still reads M: nothing rotates M's read, so X reads M and,
-// through G's box to M, G's read epoch peer 0 encrypts under. That is the stated limit, not a
-// leak (`left_reading`).
+// through G's box to M, G's read epoch peer 0 encrypts under, until something else rotates M's
+// read: a demoted admin's void grant forces no rotation (notes/keys-coverage.md, A demoted
+// admin's void re-grant), so the oracle allows it (`left_reading`).
 #[test]
 fn a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4() {
     let (mut run, g, m, x) = demoted_granter(false);

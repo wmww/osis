@@ -99,7 +99,7 @@ gLearners == {"a1", "b", "p1"}
 gHide == {<<"p1", <<"G", "X1">> >>}
 \* ... the grant first, then the removal (as the osis repro): a grant made after
 \* it by a1, which never learns X2's keysets, boxes X1 where W reads it (the
-\* stated limit: a departure two levels down reaches a1 only as X1's keyset)
+\* departure two levels down reaches a1 only as X1's keyset: spec/crypto.md §4 Holder actors)
 gGrantFirst == done' = done \/ rs # {}
 \* blind box in a cycle (D0_box_ok): 3-cycle,
 \* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C

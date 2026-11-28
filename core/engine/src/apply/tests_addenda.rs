@@ -332,7 +332,8 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // spec/permissions.md §5.2 (Addenda): a lying writer of N (Mallory, received Bob's write after
 // the removal) vouches for it against the removal, which cuts the hop T to N of the path Bob's
 // write states: the write counts. A writer can always vouch for the removed side's earlier
-// writes on a thing it writes (stated limit, notes/revocation.md).
+// writes on a thing it writes, attributed to it: receipt time is unprovable, and it could write
+// that content itself (notes/addenda.md).
 #[test]
 fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = holder_world();

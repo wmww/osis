@@ -152,8 +152,10 @@ impl Departure {
 /// applies there over whatever the tail leaves before it (or is invalid there for something
 /// this node has not received), and judges void every later write this node holds that would
 /// raise it back (a void name is met only where its write applies nothing). A write that does
-/// not count (its author held less than write at its point) is not pinned: a reader's writes
-/// force no rotation (the stated limit).
+/// not count (its author held less than write at its point) is not pinned, so a reader's writes
+/// force no rotation, and a party demoted to reader whose void re-grant boxed the holder keeps
+/// that epoch until something else rotates the role (notes/keys-coverage.md, A demoted admin's
+/// void re-grant).
 pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
     let Some(grant) = &d.grant else { return false };
     let (tail, held_r) = grant.tail(r);
@@ -174,7 +176,8 @@ pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
 /// entries, backdate a rotation naming its own self-removal, or rotate in the self-removal
 /// itself, and each is its own (so it must hold the role, which it does not), or nobody's (an
 /// entry no keyset commits to). A rotator that is no leaver naming a departure it holds while
-/// boxing the departed party could hand it the secret anyway (the stated limit).
+/// boxing the departed party covers it all the same: such a rotator could hand it the secret
+/// anyway, so an epoch keeps a departed party out only as far as its rotator does.
 pub fn covers(epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn Held) -> bool {
     !d.concerns(r) || epochs.role(r).get(e).is_some_and(|i| i.covering_names(r, e, held).any(|n| pins(n, r, d, held)))
 }

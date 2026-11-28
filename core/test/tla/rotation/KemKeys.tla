@@ -26,9 +26,10 @@
 (* behind, x already removed.                                                *)
 (* Invariants: NoLeak (content g seals once it holds a keyset made knowing  *)
 (* x's removal is never sealed to a keyset x holds); NoLeakAll (no content  *)
-(* x opens after its removal at all: the stated limit of a stale view,     *)
-(* spec/crypto.md §4 Holder actors). Property Live: once granted, M is      *)
-(* boxed at its newest keyset for good.                                      *)
+(* x opens after its removal at all; fails where g seals to a stale card's *)
+(* keyset, made without knowing the removal, until M's knowing keyset      *)
+(* reaches g: spec/crypto.md §4 Holder actors). Property Live: once        *)
+(* granted, M is boxed at its newest keyset for good.                       *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS Rule, Check, StaleCard, Other0, MaxM, Told

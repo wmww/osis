@@ -571,8 +571,13 @@ def prefilter(pat):
     return re.compile(s.replace(r"\b", "").lower(), re.A | re.M)
 
 
+# No Limit items (notes/terms.md, Writing about them): a weakened property is stated in its weaker
+# form; notes/principles.md keeps the phrase until Tess rewords it (issues/deprecated-terms.md).
+STATED_LIMIT = re.compile(r"(?i)\bstated[ _-]limits?\b", re.A)
+
 DEAD = [(w, p, prefilter(p), ()) for w, p in DEAD_WORDS.items()] + \
-    [(w, p, prefilter(p), STUB_DEAD_WORDS_OK) for w, p in STUB_DEAD_WORDS.items()]
+    [(w, p, prefilter(p), STUB_DEAD_WORDS_OK) for w, p in STUB_DEAD_WORDS.items()] + \
+    [("stated limit", STATED_LIMIT, prefilter(STATED_LIMIT), ("notes/principles.md",))]
 
 
 def dead_words():
